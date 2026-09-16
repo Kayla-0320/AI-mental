@@ -1,0 +1,30 @@
+{
+  "name": "mental-health-client",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@ant-design/icons": "^5.4.0",
+    "antd": "^5.20.0",
+    "axios": "^1.7.7",
+    "dayjs": "^1.11.13",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.26.0",
+    "socket.io-client": "^4.7.5",
+    "zustand": "^4.5.5",
+    "recharts": "^2.12.7"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.5",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "typescript": "^5.5.4",
+    "vite": "^5.4.3"
+  }
+}

@@ -1,0 +1,36 @@
+﻿"""共享数据类模块 —— 导出统一数据接口"""
+from shared.dataclasses import (
+    AuditAction,
+    AuditAxis,
+    AuditResult,
+    AuditVerdict,
+    CrisisAlert,
+    EmotionResult,
+    EscalationChannel,
+    EscalationResult,
+    EscalationStatus,
+    EvidenceItem,
+    FeatureSummary,
+    PhenotypeFeature,
+    PhenotypeVector,
+    RiskAssessment,
+    RiskLevel,
+)
+
+__all__ = [
+    "EmotionResult",
+    "RiskAssessment",
+    "CrisisAlert",
+    "FeatureSummary",
+    "EvidenceItem",
+    "RiskLevel",
+    "AuditAxis",
+    "AuditAction",
+    "AuditResult",
+    "AuditVerdict",
+    "PhenotypeFeature",
+    "PhenotypeVector",
+    "EscalationChannel",
+    "EscalationResult",
+    "EscalationStatus",
+]

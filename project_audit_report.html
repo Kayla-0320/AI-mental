@@ -1,0 +1,641 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>青少年AI心理健康平台 — 项目审查报告</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --card: #1a1d2e;
+    --border: #2a2d3e;
+    --text: #e0e0e0;
+    --muted: #8b8fa3;
+    --accent: #6c5ce7;
+    --green: #00b894;
+    --yellow: #fdcb6e;
+    --red: #e17055;
+    --blue: #74b9ff;
+    --orange: #e17055;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); line-height: 1.7; }
+  .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
+
+  /* Header */
+  .header { text-align: center; padding: 48px 0 32px; border-bottom: 1px solid var(--border); margin-bottom: 40px; }
+  .header h1 { font-size: 2rem; background: linear-gradient(135deg, #6c5ce7, #74b9ff); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  .header .subtitle { color: var(--muted); margin-top: 8px; font-size: 0.95rem; }
+  .header .meta { display: flex; justify-content: center; gap: 24px; margin-top: 16px; font-size: 0.85rem; color: var(--muted); }
+
+  /* Score */
+  .score-section { display: flex; gap: 24px; margin-bottom: 40px; flex-wrap: wrap; }
+  .score-card { flex: 1; min-width: 200px; background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 24px; text-align: center; }
+  .score-card .number { font-size: 2.5rem; font-weight: 700; }
+  .score-card .label { color: var(--muted); font-size: 0.85rem; margin-top: 4px; }
+  .score-green { color: var(--green); }
+  .score-yellow { color: var(--yellow); }
+  .score-red { color: var(--red); }
+  .score-blue { color: var(--blue); }
+
+  /* Section */
+  .section { margin-bottom: 40px; }
+  .section h2 { font-size: 1.4rem; margin-bottom: 16px; padding-bottom: 8px; border-bottom: 2px solid var(--accent); display: inline-block; }
+  .section h3 { font-size: 1.1rem; color: var(--blue); margin: 20px 0 10px; }
+
+  /* Table */
+  table { width: 100%; border-collapse: collapse; margin: 12px 0 20px; font-size: 0.9rem; }
+  th { background: var(--card); color: var(--blue); text-align: left; padding: 10px 12px; border: 1px solid var(--border); font-weight: 600; }
+  td { padding: 10px 12px; border: 1px solid var(--border); vertical-align: top; }
+  tr:hover td { background: rgba(108,92,231,0.05); }
+
+  /* Badges */
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 0.78rem; font-weight: 600; }
+  .badge-done { background: rgba(0,184,148,0.15); color: var(--green); }
+  .badge-partial { background: rgba(253,203,110,0.15); color: var(--yellow); }
+  .badge-missing { background: rgba(225,112,85,0.15); color: var(--red); }
+  .badge-empty { background: rgba(139,143,163,0.15); color: var(--muted); }
+
+  /* Gap cards */
+  .gap-card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin-bottom: 16px; }
+  .gap-card .gap-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .gap-card .gap-title { font-weight: 600; font-size: 1rem; }
+  .gap-card .gap-priority { font-size: 0.8rem; padding: 2px 8px; border-radius: 8px; }
+  .priority-critical { background: rgba(225,112,85,0.2); color: var(--red); }
+  .priority-high { background: rgba(253,203,110,0.2); color: var(--yellow); }
+  .priority-medium { background: rgba(116,185,255,0.2); color: var(--blue); }
+  .gap-card .gap-desc { color: var(--muted); font-size: 0.88rem; margin-bottom: 8px; }
+  .gap-card .gap-fix { font-size: 0.88rem; }
+  .gap-card .gap-fix code { background: rgba(108,92,231,0.15); color: var(--accent); padding: 1px 6px; border-radius: 4px; font-size: 0.82rem; }
+
+  /* Architecture diagram */
+  .arch-box { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 24px; margin: 16px 0; overflow-x: auto; }
+  .arch-box pre { color: var(--muted); font-size: 0.82rem; line-height: 1.5; }
+
+  /* Progress bar */
+  .progress-bar { background: var(--border); border-radius: 8px; height: 10px; overflow: hidden; margin: 4px 0; }
+  .progress-fill { height: 100%; border-radius: 8px; transition: width 0.3s; }
+
+  /* Module grid */
+  .module-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px; margin: 16px 0; }
+  .module-card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 18px; }
+  .module-card h4 { font-size: 0.95rem; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+  .module-card .files { font-size: 0.82rem; color: var(--muted); margin-bottom: 8px; }
+  .module-card .detail { font-size: 0.85rem; }
+  .module-card ul { padding-left: 16px; font-size: 0.85rem; }
+  .module-card li { margin: 2px 0; }
+
+  .tag { display: inline-block; font-size: 0.72rem; padding: 1px 6px; border-radius: 4px; margin-right: 4px; }
+  .tag-real { background: rgba(0,184,148,0.12); color: var(--green); }
+  .tag-mock { background: rgba(253,203,110,0.12); color: var(--yellow); }
+  .tag-none { background: rgba(225,112,85,0.12); color: var(--red); }
+
+  /* Summary box */
+  .summary-box { background: linear-gradient(135deg, rgba(108,92,231,0.08), rgba(116,185,255,0.08)); border: 1px solid var(--border); border-radius: 12px; padding: 24px; margin: 20px 0; }
+
+  /* Footer */
+  .footer { text-align: center; color: var(--muted); font-size: 0.8rem; padding: 32px 0; border-top: 1px solid var(--border); margin-top: 40px; }
+
+  @media (max-width: 768px) {
+    .score-section { flex-direction: column; }
+    .module-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+<!-- Header -->
+<div class="header">
+  <h1>青少年 AI 心理健康平台 — 项目审查报告</h1>
+  <div class="subtitle">策划方案 vs 实际实现 · 差距分析与改进建议</div>
+  <div class="meta">
+    <span>生成时间：2026-09-15</span>
+    <span>检查范围：algorithm/ + client/ + server/</span>
+    <span>测试状态：300 passed / 1 skipped</span>
+  </div>
+</div>
+
+<!-- Overall Score -->
+<div class="score-section">
+  <div class="score-card">
+    <div class="number score-green">72%</div>
+    <div class="label">算法后端完成度（algorithm/）</div>
+    <div class="progress-bar"><div class="progress-fill" style="width:72%;background:var(--green)"></div></div>
+  </div>
+  <div class="score-card">
+    <div class="number score-red">15%</div>
+    <div class="label">前端集成度（client/）</div>
+    <div class="progress-bar"><div class="progress-fill" style="width:15%;background:var(--red)"></div></div>
+  </div>
+  <div class="score-card">
+    <div class="number score-red">0%</div>
+    <div class="label">前后端算法桥接（server↔algorithm）</div>
+    <div class="progress-bar"><div class="progress-fill" style="width:0%;background:var(--red)"></div></div>
+  </div>
+  <div class="score-card">
+    <div class="number score-yellow">300</div>
+    <div class="label">单元测试通过数</div>
+    <div class="progress-bar"><div class="progress-fill" style="width:100%;background:var(--yellow)"></div></div>
+  </div>
+</div>
+
+<!-- ============================================ -->
+<div class="section">
+  <h2>一、总体诊断</h2>
+  <div class="summary-box">
+    <p><strong>核心发现：</strong>项目呈现"算法强、集成弱"的显著断层。</p>
+    <ul style="margin-top:8px;padding-left:20px;">
+      <li><strong>algorithm/</strong> 目录已完成策划方案中 <strong>80%+ 的算法模块</strong>（感知/评估/干预/升级/隐私/审计/联邦），300 测试全通过</li>
+      <li><strong>client/</strong> 前端仍是独立的 React 应用，<strong>未接入任何 Python 算法能力</strong>，AI 咨询直接调用通义千问 LLM</li>
+      <li><strong>server/</strong> Node.js 后端与 algorithm/ <strong>零连接</strong>，无 HTTP/gRPC 桥接</li>
+      <li>策划方案中的"前端改进"（同龄对比、实时情绪曲线、安全审计面板等）<strong>全部未实现</strong></li>
+    </ul>
+  </div>
+</div>
+
+<!-- ============================================ -->
+<div class="section">
+  <h2>二、算法后端逐模块审查（algorithm/）</h2>
+
+  <div class="module-grid">
+    <!-- 感知层 -->
+    <div class="module-card">
+      <h4><span class="badge badge-partial">部分完成</span> 感知层 perception/</h4>
+      <div class="files">perception_service.py · text_emotion/ · fusion/ · voice/ · face/ · behavior/</div>
+      <div class="detail">
+        <ul>
+          <li><span class="tag tag-real">真实</span> 统一 EmotionResult 接口</li>
+          <li><span class="tag tag-real">真实</span> 文本情感 RoBERTa 分类器 + 训练管道</li>
+          <li><span class="tag tag-real">真实</span> 多模态融合（加权/Stacking/动态加权）</li>
+          <li><span class="tag tag-mock">假数据</span> PerceptionService 返回硬编码概率</li>
+          <li><span class="tag tag-none">缺失</span> voice/ — 声学特征提取（基频/能量/语速/共振峰）</li>
+          <li><span class="tag tag-none">缺失</span> face/ — MediaPipe 微表情/AU 检测</li>
+          <li><span class="tag tag-none">缺失</span> behavior/ — 行为模式分析</li>
+          <li><span class="tag tag-none">缺失</span> SProp GNN 语义盲法去偏见</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- 评估层 -->
+    <div class="module-card">
+      <h4><span class="badge badge-done">已完成</span> 评估层 assessment/</h4>
+      <div class="files">multi_task/{model,train,predictor}.py · phenotype.py</div>
+      <div class="detail">
+        <ul>
+          <li><span class="tag tag-real">真实</span> 共享编码器 + 3 任务头（抑郁/焦虑/睡眠）</li>
+          <li><span class="tag tag-real">真实</span> 非对称 BCE 损失 β=6.0</li>
+          <li><span class="tag tag-real">真实</span> PHQ-9/GAD-7 预估区间输出</li>
+          <li><span class="tag tag-real">真实</span> 数字表型 5 类特征提取</li>
+          <li><span class="tag tag-real">真实</span> Z-score 基线偏离（3 年龄段）</li>
+          <li><span class="tag tag-mock">模拟</span> 数据源为 np.random，非真实数据库</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- 干预层 -->
+    <div class="module-card">
+      <h4><span class="badge badge-partial">大部分完成</span> 干预层 intervention/</h4>
+      <div class="files">state_machine.py · auditor.py · middleware.py · cbt/</div>
+      <div class="detail">
+        <ul>
+          <li><span class="tag tag-real">真实</span> 5 状态有限自动机 + 7 条转移规则</li>
+          <li><span class="tag tag-real">真实</span> 结构化 Action 对象（7 种动作类型）</li>
+          <li><span class="tag tag-real">真实</span> 五轴安全审计 + 配置驱动</li>
+          <li><span class="tag tag-real">真实</span> LLM 审计中间件（重写/注入/升级）</li>
+          <li><span class="tag tag-none">缺失</span> cbt/ — CBT 认知重构 5 步引导脚本</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- 升级层 -->
+    <div class="module-card">
+      <h4><span class="badge badge-done">已完成</span> 升级层 escalation/</h4>
+      <div class="files">crisis.py · scheduler.py · audit_log.py</div>
+      <div class="detail">
+        <ul>
+          <li><span class="tag tag-real">真实</span> escalate() → EscalationResult</li>
+          <li><span class="tag tag-real">真实</span> 三通道通知（webhook/in_app/console）</li>
+          <li><span class="tag tag-real">真实</span> 咨询师排班系统</li>
+          <li><span class="tag tag-real">真实</span> 不可删除审计日志 + SHA-256 哈希链</li>
+          <li><span class="tag tag-real">真实</span> /emergency/escalate + /emergency/report API</li>
+          <li><span class="tag tag-mock">模拟</span> webhook 为 mock server</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- 隐私层 -->
+    <div class="module-card">
+      <h4><span class="badge badge-done">已完成</span> 隐私层 privacy/</h4>
+      <div class="files">on_device.py · sanitizer.py</div>
+      <div class="detail">
+        <ul>
+          <li><span class="tag tag-real">真实</span> DistilBERT INT8 量化（255MB→22.75MB, -91.1%）</li>
+          <li><span class="tag tag-real">真实</span> 数据脱敏 summarize() → FeatureSummary</li>
+          <li><span class="tag tag-real">真实</span> 6 项泄露验证 validate_no_raw_data()</li>
+          <li><span class="tag tag-real">真实</span> 差分隐私噪声（拉普拉斯机制）</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- 公平性 + 联邦 -->
+    <div class="module-card">
+      <h4><span class="badge badge-done">已完成</span> 审计 + 联邦学习</h4>
+      <div class="files">audit/fairness.py · federated/{client,server,run_simulation}.py</div>
+      <div class="detail">
+        <ul>
+          <li><span class="tag tag-real">真实</span> 分组公平性审计（年龄/性别/地域）</li>
+          <li><span class="tag tag-real">真实</span> fairlearn DPD/EOD 指标</li>
+          <li><span class="tag tag-real">真实</span> FedAvg 聚合 + 5 轮仿真</li>
+          <li><span class="tag tag-real">真实</span> 联邦 vs 中心化 vs 本地对比</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- 对比实验 -->
+    <div class="module-card">
+      <h4><span class="badge badge-done">已完成</span> 对比实验 experiments/</h4>
+      <div class="files">compare_risk_models.py · compare_emotion_models.py · compare_privacy.py · run_all.py</div>
+      <div class="detail">
+        <ul>
+          <li><span class="tag tag-real">真实</span> 3 组对比实验 + 汇总 Markdown 报告</li>
+          <li>实验 1：规则引擎 vs 多任务（Recall +75%）</li>
+          <li>实验 2：单模态 vs 双模态（Acc +34.7%）</li>
+          <li>实验 3：云端 vs 端侧（隐私 20→90，压缩 91.1%）</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- 统一数据接口 -->
+    <div class="module-card">
+      <h4><span class="badge badge-done">已完成</span> 统一数据接口 shared/</h4>
+      <div class="files">dataclasses.py（13 个 dataclass）</div>
+      <div class="detail">
+        <ul>
+          <li>EmotionResult · RiskAssessment · CrisisAlert</li>
+          <li>EvidenceItem · FeatureSummary · PhenotypeVector</li>
+          <li>AuditResult · AuditVerdict · EscalationResult</li>
+          <li>所有模块间通信通过 dataclass，接口统一</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================ -->
+<div class="section">
+  <h2>三、前端与集成审查（client/ + server/）</h2>
+
+  <table>
+    <tr>
+      <th>策划要求</th>
+      <th>当前状态</th>
+      <th>差距</th>
+    </tr>
+    <tr>
+      <td>AI 咨询集成对话状态机</td>
+      <td><span class="badge badge-missing">未实现</span></td>
+      <td>Chat.tsx 直接调用通义千问 LLM，无状态机介入</td>
+    </tr>
+    <tr>
+      <td>焦虑检测 + 心理测评合并为多任务引擎</td>
+      <td><span class="badge badge-missing">未实现</span></td>
+      <td>两个页面完全独立；AnxietyDetect 用前端键盘/眨眼检测，与 Python 多任务引擎无关</td>
+    </tr>
+    <tr>
+      <td>心理画像"同龄对比"雷达图</td>
+      <td><span class="badge badge-missing">未实现</span></td>
+      <td>Home.tsx 有情绪画像但无同龄对比可视化</td>
+    </tr>
+    <tr>
+      <td>咨询师端：AI 评估结果 + 数字表型摘要</td>
+      <td><span class="badge badge-partial">硬编码</span></td>
+      <td>ConsultantDashboard.tsx 有风险面板但数据为硬编码，无 API 动态拉取</td>
+    </tr>
+    <tr>
+      <td>咨询师端：实时情绪变化曲线</td>
+      <td><span class="badge badge-missing">未实现</span></td>
+      <td>ConsultantRoom.tsx 仅有当前焦虑快照，无时间序列曲线</td>
+    </tr>
+    <tr>
+      <td>咨询师端：安全审计面板</td>
+      <td><span class="badge badge-missing">未实现</span></td>
+      <td>完全不存在</td>
+    </tr>
+    <tr>
+      <td>管理端：公平性审计报告</td>
+      <td><span class="badge badge-missing">未实现</span></td>
+      <td>Dashboard.tsx 仅有基础统计，无公平性展示</td>
+    </tr>
+    <tr>
+      <td>管理端：社区内容审核</td>
+      <td><span class="badge badge-partial">后端有/前端无</span></td>
+      <td>server 有 /api/community/pending + approve API，但前端无对应页面</td>
+    </tr>
+    <tr>
+      <td>Settings 隐私控制（数据删除/导出/同意管理）</td>
+      <td><span class="badge badge-missing">未实现</span></td>
+      <td>仅有基本信息编辑和密码修改</td>
+    </tr>
+    <tr>
+      <td><strong>server ↔ algorithm 桥接</strong></td>
+      <td><span class="badge badge-missing">零连接</span></td>
+      <td>Node.js 后端不调用任何 Python 算法模块；直接调用通义千问 LLM API</td>
+    </tr>
+  </table>
+</div>
+
+<!-- ============================================ -->
+<div class="section">
+  <h2>四、差距清单与改进方案</h2>
+
+  <h3>🔴 关键差距（影响核心功能闭环）</h3>
+
+  <div class="gap-card">
+    <div class="gap-header">
+      <span class="gap-title">GAP-1：Server ↔ Algorithm 零连接</span>
+      <span class="gap-priority priority-critical">关键</span>
+    </div>
+    <div class="gap-desc">Node.js 后端与 Python 算法后端完全独立运行。AI 咨询直接调用通义千问，不经过状态机/审计/多任务评估。这意味着 algorithm/ 中所有算法能力对用户完全不可见。</div>
+    <div class="gap-fix">
+      <strong>改进方案：</strong><br>
+      ① 在 server/ 中添加 <code>algorithm-bridge</code> 服务层，通过 HTTP 调用 algorithm/ 的 FastAPI 端点<br>
+      ② 或将 algorithm/ 核心逻辑封装为 Python 微服务（已有 api/ 路由），server/ 通过 fetch 调用<br>
+      ③ 修改 <code>ai.service.ts</code>，将 LLM 调用改为经过 <code>AuditedLLMMiddleware</code> 包装
+    </div>
+  </div>
+
+  <div class="gap-card">
+    <div class="gap-header">
+      <span class="gap-title">GAP-2：AI 咨询未集成对话状态机</span>
+      <span class="gap-priority priority-critical">关键</span>
+    </div>
+    <div class="gap-desc">Chat.tsx 直接调用 LLM 生成回复，无状态机控制对话流程、无安全审计中间件拦截、无结构化 Action 输出。策划方案的核心亮点"感知-评估-干预-升级闭环"在前端完全断裂。</div>
+    <div class="gap-fix">
+      <strong>改进方案：</strong><br>
+      ① 前端 Chat.tsx 改为调用新的 <code>/api/consultation/smart</code> 端点<br>
+      ② 该端点内部调用 <code>DialogEngine</code> 管理状态 → <code>AuditedLLMMiddleware</code> 包装 LLM → 返回安全回复<br>
+      ③ 前端展示当前对话状态和允许的干预动作
+    </div>
+  </div>
+
+  <div class="gap-card">
+    <div class="gap-header">
+      <span class="gap-title">GAP-3：焦虑检测与心理测评未合并</span>
+      <span class="gap-priority priority-critical">关键</span>
+    </div>
+    <div class="gap-desc">前端 AnxietyDetect.tsx 使用键盘节奏+眨眼频率的纯前端检测，Assessment.tsx 使用 PHQ-9/GAD-7 表单。两者完全独立，且均不接入 Python 多任务风险评估引擎。</div>
+    <div class="gap-fix">
+      <strong>改进方案：</strong><br>
+      ① 新建统一的"多任务评估"页面，合并两个入口<br>
+      ② 前端采集文本+语音 → 调用 <code>/api/assessment/predict</code> → 展示 PHQ-9/GAD-7 预估区间<br>
+      ③ 保留前端键盘/眨眼检测作为辅助信号，融合到多任务模型输入
+    </div>
+  </div>
+
+  <h3>🟡 重要差距（影响方案完整性）</h3>
+
+  <div class="gap-card">
+    <div class="gap-header">
+      <span class="gap-title">GAP-4：语音/面部/行为感知模块为空</span>
+      <span class="gap-priority priority-high">重要</span>
+    </div>
+    <div class="gap-desc">perception/voice/、perception/face/、perception/behavior/ 三个子模块仅有空的 __init__.py。策划方案要求的声学特征（基频/能量/语速/共振峰）、MediaPipe 微表情检测、行为模式分析均未实现。</div>
+    <div class="gap-fix">
+      <strong>改进方案：</strong><br>
+      ① voice/：集成 librosa/parselmouth 提取声学特征（至少实现基频 F0、语速、能量 3 项）<br>
+      ② face/：集成 MediaPipe Face Mesh 提取眨眼频率/眉毛运动/嘴角位移<br>
+      ③ behavior/：从平台使用日志提取活跃时段/使用频率/社交互动特征<br>
+      ④ 若时间有限，可先用模拟接口占位，但需有清晰的 extract_features() 函数签名
+    </div>
+  </div>
+
+  <div class="gap-card">
+    <div class="gap-header">
+      <span class="gap-title">GAP-5：CBT 认知重构脚本缺失</span>
+      <span class="gap-priority priority-high">重要</span>
+    </div>
+    <div class="gap-desc">intervention/cbt/ 目录为空。策划方案要求的 5 步引导流程（识别自动思维→检验证据→寻找替代解释→评估情绪变化→制定行动计划）未实现。</div>
+    <div class="gap-fix">
+      <strong>改进方案：</strong><br>
+      ① 在 cbt/ 下创建 <code>cognitive_restructuring.py</code>，实现 5 步引导状态机<br>
+      ② 每步输出结构化引导话术（青少年友好语言）<br>
+      ③ 包含用户拒绝配合的退出机制
+    </div>
+  </div>
+
+  <div class="gap-card">
+    <div class="gap-header">
+      <span class="gap-title">GAP-6：SProp GNN 语义盲法未实现</span>
+      <span class="gap-priority priority-high">重要</span>
+    </div>
+    <div class="gap-desc">文本情感分析使用标准 RoBERTa fine-tuning，无"语义盲法"去偏见机制。策划方案引用了 Nature Scientific Reports 2026 的 SProp GNN 架构。</div>
+    <div class="gap-fix">
+      <strong>改进方案：</strong><br>
+      ① 若无法复现 SProp GNN，可在现有 RoBERTa 基础上添加对抗去偏见训练（adversarial debiasing）<br>
+      ② 或在报告中明确说明"语义盲法为理论方案，当前使用标准 Transformer + 公平性审计后处理"
+    </div>
+  </div>
+
+  <div class="gap-card">
+    <div class="gap-header">
+      <span class="gap-title">GAP-7：前端缺少多项策划要求的改进</span>
+      <span class="gap-priority priority-high">重要</span>
+    </div>
+    <div class="gap-desc">同龄对比可视化、咨询师端实时情绪曲线、安全审计面板、管理端公平性报告、社区审核页面、隐私控制设置 — 全部未实现。</div>
+    <div class="gap-fix">
+      <strong>改进方案（按优先级）：</strong><br>
+      ① 咨询师端安全审计面板 — 展示被拦截的回复和危机升级事件<br>
+      ② 管理端公平性报告 — 调用 <code>/api/audit/fairness</code> 展示分组性能差异<br>
+      ③ 同龄对比雷达图 — 调用 <code>compute_baseline_deviation()</code> 在 Home.tsx 展示<br>
+      ④ 实时情绪曲线 — ConsultantRoom.tsx 中按时序绘制情感变化折线图<br>
+      ⑤ 社区审核页面 — 对接已有的 <code>/api/community/pending</code> API
+    </div>
+  </div>
+
+  <h3>🔵 改进建议（提升方案竞争力）</h3>
+
+  <div class="gap-card">
+    <div class="gap-header">
+      <span class="gap-title">GAP-8：PerceptionService 未对接 fusion 模块</span>
+      <span class="gap-priority priority-medium">建议</span>
+    </div>
+    <div class="gap-desc">fusion/ 子模块有完整的三策略融合实现（加权/Stacking/动态加权），但 PerceptionService 使用独立的简化版加权平均，两者未集成。</div>
+    <div class="gap-fix">修改 <code>perception_service.py</code> 的 <code>analyze_multimodal()</code> 方法，调用 <code>fusion.fuse_multimodal()</code> 替代内联的加权平均。</div>
+  </div>
+
+  <div class="gap-card">
+    <div class="gap-header">
+      <span class="gap-title">GAP-9：数字表型数据源全为模拟</span>
+      <span class="gap-priority priority-medium">建议</span>
+    </div>
+    <div class="gap-desc">phenotype.py 的五类特征提取使用 np.random 模拟数据。策划方案要求对接睡眠监测、对话情感、平台使用日志等真实数据源。</div>
+    <div class="gap-fix">在 server/ 中实现数据获取适配层，从 Prisma 数据库查询真实用户数据，传入 <code>extract_digital_phenotype()</code>。</div>
+  </div>
+
+  <div class="gap-card">
+    <div class="gap-header">
+      <span class="gap-title">GAP-10：缺少共病模式分析</span>
+      <span class="gap-priority priority-medium">建议</span>
+    </div>
+    <div class="gap-desc">策划方案要求管理员端增加"共病模式"分析（如抑郁+睡眠障碍联合预警），当前未实现。</div>
+    <div class="gap-fix">在 assessment/ 中新增 <code>comorbidity.py</code>，分析多任务模型输出的联合风险模式，在管理端展示热力图。</div>
+  </div>
+</div>
+
+<!-- ============================================ -->
+<div class="section">
+  <h2>五、策划方案指标达成情况</h2>
+  <table>
+    <tr>
+      <th>指标</th>
+      <th>目标值</th>
+      <th>当前状态</th>
+      <th>达成</th>
+    </tr>
+    <tr>
+      <td>多任务 AUC</td>
+      <td>> 0.85</td>
+      <td>模拟数据上 ~0.71（实验 1）</td>
+      <td><span class="badge badge-missing">未验证</span></td>
+    </tr>
+    <tr>
+      <td>高风险召回率</td>
+      <td>> 0.90</td>
+      <td>模拟数据上 0.51（实验 1）</td>
+      <td><span class="badge badge-missing">未达标</span></td>
+    </tr>
+    <tr>
+      <td>危机拦截率</td>
+      <td>> 95%</td>
+      <td>五轴审计已实现，未做对抗测试</td>
+      <td><span class="badge badge-partial">待验证</span></td>
+    </tr>
+    <tr>
+      <td>对话状态转移准确率</td>
+      <td>> 90%</td>
+      <td>状态机逻辑已实现，未做人工标注验证</td>
+      <td><span class="badge badge-partial">待验证</span></td>
+    </tr>
+    <tr>
+      <td>端侧模型大小</td>
+      <td>< 25MB</td>
+      <td>22.75 MB ✅</td>
+      <td><span class="badge badge-done">已达成</span></td>
+    </tr>
+    <tr>
+      <td>端侧推理延迟</td>
+      <td>< 50ms</td>
+      <td>31.99 ms ✅</td>
+      <td><span class="badge badge-done">已达成</span></td>
+    </tr>
+    <tr>
+      <td>分组 F1 差异</td>
+      <td>< 0.10</td>
+      <td>模拟数据上 DPD=0.056, EOD=0.094 ✅</td>
+      <td><span class="badge badge-done">已达成</span></td>
+    </tr>
+    <tr>
+      <td>联邦 vs 集中式性能比</td>
+      <td>> 95%</td>
+      <td>0.68/0.665 = 102% ✅</td>
+      <td><span class="badge badge-done">已达成</span></td>
+    </tr>
+  </table>
+</div>
+
+<!-- ============================================ -->
+<div class="section">
+  <h2>六、改进优先级路线图</h2>
+  <table>
+    <tr>
+      <th>阶段</th>
+      <th>任务</th>
+      <th>涉及文件</th>
+      <th>预估工作量</th>
+    </tr>
+    <tr>
+      <td rowspan="2"><strong>P0<br>必做</strong></td>
+      <td>Server ↔ Algorithm 桥接</td>
+      <td>server/src/services/algorithm-bridge.ts</td>
+      <td>1-2 天</td>
+    </tr>
+    <tr>
+      <td>Chat.tsx 集成状态机 + 审计中间件</td>
+      <td>client/src/pages/patient/Chat.tsx + server 路由</td>
+      <td>1-2 天</td>
+    </tr>
+    <tr>
+      <td rowspan="3"><strong>P1<br>重要</strong></td>
+      <td>焦虑检测 + 心理测评合并</td>
+      <td>新建 UnifiedAssessment.tsx</td>
+      <td>1 天</td>
+    </tr>
+    <tr>
+      <td>CBT 认知重构 5 步脚本</td>
+      <td>algorithm/intervention/cbt/cognitive_restructuring.py</td>
+      <td>0.5 天</td>
+    </tr>
+    <tr>
+      <td>咨询师端安全审计面板 + 实时情绪曲线</td>
+      <td>ConsultantRoom.tsx + 新组件</td>
+      <td>1 天</td>
+    </tr>
+    <tr>
+      <td rowspan="3"><strong>P2<br>加分</strong></td>
+      <td>语音声学特征提取</td>
+      <td>algorithm/perception/voice/acoustic.py</td>
+      <td>1 天</td>
+    </tr>
+    <tr>
+      <td>管理端公平性报告 + 社区审核</td>
+      <td>admin/Dashboard.tsx + 新页面</td>
+      <td>1 天</td>
+    </tr>
+    <tr>
+      <td>同龄对比雷达图</td>
+      <td>patient/Home.tsx</td>
+      <td>0.5 天</td>
+    </tr>
+    <tr>
+      <td rowspan="2"><strong>P3<br>锦上添花</strong></td>
+      <td>MediaPipe 微表情检测</td>
+      <td>algorithm/perception/face/</td>
+      <td>1-2 天</td>
+    </tr>
+    <tr>
+      <td>SProp GNN / 对抗去偏见</td>
+      <td>algorithm/perception/text_emotion/</td>
+      <td>2-3 天</td>
+    </tr>
+  </table>
+</div>
+
+<!-- ============================================ -->
+<div class="section">
+  <h2>七、结论</h2>
+  <div class="summary-box">
+    <p><strong>项目优势：</strong></p>
+    <ul style="padding-left:20px;margin:8px 0;">
+      <li>算法后端架构完整，"感知→评估→干预→升级"四层闭环逻辑已实现</li>
+      <li>300 个单元测试覆盖全面，代码质量有保障</li>
+      <li>隐私保护三层架构（端侧量化→脱敏上传→联邦学习）已落地</li>
+      <li>公平性审计 + 对比实验为技术报告提供了量化数据支撑</li>
+    </ul>
+    <p style="margin-top:12px;"><strong>最大短板：</strong></p>
+    <ul style="padding-left:20px;margin:8px 0;">
+      <li><strong>前后端断裂</strong> — algorithm/ 的全部算法能力无法触达用户界面</li>
+      <li><strong>AI 咨询绕过安全链路</strong> — 直接调用 LLM，无状态机/审计/危机拦截</li>
+      <li><strong>多模态感知不完整</strong> — 语音/面部/行为三个通道为空壳</li>
+    </ul>
+    <p style="margin-top:12px;"><strong>建议：</strong>优先完成 P0（Server 桥接 + Chat 集成状态机），这是将"算法能力"转化为"用户可感知功能"的关键瓶颈。完成 P0 后，策划方案的核心亮点才能在演示中体现。</p>
+  </div>
+</div>
+
+<div class="footer">
+  青少年 AI 心理健康平台 · 项目审查报告 · 生成于 2026-09-15
+</div>
+
+</div>
+</body>
+</html>

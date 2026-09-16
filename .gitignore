@@ -1,0 +1,98 @@
+# ===== 依赖与包管理 =====
+node_modules/
+.pnp
+.pnp.js
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# ===== 环境变量（禁止上传）=====
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+
+# ===== 构建产物 =====
+client/dist/
+server/dist/
+build/
+dist/
+*.tsbuildinfo
+
+# ===== IDE 与系统 =====
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ===== 日志 =====
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ===== Prisma 迁移（如需保留请删掉此行）=====
+server/prisma/migrations/
+
+# ===== 上传与临时文件 =====
+uploads/
+tmp/
+temp/
+
+# ===== Python 相关 =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# ===== 算法模型权重与数据集（关键！）=====
+*.bin
+*.safetensors
+*.h5
+*.pb
+*.onnx
+*.tflite
+*.joblib
+*.pkl
+*.pth
+*.pt
+*.ckpt
+*.model
+*.npy
+*.npz
+*.pandas
+*.feather
+*.parquet
+datasets/
+data/
+models/
+checkpoints/
+outputs/
+*.jsonl
+*.csv
+
+# ===== 音视频与图片 =====
+*.wav
+*.mp3
+*.mp4
+*.avi
+*.mov
+*.mkv
+screenshot-*.png
+screenshots/
+*.jpg
+*.jpeg
+*.gif
+*.bmp

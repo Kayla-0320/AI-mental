@@ -1,0 +1,638 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ==================== 用户系统 ====================
+
+enum UserRole {
+  PATIENT
+  CONSULTANT
+  ADMIN
+}
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  phone         String?   @unique
+  password      String
+  nickname      String
+  avatar        String?
+  role          UserRole  @default(PATIENT)
+  isActive      Boolean   @default(true)
+  lastLoginAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  patientProfile    PatientProfile?
+  consultantProfile ConsultantProfile?
+
+  // 关系
+  conversations     Conversation[]
+  messages          Message[]
+  assessments       Assessment[]
+  healingSessions   HealingSession[]
+  moodRecords       MoodRecord[]
+  expertBookings    ExpertBooking[]      @relation("PatientBookings")
+  consultantBookings ExpertBooking[]     @relation("ConsultantBookings")
+  expertMessages    ExpertMessage[]
+  treatmentPlans    TreatmentPlan[]
+  learningRecords   LearningRecord[]
+  notifications     Notification[]
+  emergencyContacts EmergencyContact[]
+  moodCheckIns      MoodCheckIn[]
+  reviews           ConsultantReview[]  @relation("ReviewPatient")
+  consultantReviews ConsultantReview[]  @relation("ReviewConsultant")
+  achievements      UserAchievement[]
+  communityPosts    CommunityPost[]
+  communityComments CommunityComment[]
+  communityLikes    CommunityLike[]
+  sleepRecords      SleepRecord[]
+  payments          Payment[]
+  feedbacks         UserFeedback[]
+  healthReports     HealthReport[]
+
+  refreshToken      RefreshToken?
+
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String   @unique
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@map("refresh_tokens")
+}
+
+// ==================== 患者档案 ====================
+
+model PatientProfile {
+  id          String   @id @default(cuid())
+  userId      String   @unique
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  realName    String?
+  gender      String?
+  birthDate   DateTime?
+  occupation  String?
+  education   String?
+  maritalStatus String?
+  emergencyContact String?
+  emergencyPhone   String?
+  medicalHistory   String?  // 既往病史 JSON
+  allergies        String?
+  riskLevel   String   @default("LOW")  // LOW, MEDIUM, HIGH, CRISIS
+  membershipType String @default("FREE") // FREE, BASIC, PREMIUM
+  membershipExpiresAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  psychologicalProfiles PsychologicalProfile[]
+  emergencyContacts     EmergencyContact[]
+  moodCheckIns          MoodCheckIn[]
+  achievements          UserAchievement[]
+  communityPosts        CommunityPost[]
+  communityComments     CommunityComment[]
+  sleepRecords          SleepRecord[]
+  healthReports         HealthReport[]
+
+  @@map("patient_profiles")
+}
+
+// ==================== 咨询师档案 ====================
+
+model ConsultantProfile {
+  id            String   @id @default(cuid())
+  userId        String   @unique
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  realName      String
+  title         String          // 职称: 初级/中级/高级心理咨询师
+  license       String          // 执业证书编号
+  specialties   String          // 擅长领域 JSON array
+  introduction  String          // 个人简介
+  pricePerSession Decimal       @db.Decimal(10, 2)
+  rating        Decimal  @default(0) @db.Decimal(3, 2)
+  totalSessions Int      @default(0)
+  isAvailable   Boolean  @default(true)
+  availability  String?  // 可用时间段 JSON
+  verifiedAt    DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  reviews       ConsultantReview[]
+
+  @@map("consultant_profiles")
+}
+
+// ==================== AI 心理咨询 ====================
+
+model Conversation {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title       String   @default("新对话")
+  summary     String?  // 对话摘要
+  topic       String?  // 话题标签
+  messageCount Int     @default(0)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  messages    Message[]
+
+  @@index([userId])
+  @@map("conversations")
+}
+
+model Message {
+  id             String   @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  userId         String?
+  user           User?    @relation(fields: [userId], references: [id])
+  role           String   // user, assistant, system
+  content        String   // 文本内容
+  contentType    String   @default("text") // text, image, audio
+  mediaUrl       String?  // 媒体文件URL
+  sentiment      String?  // 情感标注
+  tokenUsage     Int?     // Token消耗
+  metadata       String?  // 额外元数据 JSON
+  createdAt      DateTime @default(now())
+
+  @@index([conversationId])
+  @@index([userId])
+  @@map("messages")
+}
+
+// ==================== 心理画像 ====================
+
+model PsychologicalProfile {
+  id              String   @id @default(cuid())
+  patientProfileId String
+  patientProfile  PatientProfile @relation(fields: [patientProfileId], references: [id], onDelete: Cascade)
+  // 情感维度评分 (0-100)
+  anxiety         Int      @default(0)
+  depression      Int      @default(0)
+  stress          Int      @default(0)
+  sleepQuality    Int      @default(0)
+  socialActivity  Int      @default(0)
+  emotionalStability Int   @default(0)
+  // 人格特质
+  personalityTraits String? // JSON: { openness, conscientiousness, extraversion, agreeableness, neuroticism }
+  // 综合评估
+  overallScore    Int      @default(0)
+  riskLevel       String   @default("LOW")
+  report          String?  // AI生成的画像报告
+  assessedBy      String   @default("AI") // AI or consultant name
+  metadata        String?  // JSON: 动态画像附加数据（dominantEmotions, emotionalTrend, source）
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([patientProfileId])
+  @@map("psychological_profiles")
+}
+
+// ==================== 心理测评 ====================
+
+model Assessment {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type        String   // PHQ9, GAD7, SCL90, SAS, SDS, CUSTOM
+  title       String
+  answers     String   // JSON: 用户答案
+  result      String   // JSON: 评分结果
+  totalScore  Int
+  level       String   // normal, mild, moderate, severe
+  suggestion  String?  // AI建议
+  completedAt DateTime @default(now())
+  createdAt   DateTime @default(now())
+
+  @@index([userId])
+  @@map("assessments")
+}
+
+// ==================== 疗愈室 ====================
+
+model HealingSession {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type        String   // meditation, breathing, music, journal, mindfulness
+  title       String
+  duration    Int      // 时长(秒)
+  content     String?  // 日记内容/笔记
+  moodBefore  String?  // 练习前情绪
+  moodAfter   String?  // 练习后情绪
+  completed   Boolean  @default(false)
+  metadata    String?  // JSON: 额外信息
+  createdAt   DateTime @default(now())
+
+  @@index([userId])
+  @@map("healing_sessions")
+}
+
+model MoodRecord {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  mood      String   // happy, sad, anxious, angry, calm, excited, tired
+  score     Int      // 1-10
+  note      String?  // 备注
+  tags      String?  // 标签 JSON
+  recordedAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+
+  @@index([userId, recordedAt])
+  @@map("mood_records")
+}
+
+// ==================== 专家连线 ====================
+
+model ExpertBooking {
+  id            String   @id @default(cuid())
+  patientId     String
+  patient       User     @relation("PatientBookings", fields: [patientId], references: [id])
+  consultantId  String
+  consultant    User     @relation("ConsultantBookings", fields: [consultantId], references: [id])
+  scheduledAt   DateTime
+  duration      Int      @default(50) // 分钟
+  status        String   @default("PENDING") // PENDING, CONFIRMED, IN_PROGRESS, COMPLETED, CANCELLED
+  type          String   @default("TEXT") // TEXT, VOICE (视频后续添加)
+  notes         String?
+  rating        Int?     // 1-5
+  feedback      String?
+  reviewId      String?
+  paymentId     String?
+  isPaid        Boolean  @default(false)
+  paidAmount    Decimal? @db.Decimal(10, 2)
+  startedAt     DateTime?
+  endedAt       DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  messages      ExpertMessage[]
+  review        ConsultantReview?
+  payment       Payment?
+
+  @@index([patientId])
+  @@index([consultantId])
+  @@map("expert_bookings")
+}
+
+model ExpertMessage {
+  id         String   @id @default(cuid())
+  bookingId  String
+  booking    ExpertBooking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  senderId   String
+  sender     User     @relation(fields: [senderId], references: [id])
+  content    String
+  contentType String  @default("text") // text, image, audio, file
+  mediaUrl   String?
+  isRead     Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  @@index([bookingId])
+  @@map("expert_messages")
+}
+
+// ==================== 治疗规划 ====================
+
+model TreatmentPlan {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title       String
+  description String?
+  goals       String   // JSON: 治疗目标列表
+  phases      String   // JSON: 阶段规划
+  status      String   @default("DRAFT") // DRAFT, ACTIVE, COMPLETED, PAUSED
+  progress    Int      @default(0) // 0-100
+  createdBy   String   @default("AI") // AI or consultant id
+  startDate   DateTime?
+  endDate     DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tasks       TreatmentTask[]
+
+  @@index([userId])
+  @@map("treatment_plans")
+}
+
+model TreatmentTask {
+  id          String   @id @default(cuid())
+  planId      String
+  plan        TreatmentPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  title       String
+  description String?
+  type        String   // exercise, meditation, journal, assessment, medication, other
+  frequency   String   // daily, weekly, biweekly
+  scheduledAt DateTime?
+  completedAt DateTime?
+  status      String   @default("PENDING") // PENDING, IN_PROGRESS, COMPLETED, SKIPPED
+  notes       String?
+  createdAt   DateTime @default(now())
+
+  @@index([planId])
+  @@map("treatment_tasks")
+}
+
+// ==================== 持续学习 ====================
+
+model LearningRecord {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  contentId   String   // 学习内容ID
+  contentType String   // article, video, audio, course
+  title       String
+  progress    Int      @default(0) // 0-100
+  completed   Boolean  @default(false)
+  lastStudiedAt DateTime?
+  notes       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([userId])
+  @@map("learning_records")
+}
+
+model LearningContent {
+  id          String   @id @default(cuid())
+  title       String
+  type        String   // article, video, audio, course
+  category    String   // emotion, relationship, sleep, stress, self_growth, parenting
+  level       String   @default("beginner") // beginner, intermediate, advanced
+  summary     String?
+  content     String   // 正文/URL
+  coverImage  String?
+  duration    Int?     // 预计时长(分钟)
+  tags        String?  // JSON
+  viewCount   Int      @default(0)
+  isPublished Boolean  @default(false)
+  publishedAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([category])
+  @@map("learning_contents")
+}
+
+// ==================== 通知系统 ====================
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String   // system, appointment, message, assessment, treatment
+  title     String
+  content   String
+  isRead    Boolean  @default(false)
+  link      String?  // 跳转链接
+  createdAt DateTime @default(now())
+
+  @@index([userId, isRead])
+  @@map("notifications")
+}
+
+// ==================== 危机干预 & 紧急联系人 ====================
+
+model EmergencyContact {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  patientProfileId String?
+  patientProfile PatientProfile? @relation(fields: [patientProfileId], references: [id])
+  name        String
+  relation    String   // 家人/朋友/其他
+  phone       String
+  isPrimary   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  @@index([userId])
+  @@map("emergency_contacts")
+}
+
+// ==================== 每日心情打卡 ====================
+
+model MoodCheckIn {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  patientProfileId String?
+  patientProfile PatientProfile? @relation(fields: [patientProfileId], references: [id])
+  mood        String   // happy, calm, neutral, sad, anxious, angry, tired
+  score       Int      // 1-10
+  energy      Int?     // 1-10 精力值
+  sleepHours  Float?   // 睡眠时长
+  note        String?  // 今日心情备注
+  tags        String?  // JSON: 标签
+  checkInDate DateTime @default(now()) // 打卡日期
+  createdAt   DateTime @default(now())
+
+  @@unique([userId, checkInDate]) // 每天只能打卡一次
+  @@index([userId, checkInDate])
+  @@map("mood_checkins")
+}
+
+// ==================== 咨询评价系统 ====================
+
+model ConsultantReview {
+  id            String   @id @default(cuid())
+  bookingId     String   @unique
+  booking       ExpertBooking @relation(fields: [bookingId], references: [id])
+  patientId     String
+  patient       User     @relation("ReviewPatient", fields: [patientId], references: [id])
+  consultantId  String
+  consultant    User     @relation("ReviewConsultant", fields: [consultantId], references: [id])
+  consultantProfileId String?
+  consultantProfile ConsultantProfile? @relation(fields: [consultantProfileId], references: [id])
+  rating        Int      // 1-5
+  comment       String?  // 文字评价
+  tags          String?  // JSON: 评价标签
+  isAnonymous   Boolean  @default(true)
+  createdAt     DateTime @default(now())
+
+  @@index([consultantId])
+  @@map("consultant_reviews")
+}
+
+// ==================== 成就徽章系统 ====================
+
+model Achievement {
+  id          String   @id @default(cuid())
+  name        String   // 徽章名称
+  description String   // 描述
+  icon        String   // emoji图标
+  category    String   // checkin, healing, assessment, social, milestone
+  condition   String   // JSON: 解锁条件
+  createdAt   DateTime @default(now())
+
+  userAchievements UserAchievement[]
+
+  @@map("achievements")
+}
+
+model UserAchievement {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  patientProfileId String?
+  patientProfile PatientProfile? @relation(fields: [patientProfileId], references: [id])
+  achievementId String
+  achievement   Achievement @relation(fields: [achievementId], references: [id])
+  unlockedAt    DateTime @default(now())
+
+  @@unique([userId, achievementId])
+  @@index([userId])
+  @@map("user_achievements")
+}
+
+// ==================== 社区互助论坛 ====================
+
+model CommunityPost {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  patientProfileId String?
+  patientProfile PatientProfile? @relation(fields: [patientProfileId], references: [id])
+  title       String
+  content     String
+  category    String   // share, question, encouragement, experience
+  tags        String?  // JSON
+  isAnonymous Boolean  @default(true)
+  isApproved  Boolean  @default(false) // 审核状态
+  likeCount   Int      @default(0)
+  commentCount Int     @default(0)
+  viewCount   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  comments    CommunityComment[]
+  postLikes   CommunityLike[] @relation("PostLikes")
+
+  @@index([category, isApproved])
+  @@index([userId])
+  @@map("community_posts")
+}
+
+model CommunityComment {
+  id          String   @id @default(cuid())
+  postId      String
+  post        CommunityPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  patientProfileId String?
+  patientProfile PatientProfile? @relation(fields: [patientProfileId], references: [id])
+  content     String
+  isAnonymous Boolean  @default(true)
+  isApproved  Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  @@index([postId])
+  @@map("community_comments")
+}
+
+model CommunityLike {
+  id     String @id @default(cuid())
+  postId String
+  post   CommunityPost @relation("PostLikes", fields: [postId], references: [id], onDelete: Cascade)
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([postId, userId])
+  @@map("community_likes")
+}
+
+// ==================== 睡眠追踪 ====================
+
+model SleepRecord {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  patientProfileId String?
+  patientProfile PatientProfile? @relation(fields: [patientProfileId], references: [id])
+  bedTime       DateTime // 入睡时间
+  wakeTime      DateTime // 起床时间
+  duration      Float    // 睡眠时长(小时)
+  quality       Int      // 1-10 睡眠质量
+  dreamRecall   String?  // 梦境回忆
+  notes         String?
+  recordDate    DateTime @default(now())
+  createdAt     DateTime @default(now())
+
+  @@index([userId, recordDate])
+  @@map("sleep_records")
+}
+
+// ==================== 支付系统 ====================
+
+model Payment {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id])
+  bookingId     String?  @unique
+  booking       ExpertBooking? @relation(fields: [bookingId], references: [id])
+  amount        Decimal  @db.Decimal(10, 2)
+  currency      String   @default("CNY")
+  method        String   // WECHAT, ALIPAY, CARD
+  status        String   @default("PENDING") // PENDING, SUCCESS, FAILED, REFUNDED
+  transactionId String?  @unique // 第三方交易号
+  description   String?
+  metadata      String?  // JSON
+  paidAt        DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([userId])
+  @@index([bookingId])
+  @@map("payments")
+}
+
+// ==================== 健康报告 ====================
+
+model HealthReport {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  patientProfileId String?
+  patientProfile PatientProfile? @relation(fields: [patientProfileId], references: [id])
+  type        String   // WEEKLY, MONTHLY
+  title       String
+  content     String   // AI生成的报告内容(JSON)
+  periodStart DateTime
+  periodEnd   DateTime
+  summary     String?
+  createdAt   DateTime @default(now())
+
+  @@index([userId, type])
+  @@map("health_reports")
+}
+
+// ==================== 用户反馈 ====================
+
+model UserFeedback {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type        String   // bug, feature, suggestion, complaint
+  title       String
+  content     String
+  contact     String?  // 联系方式
+  status      String   @default("PENDING") // PENDING, PROCESSING, RESOLVED
+  adminReply  String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([userId])
+  @@map("user_feedbacks")
+}

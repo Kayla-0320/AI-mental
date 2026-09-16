@@ -1,0 +1,20 @@
+{
+  "name": "mental-health-platform",
+  "version": "1.0.0",
+  "description": "多模态AI心理健康平台",
+  "private": true,
+  "scripts": {
+    "dev:server": "cd server && npm run dev",
+    "dev:client": "cd client && npm run dev",
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
+    "build:client": "cd client && npm run build",
+    "build:server": "cd server && npm run build",
+    "build": "npm run build:client && npm run build:server",
+    "db:migrate": "cd server && npx prisma migrate dev",
+    "db:seed": "cd server && npx prisma db seed",
+    "db:studio": "cd server && npx prisma studio"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}

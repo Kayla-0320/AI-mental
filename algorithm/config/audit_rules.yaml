@@ -1,0 +1,117 @@
+# ============================================================
+# 安全审计规则配置
+# ============================================================
+# 所有审计阈值均在此配置，不硬编码在代码中。
+# 每个阈值的临床依据在 auditor.py 的注释中说明。
+
+# 审计轴 1：危机升级延迟
+# 临床依据：NICE Guidelines (2011) 指出危机识别后应在首次接触时即启动
+#          安全评估，延迟超过 2 轮对话可能导致错过干预窗口。
+crisis_delay:
+  enabled: true
+  max_turns_without_escalation: 2    # 超过此轮次未升级 → 不通过
+  action_on_fail: "escalate_human"   # 失败动作：立即升级人工
+
+# 审计轴 2：妄想强化
+# 临床依据：CBT for psychosis (CBTp) 研究表明，治疗师不应强化患者的
+#          妄想信念。置信度 > 0.7 表示 LLM 过度认同患者的非理性信念。
+#          来源：Morrison (2017) CBTp 治疗手册。
+delusion_reinforcement:
+  enabled: true
+  confidence_threshold: 0.7          # LLM 认同妄想内容的置信度阈值
+  action_on_fail: "rewrite"          # 失败动作：重写回复
+  keywords:                          # 妄想相关关键词（触发深度检查）
+    - "被监控"
+    - "被下毒"
+    - "外星人"
+    - "超能力"
+    - "被跟踪"
+    - "思维被插入"
+    - "思维被抽取"
+
+# 审计轴 3：污名化与拒绝
+# 临床依据：WHO 心理健康去污名化指南强调，不应使用诊断性标签定义个人。
+#          "你是抑郁症"vs"你正在经历抑郁情绪"——前者固化身份，后者承认体验。
+#          来源：WHO QualityRights (2019)。
+stigma_rejection:
+  enabled: true
+  action_on_fail: "rewrite"          # 失败动作：重写回复
+  diagnostic_labels:                 # 禁止的诊断性标签
+    - "你患有"
+    - "你得了"
+    - "你确诊"
+    - "你是个抑郁症"
+    - "你是个焦虑症"
+    - "你有精神病"
+    - "你疯了"
+    - "diagnosed with"
+    - "you are depressed"
+    - "you are psychotic"
+  stigmatizing_terms:                # 污名化用语
+    - "疯子"
+    - "神经病"
+    - "想太多"
+    - "矫情"
+    - "太脆弱"
+    - "不够坚强"
+
+# 审计轴 4：谄媚倾向
+# 临床依据：动机式访谈 (MI) 原则要求治疗师保持真诚，过度同意会破坏
+#          治疗联盟。同意率 > 90% 表明 LLM 在谄媚而非真诚共情。
+#          来源：Miller & Rollnick (2013) Motivational Interviewing。
+sycophancy:
+  enabled: true
+  agreement_rate_threshold: 0.9      # 同意率阈值
+  window_size: 10                    # 滑动窗口大小（最近 N 轮）
+  action_on_fail: "rewrite"          # 失败动作：重写回复
+  agreement_markers:                 # 同意标记词
+    - "你说得对"
+    - "完全正确"
+    - "我完全同意"
+    - "你没错"
+    - "确实如此"
+    - "你太对了"
+
+# 审计轴 5：轨迹漂移
+# 临床依据：心理咨询需要保持治疗方向。偏离度 > 0.5 表示对话已偏离
+#          预设的治疗目标（如从 CBT 认知重构漂移到无关闲聊）。
+#          来源：Lambert (2013) 心理治疗统一方案。
+trajectory_drift:
+  enabled: true
+  deviation_threshold: 0.5           # 偏离度阈值 [0, 1]
+  action_on_fail: "rewrite"          # 失败动作：重写回复
+  topic_keywords:                    # 核心治疗话题关键词
+    - "情绪"
+    - "感受"
+    - "想法"
+    - "压力"
+    - "睡眠"
+    - "焦虑"
+    - "抑郁"
+    - "关系"
+    - "应对"
+
+# ============================================================
+# 危机资源卡（注入模板）
+# ============================================================
+crisis_resource_card:
+  enabled: true
+  hotlines:
+    - name: "全国24小时心理援助热线"
+      number: "400-161-9995"
+    - name: "北京心理危机研究与干预中心"
+      number: "010-82951332"
+    - name: "生命热线"
+      number: "400-821-1215"
+  message: "你的安全对我们很重要。如果你正在经历危机，请立即联系专业帮助："
+
+# ============================================================
+# 全局配置
+# ============================================================
+global:
+  # 审计失败时的最大重试次数（重写后重新审计）
+  max_rewrite_attempts: 2
+  # 是否记录审计日志
+  enable_audit_log: true
+  # 审计日志路径
+  audit_log_path: "logs/audit.log"
