@@ -29,8 +29,8 @@ class ExpertController {
 
   async createBooking(req: AuthRequest, res: Response) {
     try {
-      const { consultantId, scheduledAt, notes } = req.body;
-      const result = await expertService.createBooking(req.userId!, consultantId, new Date(scheduledAt), notes);
+      const { consultantId, scheduledAt, notes, type } = req.body;
+      const result = await expertService.createBooking(req.userId!, consultantId, new Date(scheduledAt), notes, type);
       res.status(201).json({ code: 0, data: result });
     } catch (error: any) {
       res.status(error.statusCode || 500).json({ code: error.code || 500, message: error.message });

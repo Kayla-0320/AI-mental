@@ -66,4 +66,15 @@ router.put('/posts/:id/approve', authenticate, async (req: AuthRequest, res: Res
   } catch (e) { next(e); }
 });
 
+// 管理员：情绪天气仪表盘
+router.get('/emotion-dashboard', authenticate, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    if (req.userRole! !== 'ADMIN') return res.status(403).json({ code: 403, message: '无权限' });
+    const userId = req.query.userId as string | undefined;
+    const days = parseInt(req.query.days as string) || 7;
+    const result = await communityService.getEmotionDashboard(userId, days);
+    res.json({ code: 0, data: result });
+  } catch (e) { next(e); }
+});
+
 export default router;

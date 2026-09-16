@@ -52,19 +52,30 @@ class ExpertService {
   }
 
   // 创建预约
-  async createBooking(patientId: string, consultantId: string, scheduledAt: Date, notes?: string) {
-    const consultant = await prisma.consultantProfile.findUnique({
+  async createBooking(patientId: string, consultantId: string, scheduledAt: Date, notes?: string, type?: string) {
+    // consultantId 可能是 User ID 或 ConsultantProfile ID，需要兼容两种情况
+    let consultant = await prisma.consultantProfile.findUnique({
       where: { id: consultantId },
     });
+
+    // 如果没找到，尝试通过 userId 查找
+    if (!consultant) {
+      consultant = await prisma.consultantProfile.findUnique({
+        where: { userId: consultantId },
+      });
+    }
 
     if (!consultant || !consultant.isAvailable) {
       throw new AppError('咨询师不可用', 400);
     }
 
+    // 使用 User ID 作为外键
+    const bookingConsultantId = consultant.userId;
+
     // 检查时间冲突
     const existingBooking = await prisma.expertBooking.findFirst({
       where: {
-        consultantId,
+        consultantId: bookingConsultantId,
         scheduledAt,
         status: { in: ['PENDING', 'CONFIRMED'] },
       },
@@ -77,9 +88,10 @@ class ExpertService {
     return prisma.expertBooking.create({
       data: {
         patientId,
-        consultantId,
+        consultantId: bookingConsultantId,
         scheduledAt,
         notes,
+        type: type || 'TEXT',
         status: 'PENDING',
       },
       include: {

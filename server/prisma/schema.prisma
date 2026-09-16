@@ -265,7 +265,7 @@ model ExpertBooking {
   scheduledAt   DateTime
   duration      Int      @default(50) // 分钟
   status        String   @default("PENDING") // PENDING, CONFIRMED, IN_PROGRESS, COMPLETED, CANCELLED
-  type          String   @default("TEXT") // TEXT, VOICE (视频后续添加)
+  type          String   @default("TEXT") // TEXT, VOICE, VIDEO
   notes         String?
   rating        Int?     // 1-5
   feedback      String?
@@ -509,7 +509,14 @@ model CommunityPost {
   category    String   // share, question, encouragement, experience
   tags        String?  // JSON
   isAnonymous Boolean  @default(true)
-  isApproved  Boolean  @default(false) // 审核状态
+  isApproved  Boolean  @default(false) // 兼容旧字段
+  // 温柔守护者审核字段
+  moderationStatus String  @default("pending") // warm_publish, gentle_wait, crisis_guard
+  moderationReason String? // 审核原因（管理员可见）
+  emotionTag     String?  // 情绪天气：☀️晴/⛅多云/🌧️雨/⛈️暴风雨
+  emotionScore   Int      @default(0) // -100 ~ 100
+  crisisDetected Boolean  @default(false)
+  empathyPostId  String?  // 危机转化后的共鸣帖ID
   likeCount   Int      @default(0)
   commentCount Int     @default(0)
   viewCount   Int      @default(0)
@@ -521,6 +528,7 @@ model CommunityPost {
 
   @@index([category, isApproved])
   @@index([userId])
+  @@index([moderationStatus])
   @@map("community_posts")
 }
 
@@ -535,9 +543,16 @@ model CommunityComment {
   content     String
   isAnonymous Boolean  @default(true)
   isApproved  Boolean  @default(false)
+  // 温柔守护者审核字段
+  moderationStatus String  @default("pending")
+  moderationReason String?
+  emotionTag     String?
+  emotionScore   Int      @default(0)
+  crisisDetected Boolean  @default(false)
   createdAt   DateTime @default(now())
 
   @@index([postId])
+  @@index([moderationStatus])
   @@map("community_comments")
 }
 
