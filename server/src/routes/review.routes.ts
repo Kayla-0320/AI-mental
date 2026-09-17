@@ -18,7 +18,7 @@ router.get('/consultant/:consultantId', async (req: AuthRequest, res: Response, 
   try {
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 10;
-    const result = await reviewService.getConsultantReviews(req.params.consultantId, page, limit);
+    const result = await reviewService.getConsultantReviews(req.params.consultantId as string, page, limit);
     res.json({ code: 0, data: result });
   } catch (e) { next(e); }
 });

@@ -31,7 +31,7 @@ router.put('/:id/read', authenticate, async (req: AuthRequest, res) => {
     const { id } = req.params;
 
     await prisma.notification.updateMany({
-      where: { id, userId },
+      where: { id: id as string, userId },
       data: { isRead: true },
     });
 
@@ -64,7 +64,7 @@ router.delete('/:id', authenticate, async (req: AuthRequest, res) => {
     const { id } = req.params;
 
     await prisma.notification.deleteMany({
-      where: { id, userId },
+      where: { id: id as string, userId },
     });
 
     res.json({ code: 0, message: '已删除' });

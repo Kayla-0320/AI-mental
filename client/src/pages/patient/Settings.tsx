@@ -13,7 +13,27 @@ export default function Settings() {
   const [loading, setLoading] = useState(false);
   const [passwordLoading, setPasswordLoading] = useState(false);
   const [notifyEnabled, setNotifyEnabled] = useState(true);
-  const [darkMode, setDarkMode] = useState(false);
+  const [darkMode, setDarkMode] = useState(() => {
+    return localStorage.getItem('darkMode') === 'true';
+  });
+
+  // 深色模式实际生效
+  useEffect(() => {
+    if (darkMode) {
+      document.body.classList.add('dark-mode');
+      document.body.style.filter = 'invert(0.88) hue-rotate(180deg)';
+      document.body.style.background = '#1a1a2e';
+    } else {
+      document.body.classList.remove('dark-mode');
+      document.body.style.filter = '';
+      document.body.style.background = '';
+    }
+    localStorage.setItem('darkMode', String(darkMode));
+    return () => {
+      document.body.style.filter = '';
+      document.body.style.background = '';
+    };
+  }, [darkMode]);
   const [privacySettings, setPrivacySettings] = useState({
     sharePeerComparison: true,
     shareResearch: false,

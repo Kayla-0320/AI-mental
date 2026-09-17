@@ -17,26 +17,37 @@ interface AuthState {
   updateUser: (user: Partial<UserInfo>) => void;
 }
 
+function loadUser(): UserInfo | null {
+  try {
+    const raw = localStorage.getItem('user');
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+
 export const useAuthStore = create<AuthState>((set) => ({
-  user: null,
+  user: loadUser(),
   accessToken: localStorage.getItem('accessToken'),
   isAuthenticated: !!localStorage.getItem('accessToken'),
 
   setAuth: (user, accessToken, refreshToken) => {
     localStorage.setItem('accessToken', accessToken);
     localStorage.setItem('refreshToken', refreshToken);
+    localStorage.setItem('user', JSON.stringify(user));
     set({ user, accessToken, isAuthenticated: true });
   },
 
   logout: () => {
     localStorage.removeItem('accessToken');
     localStorage.removeItem('refreshToken');
+    localStorage.removeItem('user');
     set({ user: null, accessToken: null, isAuthenticated: false });
   },
 
   updateUser: (userData) => {
-    set((state) => ({
-      user: state.user ? { ...state.user, ...userData } : null,
-    }));
+    set((state) => {
+      const user = state.user ? { ...state.user, ...userData } : null;
+      if (user) localStorage.setItem('user', JSON.stringify(user));
+      return { user };
+    });
   },
 }));

@@ -25,7 +25,7 @@ class ConsultationController {
 
   async getMessages(req: AuthRequest, res: Response) {
     try {
-      const { conversationId } = req.params;
+      const conversationId = req.params.conversationId as string;
       const page = parseInt(req.query.page as string) || 1;
       const pageSize = parseInt(req.query.pageSize as string) || 50;
       const result = await consultationService.getConversationMessages(conversationId, req.userId!, page, pageSize);
@@ -37,7 +37,7 @@ class ConsultationController {
 
   async sendMessage(req: AuthRequest, res: Response) {
     try {
-      const { conversationId } = req.params;
+      const conversationId = req.params.conversationId as string;
       const { content, contentType } = req.body;
       const result = await consultationService.sendMessage(conversationId, req.userId!, content, contentType);
       res.json({ code: 0, data: result });
@@ -48,7 +48,7 @@ class ConsultationController {
 
   async deleteConversation(req: AuthRequest, res: Response) {
     try {
-      const { conversationId } = req.params;
+      const conversationId = req.params.conversationId as string;
       await consultationService.deleteConversation(conversationId, req.userId!);
       res.json({ code: 0, message: '删除成功' });
     } catch (error: any) {
@@ -58,7 +58,7 @@ class ConsultationController {
 
   async sendSocraticMessage(req: AuthRequest, res: Response) {
     try {
-      const { conversationId } = req.params;
+      const conversationId = req.params.conversationId as string;
       const { content } = req.body;
       const result = await consultationService.sendSocraticMessage(conversationId, req.userId!, content);
       res.json({ code: 0, data: result });

@@ -21,7 +21,7 @@ const welcomeMessages = [
 ];
 
 export default function SocraticChat() {
-  const { reportToServer, startKeyboard } = useAnxiety();
+  const { reportToServer } = useAnxiety();
   const navigate = useNavigate();
   const [conversationId, setConversationId] = useState<string>('');
   const [messages, setMessages] = useState<Message[]>([]);
@@ -30,10 +30,7 @@ export default function SocraticChat() {
   const [welcomeMsg] = useState(() => welcomeMessages[Math.floor(Math.random() * welcomeMessages.length)]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // 进入树洞页面时自动启动键盘监测
-  useEffect(() => {
-    startKeyboard();
-  }, []);
+  // 键盘监测由浮动窗口的统一开关控制，不再自动启动
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });

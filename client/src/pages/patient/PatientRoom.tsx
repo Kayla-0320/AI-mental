@@ -1,24 +1,26 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Card, Row, Col, Typography, Tag, Space, Avatar, Progress, Spin, Divider, Button, Input, Empty, Collapse } from 'antd';
+import { Card, Row, Col, Typography, Tag, Space, Avatar, Progress, Spin, Divider, Button, Input, Empty, Collapse, Modal, Switch, message } from 'antd';
 import {
   ArrowLeftOutlined, ThunderboltOutlined, ClockCircleOutlined,
   SendOutlined, MessageOutlined, UserOutlined,
   PhoneOutlined, VideoCameraOutlined, SoundOutlined, StopOutlined,
-  ExperimentOutlined, DashboardOutlined,
+  ExperimentOutlined, DashboardOutlined, SafetyCertificateOutlined,
 } from '@ant-design/icons';
 import { useAnxiety } from '../../context/AnxietyContext';
 import api from '../../services/api';
+import { getSocket } from '../../services/socket';
+import { useWebRTC } from '../../hooks/useWebRTC';
 
 const { Title, Text, Paragraph } = Typography;
 
-const anxietyLevelColors: Record<string, string> = { low: '#52c41a', medium: '#faad14', high: '#ff4d4f' };
-const anxietyLevelLabels: Record<string, string> = { low: '良好', medium: '轻度', high: '偏高' };
+const EMOTION_LABELS = ['快乐', '悲伤', '焦虑', '愤怒', '中性'];
+const EMOTION_COLORS = ['#52c41a', '#722ed1', '#ff4d4f', '#fa8c16', '#1890ff'];
 
 export default function PatientRoom() {
   const { bookingId } = useParams();
   const navigate = useNavigate();
-  const { state: anxietyState } = useAnxiety();
+  const { comprehensiveState: anxietyState } = useAnxiety();
   const [myProfile, setMyProfile] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [messages, setMessages] = useState<any[]>([]);
@@ -31,6 +33,13 @@ export default function PatientRoom() {
   const [cameraOn, setCameraOn] = useState(true);
   const [micOn, setMicOn] = useState(true);
 
+  // 知情同意状态
+  const [consentModalOpen, setConsentModalOpen] = useState(true);
+  const [consentGiven, setConsentGiven] = useState(false);
+  const [shareAnxiety, setShareAnxiety] = useState(true);
+  const [shareProfile, setShareProfile] = useState(true);
+  const [shareBehavior, setShareBehavior] = useState(true);
+
   // 多模态数据采集
   const inputRef = useRef<any>(null);
   const keystrokeTimes = useRef<number[]>([]);
@@ -42,9 +51,15 @@ export default function PatientRoom() {
   const audioContextRef = useRef<AudioContext | null>(null);
   const audioAnimRef = useRef(0);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const [videoActive, setVideoActive] = useState(false);
+  const [videoStream, setVideoStream] = useState<MediaStream | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const sessionStart = useRef(Date.now());
+  const socketRef = useRef<ReturnType<typeof getSocket> | null>(null);
+
+  // WebRTC 双向视频
+  const webrtc = useWebRTC(socketRef.current, bookingId || null);
 
   // 按键行为采集
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -84,20 +99,36 @@ export default function PatientRoom() {
     }
   };
 
-  // 视频采集（视频通话模式）
+  // 视频采集（视频通话模式）—— 使用 WebRTC
   const startVideoCapture = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-      streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        videoRef.current.play();
+      const stream = await webrtc.startLocalStream(true, true);
+      if (stream) {
+        setVideoStream(stream);
+        setVideoActive(true);
+        // 发起 WebRTC 通话
+        await webrtc.call();
       }
-      setVideoActive(true);
     } catch (err) {
       console.warn('摄像头访问失败:', err);
     }
   };
+
+  // 绑定本地视频流
+  useEffect(() => {
+    if (videoStream && videoRef.current) {
+      videoRef.current.srcObject = videoStream;
+      videoRef.current.play().catch(() => {});
+    }
+  }, [videoStream]);
+
+  // 绑定远端视频流
+  useEffect(() => {
+    if (webrtc.remoteStream && remoteVideoRef.current) {
+      remoteVideoRef.current.srcObject = webrtc.remoteStream;
+      remoteVideoRef.current.play().catch(() => {});
+    }
+  }, [webrtc.remoteStream]);
 
   // 停止所有采集
   const stopAllCapture = () => {
@@ -181,6 +212,71 @@ export default function PatientRoom() {
     return () => { clearInterval(dataInterval); clearInterval(msgInterval); };
   }, [bookingId]);
 
+  // Socket 连接 + 多模态数据同步
+  useEffect(() => {
+    if (!bookingId) return;
+    const socket = getSocket();
+    socketRef.current = socket;
+    socket.emit('expert:join', bookingId);
+    socket.emit('webrtc:join', { bookingId });
+
+    // 每 5 秒发送一次多模态数据给咨询师（需知情同意）
+    const multimodalInterval = setInterval(() => {
+      // 检查知情同意
+      if (!consentGiven) return;
+      if (anxietyState.activeModalities.length === 0) return;
+
+      // 根据 consent 过滤数据
+      const filteredData: any = {
+        timestamp: Date.now(),
+      };
+
+      if (shareBehavior) {
+        filteredData.comprehensiveState = {
+          activeModalities: anxietyState.activeModalities,
+          emotionProbs: anxietyState.emotionProbs,
+          dominantEmotion: anxietyState.dominantEmotion,
+          riskLevel: anxietyState.riskLevel,
+          confidence: anxietyState.confidence,
+        };
+      }
+
+      if (shareAnxiety) {
+        // 从情绪概率中提取焦虑指数
+        const anxietyProb = anxietyState.emotionProbs?.[2] || 0; // 索引2是焦虑
+        filteredData.anxietyState = {
+          anxietyProbability: Math.round(anxietyProb * 100),
+          dominantEmotion: anxietyState.dominantEmotion,
+        };
+      }
+
+      if (shareProfile && myProfile) {
+        filteredData.profile = {
+          anxiety: myProfile.anxiety,
+          depression: myProfile.depression,
+          stress: myProfile.stress,
+          sleepQuality: myProfile.sleepQuality,
+          socialActivity: myProfile.socialActivity,
+          emotionalStability: myProfile.emotionalStability,
+        };
+      }
+
+      // 只有至少共享了一项数据才发送
+      if (filteredData.comprehensiveState || filteredData.anxietyState || filteredData.profile) {
+        socket.emit('multimodal:update', {
+          bookingId,
+          multimodalData: filteredData,
+        });
+      }
+    }, 5000);
+
+    return () => {
+      clearInterval(multimodalInterval);
+      socket.emit('expert:leave', bookingId);
+      socket.emit('webrtc:leave', bookingId);
+    };
+  }, [bookingId, consentGiven, shareAnxiety, shareProfile, shareBehavior, myProfile]);
+
   const handleSend = async () => {
     if (!input.trim() || !bookingId) return;
     const content = input.trim();
@@ -196,6 +292,73 @@ export default function PatientRoom() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 60px)' }}>
+      {/* 知情同意弹窗 */}
+      <Modal
+        open={consentModalOpen && !consentGiven}
+        footer={null}
+        closable={false}
+        width={520}
+        centered
+      >
+        <div style={{ padding: '16px 0' }}>
+          <div style={{ textAlign: 'center', marginBottom: 16 }}>
+            <SafetyCertificateOutlined style={{ fontSize: 36, color: '#6366f1' }} />
+            <Title level={4} style={{ marginTop: 8, marginBottom: 4 }}>进入咨询室前</Title>
+            <Text type="secondary">你需要知道咨询师能看到什么</Text>
+          </div>
+          <div style={{ background: '#f9f0ff', padding: '16px 20px', borderRadius: 12, marginBottom: 16 }}>
+            <Text style={{ fontSize: 14, color: '#5a4a6a' }}>
+              💡 你的隐私很重要。以下数据会在咨询过程中同步给咨询师，你可以选择关闭不想分享的：
+            </Text>
+          </div>
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 0', borderBottom: '1px solid #f0f0f0' }}>
+              <Space>
+                <ThunderboltOutlined style={{ color: '#6366f1' }} />
+                <div>
+                  <Text strong style={{ fontSize: 14 }}>焦虑状态</Text>
+                  <div><Text type="secondary" style={{ fontSize: 12 }}>键盘打字节奏、眨眼频率计算的焦虑指数</Text></div>
+                </div>
+              </Space>
+              <Switch checked={shareAnxiety} onChange={setShareAnxiety} />
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 0', borderBottom: '1px solid #f0f0f0' }}>
+              <Space>
+                <DashboardOutlined style={{ color: '#1890ff' }} />
+                <div>
+                  <Text strong style={{ fontSize: 14 }}>心理画像</Text>
+                  <div><Text type="secondary" style={{ fontSize: 12 }}>焦虑、抑郁、压力等维度评分</Text></div>
+                </div>
+              </Space>
+              <Switch checked={shareProfile} onChange={setShareProfile} />
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 0' }}>
+              <Space>
+                <ExperimentOutlined style={{ color: '#52c41a' }} />
+                <div>
+                  <Text strong style={{ fontSize: 14 }}>行为数据</Text>
+                  <div><Text type="secondary" style={{ fontSize: 12 }}>打字速度、停顿频率、删除率</Text></div>
+                </div>
+              </Space>
+              <Switch checked={shareBehavior} onChange={setShareBehavior} />
+            </div>
+          </div>
+          <div style={{ background: '#f6ffed', padding: '12px 16px', borderRadius: 8, marginBottom: 16 }}>
+            <Text style={{ fontSize: 13, color: '#52c41a' }}>
+              🔒 所有数据仅用于辅助咨询师了解你的状态，不会泄露给任何第三方。
+            </Text>
+          </div>
+          <Button
+            type="primary"
+            block
+            size="large"
+            onClick={() => { setConsentGiven(true); setConsentModalOpen(false); }}
+            style={{ borderRadius: 12 }}
+          >
+            我了解了，进入咨询室
+          </Button>
+        </div>
+      </Modal>
       {/* 顶部导航 */}
       <Card style={{ borderRadius: '12px 12px 0 0', borderBottom: '1px solid #f0f0f0', flexShrink: 0 }}
         bodyStyle={{ padding: '12px 20px' }}>
@@ -214,39 +377,38 @@ export default function PatientRoom() {
         <div style={{ flex: 1, overflow: 'auto' }}>
           <Row gutter={[16, 16]}>
             <Col xs={24} md={12}>
-              <Card title={<Space><ThunderboltOutlined /> 我的焦虑感知</Space>} style={{ borderRadius: 12 }}>
-                <div style={{ textAlign: 'center', padding: '16px 0' }}>
-                  <div style={{ fontSize: 48, fontWeight: 'bold', color: anxietyLevelColors[anxietyState.level] }}>
-                    {anxietyState.combinedIndex}
+              <Card title={<Space><ThunderboltOutlined /> 多模态情绪感知</Space>} style={{ borderRadius: 12 }}>
+                {anxietyState.activeModalities.length > 0 ? (
+                  <>
+                    <div style={{ textAlign: 'center', padding: '8px 0' }}>
+                      <div style={{ fontSize: 36, fontWeight: 'bold', color: EMOTION_COLORS[EMOTION_LABELS.indexOf(anxietyState.dominantEmotion)] || '#666' }}>
+                        {anxietyState.dominantEmotion}
+                      </div>
+                      <Tag color="purple" style={{ fontSize: 13, padding: '4px 12px', marginTop: 8 }}>
+                        置信度 {Math.round(anxietyState.confidence * 100)}%
+                      </Tag>
+                    </div>
+                    <Divider style={{ margin: '12px 0' }} />
+                    {anxietyState.emotionProbs.map((prob, i) => (
+                      <div key={EMOTION_LABELS[i]} style={{ marginBottom: 6 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 2 }}>
+                          <span style={{ color: '#666' }}>{EMOTION_LABELS[i]}</span>
+                          <span style={{ color: EMOTION_COLORS[i], fontWeight: 500 }}>{Math.round(prob * 100)}%</span>
+                        </div>
+                        <Progress percent={Math.round(prob * 100)} showInfo={false} size="small" strokeColor={EMOTION_COLORS[i]} />
+                      </div>
+                    ))}
+                    <div style={{ marginTop: 8, textAlign: 'center' }}>
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        <ClockCircleOutlined /> 数据实时同步给咨询师
+                      </Text>
+                    </div>
+                  </>
+                ) : (
+                  <div style={{ textAlign: 'center', padding: '20px 0' }}>
+                    <Text type="secondary">开启浮动窗口的实时感知后显示</Text>
                   </div>
-                  <Tag color={anxietyLevelColors[anxietyState.level]} style={{ fontSize: 14, padding: '4px 12px', marginTop: 8 }}>
-                    {anxietyLevelLabels[anxietyState.level]}
-                  </Tag>
-                </div>
-                <Divider style={{ margin: '12px 0' }} />
-                <Row gutter={8}>
-                  <Col span={12}>
-                    <div style={{ textAlign: 'center' }}>
-                      <Text type="secondary" style={{ fontSize: 12 }}>键盘节奏</Text>
-                      <div style={{ fontSize: 20, fontWeight: 600, color: '#1890ff' }}>
-                        {anxietyState.keyboard.anxietyIndex}
-                      </div>
-                    </div>
-                  </Col>
-                  <Col span={12}>
-                    <div style={{ textAlign: 'center' }}>
-                      <Text type="secondary" style={{ fontSize: 12 }}>眨眼频率</Text>
-                      <div style={{ fontSize: 20, fontWeight: 600, color: '#722ed1' }}>
-                        {anxietyState.blink.anxietyIndex}
-                      </div>
-                    </div>
-                  </Col>
-                </Row>
-                <div style={{ marginTop: 12, textAlign: 'center' }}>
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    <ClockCircleOutlined /> 数据实时同步给咨询师
-                  </Text>
-                </div>
+                )}
               </Card>
             </Col>
 
@@ -285,7 +447,16 @@ export default function PatientRoom() {
               <Card style={{ borderRadius: 12, background: 'linear-gradient(135deg, #f0f9ff 0%, #f5f3ff 100%)' }}>
                 <div style={{ textAlign: 'center' }}>
                   <Text style={{ fontSize: 15, color: '#6366f1' }}>
-                    您的焦虑数据和心理画像已实时同步给咨询师，咨询师将根据您的状态提供专业帮助
+                    {consentGiven ? (
+                      <>
+                        {shareAnxiety && '✅ 焦虑状态 '}
+                        {shareProfile && '✅ 心理画像 '}
+                        {shareBehavior && '✅ 行为数据 '}
+                        已同步给咨询师
+                      </>
+                    ) : (
+                      '你已关闭所有数据共享，咨询师将无法看到你的状态数据'
+                    )}
                   </Text>
                 </div>
               </Card>
@@ -346,7 +517,6 @@ export default function PatientRoom() {
                             <Text style={{ fontSize: 12, flex: 1 }}>{videoActive ? '视频采集中' : '视频未采集'}</Text>
                             <Tag color={videoActive ? 'green' : 'default'} style={{ fontSize: 10, margin: 0 }}>{videoActive ? 'ON' : 'OFF'}</Tag>
                           </div>
-                          <video ref={videoRef} style={{ display: 'none' }} autoPlay muted playsInline />
                         </Col>
                       )}
                       <Col xs={24}>
@@ -369,6 +539,29 @@ export default function PatientRoom() {
             {bookingType === 'VOICE' && <><PhoneOutlined /> 语音通话</>}
             {bookingType === 'VIDEO' && <><VideoCameraOutlined /> 视频通话</>}
           </Space>}
+          extra={
+            <Button
+              size="small"
+              danger
+              onClick={() => {
+                Modal.confirm({
+                  title: '结束咨询',
+                  content: '确定要结束本次咨询吗？',
+                  okText: '确定结束',
+                  cancelText: '取消',
+                  okButtonProps: { danger: true },
+                  onOk: () => {
+                    const socket = getSocket();
+                    socket.emit('consultation:end', bookingId);
+                    message.success('咨询已结束');
+                    navigate('/patient/bookings');
+                  },
+                });
+              }}
+            >
+              结束咨询
+            </Button>
+          }
           style={{ width: 380, borderRadius: 12, flexShrink: 0, display: 'flex', flexDirection: 'column' }}
           bodyStyle={{ flex: 1, display: 'flex', flexDirection: 'column', padding: 0, overflow: 'hidden' }}
         >
@@ -419,22 +612,53 @@ export default function PatientRoom() {
 
           {bookingType === 'VIDEO' && (
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', position: 'relative', background: '#1a1a2e' }}>
-              <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                <Avatar size={100} style={{ backgroundColor: '#ffb6c1' }} icon={<UserOutlined />} />
+              {/* 远端视频（咨询师）—— 主画面 */}
+              <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative' }}>
+                {webrtc.remoteStream ? (
+                  <video
+                    ref={remoteVideoRef}
+                    autoPlay
+                    playsInline
+                    style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                  />
+                ) : (
+                  <div style={{ textAlign: 'center' }}>
+                    <Avatar size={100} style={{ backgroundColor: '#ffb6c1' }} icon={<UserOutlined />} />
+                    <div style={{ marginTop: 12 }}>
+                      <Text style={{ color: '#aaa', fontSize: 13 }}>
+                        {webrtc.isConnected ? '已连接' : videoActive ? '等待咨询师接入...' : '点击下方按钮开始视频通话'}
+                      </Text>
+                    </div>
+                  </div>
+                )}
+                {webrtc.error && (
+                  <Tag color="red" style={{ position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)' }}>{webrtc.error}</Tag>
+                )}
               </div>
-              {cameraOn && (
-                <div style={{ position: 'absolute', top: 12, right: 12, width: 100, height: 140, background: '#333', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  <Avatar size={40} style={{ backgroundColor: '#6366f1' }} icon={<UserOutlined />} />
+              {/* 本地视频（自己）—— 画中画 */}
+              {cameraOn && videoStream && (
+                <div style={{ position: 'absolute', top: 12, right: 12, width: 120, height: 160, background: '#333', borderRadius: 8, overflow: 'hidden', border: '2px solid rgba(255,255,255,0.2)' }}>
+                  <video
+                    ref={videoRef}
+                    autoPlay
+                    muted
+                    playsInline
+                    style={{ width: '100%', height: '100%', objectFit: 'cover', transform: 'scaleX(-1)' }}
+                  />
                 </div>
               )}
               <div style={{ position: 'absolute', top: 12, left: 12 }}>
                 <Text style={{ color: '#fff', fontSize: 13 }}>咨询师</Text>
                 {callActive && <div><Text style={{ color: '#aaa', fontSize: 12 }}>{formatDuration(callDuration)}</Text></div>}
+                {webrtc.isConnected && <Tag color="green" style={{ marginTop: 4, fontSize: 10 }}>已连接</Tag>}
               </div>
               <div style={{ padding: 16, display: 'flex', justifyContent: 'center', gap: 16, background: 'rgba(0,0,0,0.5)' }}>
-                <Button shape="circle" icon={<VideoCameraOutlined />} type={cameraOn ? 'primary' : 'default'} onClick={() => setCameraOn(!cameraOn)} />
-                <Button shape="circle" icon={<SoundOutlined />} type={micOn ? 'primary' : 'default'} onClick={() => setMicOn(!micOn)} />
-                <Button shape="circle" icon={callActive ? <StopOutlined /> : <PhoneOutlined />} danger={callActive} onClick={() => { setCallActive(!callActive); if (!callActive) setCallDuration(0); }} />
+                <Button shape="circle" icon={<VideoCameraOutlined />} type={cameraOn ? 'primary' : 'default'} onClick={() => { setCameraOn(!cameraOn); webrtc.toggleCamera(!cameraOn); }} />
+                <Button shape="circle" icon={<SoundOutlined />} type={micOn ? 'primary' : 'default'} onClick={() => { setMicOn(!micOn); webrtc.toggleMic(!micOn); }} />
+                <Button shape="circle" icon={callActive ? <StopOutlined /> : <PhoneOutlined />} danger={callActive} onClick={() => {
+                  if (callActive) { webrtc.hangUp(); setCallActive(false); setCallDuration(0); }
+                  else { startVideoCapture(); setCallActive(true); setCallDuration(0); }
+                }} />
               </div>
             </div>
           )}

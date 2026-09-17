@@ -195,7 +195,33 @@ class ExpertService {
     });
   }
 
-  // 获取咨询消息
+  // 获取咨询师自己的档案
+  async getMyProfile(userId: string) {
+    const profile = await prisma.consultantProfile.findUnique({
+      where: { userId },
+      include: { user: { select: { id: true, nickname: true, avatar: true, email: true } } },
+    });
+    if (!profile) throw new AppError('咨询师档案不存在', 404);
+    return profile;
+  }
+
+  // 更新咨询师自己的档案
+  async updateMyProfile(userId: string, data: { title?: string; specialties?: string; introduction?: string; pricePerSession?: number }) {
+    const profile = await prisma.consultantProfile.findUnique({ where: { userId } });
+    if (!profile) throw new AppError('咨询师档案不存在', 404);
+
+    return prisma.consultantProfile.update({
+      where: { userId },
+      data: {
+        ...(data.title !== undefined && { title: data.title }),
+        ...(data.specialties !== undefined && { specialties: data.specialties }),
+        ...(data.introduction !== undefined && { introduction: data.introduction }),
+        ...(data.pricePerSession !== undefined && { pricePerSession: data.pricePerSession }),
+      },
+    });
+  }
+
+  // 获取专家咨询消息
   async getMessages(bookingId: string, userId: string, page: number = 1, pageSize: number = 50) {
     const booking = await prisma.expertBooking.findFirst({
       where: {

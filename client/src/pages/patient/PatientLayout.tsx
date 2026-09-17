@@ -1,13 +1,15 @@
 import { useState, useEffect } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { Layout, Menu, Avatar, Dropdown, Badge, Space, Typography, Popover, List, Button, Empty } from 'antd';
+import { Layout, Menu, Avatar, Dropdown, Badge, Space, Typography, Popover, List, Button, Empty, Modal, Input, Rate, message, Drawer } from 'antd';
 import {
   HomeOutlined, MessageOutlined, UserOutlined, HeartOutlined,
   TeamOutlined, BellOutlined, LogoutOutlined, SettingOutlined,
-  CoffeeOutlined, AimOutlined, TrophyOutlined,
+  CoffeeOutlined, TrophyOutlined, BulbOutlined,
+  SoundOutlined, MenuOutlined, CloseOutlined,
 } from '@ant-design/icons';
 import { useAuthStore } from '../../store/authStore';
 import api from '../../services/api';
+import { extraApi } from '../../services';
 import { AnxietyProvider } from '../../context/AnxietyContext';
 import AnxietyFloatingWidget from '../../components/AnxietyFloatingWidget';
 import RealityTaskModal from '../../components/RealityTaskModal';
@@ -18,12 +20,13 @@ const { Text } = Typography;
 
 const menuItems = [
   { key: '/', icon: <HomeOutlined />, label: '首页' },
-  { key: '/chat', icon: <MessageOutlined />, label: '聊聊' },
-  { key: '/companions', icon: <TeamOutlined />, label: '同伴' },
-  { key: '/healing', icon: <HeartOutlined />, label: '放松空间' },
-  { key: '/assessment', icon: <AimOutlined />, label: '心情检测' },
+  { key: '/chat', icon: <MessageOutlined />, label: 'AI 倾诉' },
+  { key: '/socratic', icon: <BulbOutlined />, label: '话痨树洞' },
+  { key: '/companions', icon: <TeamOutlined />, label: '同伴社区' },
+  { key: '/healing', icon: <HeartOutlined />, label: '疗愈空间' },
   { key: '/growth', icon: <TrophyOutlined />, label: '我的成长' },
-  { key: '/experts', icon: <CoffeeOutlined />, label: '找帮手' },
+  { key: '/profile', icon: <UserOutlined />, label: '心理画像' },
+  { key: '/experts', icon: <CoffeeOutlined />, label: '我的咨询' },
   { key: '/settings', icon: <SettingOutlined />, label: '设置' },
 ];
 
@@ -33,6 +36,15 @@ export default function PatientLayout() {
   const { user, logout } = useAuthStore();
   const [notificationCount, setNotificationCount] = useState(0);
   const [notifications, setNotifications] = useState<any[]>([]);
+  // 反馈弹窗
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [feedbackType, setFeedbackType] = useState('suggestion');
+  const [feedbackContent, setFeedbackContent] = useState('');
+  const [feedbackRating, setFeedbackRating] = useState(0);
+  const [feedbackLoading, setFeedbackLoading] = useState(false);
+  // 移动端菜单
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
 
   // 加载通知
   useEffect(() => {
@@ -50,6 +62,34 @@ export default function PatientLayout() {
     return () => clearInterval(interval);
   }, []);
 
+  // 响应式监听
+  useEffect(() => {
+    const handleResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  // 提交反馈
+  const handleSubmitFeedback = async () => {
+    if (!feedbackContent.trim()) return;
+    setFeedbackLoading(true);
+    try {
+      await extraApi.createFeedback({
+        type: feedbackType,
+        title: feedbackContent.slice(0, 20),
+        content: feedbackContent,
+      });
+      message.success('感谢你的反馈！我们会继续努力 \ud83d\udcaa');
+      setFeedbackOpen(false);
+      setFeedbackContent('');
+      setFeedbackRating(0);
+    } catch {
+      message.error('发送失败，请稍后再试');
+    } finally {
+      setFeedbackLoading(false);
+    }
+  };
+
   const handleLogout = () => {
     logout();
     navigate('/login');
@@ -63,9 +103,20 @@ export default function PatientLayout() {
     ],
   };
 
+  // 移动端底部Tab
+  const bottomTabs = [
+    { key: '/', icon: <HomeOutlined />, label: '首页' },
+    { key: '/chat', icon: <MessageOutlined />, label: 'AI倾诉' },
+    { key: '/companions', icon: <TeamOutlined />, label: '社区' },
+    { key: '/healing', icon: <HeartOutlined />, label: '疗愈' },
+    { key: '/settings', icon: <UserOutlined />, label: '我的' },
+  ];
+
   return (
     <AnxietyProvider>
     <Layout style={{ minHeight: '100vh', background: 'transparent' }}>
+      {/* 侧边栏 - 仅桌面端显示 */}
+      {!isMobile && (
       <Sider
         width={220}
         style={{
@@ -91,6 +142,7 @@ export default function PatientLayout() {
           style={{ border: 'none', marginTop: 8, background: 'transparent' }}
         />
       </Sider>
+      )}
 
       <Layout>
         <Header style={{
@@ -107,6 +159,10 @@ export default function PatientLayout() {
             {menuItems.find(m => m.key === location.pathname)?.label || '首页'}
           </Text>
           <Space size="middle">
+            {/* 移动端菜单按钮 */}
+            {isMobile && (
+              <Button type="text" icon={<MenuOutlined />} onClick={() => setMobileMenuOpen(true)} style={{ color: '#ff8fab' }} />
+            )}
             <Popover
               title={
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -172,7 +228,7 @@ export default function PatientLayout() {
           </Space>
         </Header>
 
-        <Content style={{ padding: 24, overflow: 'auto' }}>
+        <Content style={{ padding: isMobile ? 12 : 24, overflow: 'auto', paddingBottom: isMobile ? 80 : 24 }}>
           <Outlet />
         </Content>
       </Layout>
@@ -181,6 +237,137 @@ export default function PatientLayout() {
       <AnxietyFloatingWidget />
       <RealityTaskModal />
       <CrisisInterventionWidget />
+
+      {/* 反馈浮动按钮 */}
+      <div
+        onClick={() => setFeedbackOpen(true)}
+        style={{
+          position: 'fixed', bottom: isMobile ? 80 : 32, right: 24, width: 48, height: 48,
+          borderRadius: '50%', background: 'linear-gradient(135deg, #ff8fab 0%, #c084fc 100%)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          cursor: 'pointer', boxShadow: '0 4px 12px rgba(255,143,171,0.4)',
+          zIndex: 100, transition: 'transform 0.2s',
+        }}
+        onMouseEnter={(e) => { e.currentTarget.style.transform = 'scale(1.1)'; }}
+        onMouseLeave={(e) => { e.currentTarget.style.transform = 'scale(1)'; }}
+        title="反馈建议"
+      >
+        <SoundOutlined style={{ fontSize: 20, color: '#fff' }} />
+      </div>
+
+      {/* 移动端底部Tab */}
+      {isMobile && (
+        <div style={{
+          position: 'fixed', bottom: 0, left: 0, right: 0, height: 56,
+          background: 'rgba(255,255,255,0.95)', backdropFilter: 'blur(10px)',
+          borderTop: '1px solid rgba(255,182,193,0.15)',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-around',
+          zIndex: 1000, paddingBottom: 'env(safe-area-inset-bottom)',
+        }}>
+          {bottomTabs.map(tab => {
+            const isActive = location.pathname === tab.key;
+            return (
+              <div
+                key={tab.key}
+                onClick={() => navigate(tab.key)}
+                style={{
+                  display: 'flex', flexDirection: 'column', alignItems: 'center',
+                  cursor: 'pointer', padding: '4px 0', minWidth: 48,
+                  color: isActive ? '#ff8fab' : '#999',
+                  transition: 'color 0.2s',
+                }}
+              >
+                <span style={{ fontSize: 20, marginBottom: 2 }}>{tab.icon}</span>
+                <span style={{ fontSize: 10 }}>{tab.label}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* 移动端侧边菜单抽屉 */}
+      <Drawer
+        placement="left"
+        width={260}
+        open={mobileMenuOpen}
+        onClose={() => setMobileMenuOpen(false)}
+        styles={{ body: { padding: 0 } }}
+      >
+        <div style={{ padding: '24px 16px', textAlign: 'center', borderBottom: '1px solid #f0f0f0' }}>
+          <div style={{ fontSize: 36, marginBottom: 4 }}>🌸</div>
+          <Text strong style={{ fontSize: 16, color: '#ff8fab' }}>心灵花园</Text>
+        </div>
+        <Menu
+          mode="inline"
+          selectedKeys={[location.pathname]}
+          items={menuItems}
+          onClick={({ key }) => { navigate(key); setMobileMenuOpen(false); }}
+          style={{ border: 'none' }}
+        />
+      </Drawer>
+
+      {/* 反馈弹窗 */}
+      <Modal
+        open={feedbackOpen}
+        onCancel={() => setFeedbackOpen(false)}
+        title={<Space><SoundOutlined /> 告诉我们你的想法</Space>}
+        footer={null}
+        width={480}
+      >
+        <div style={{ padding: '8px 0' }}>
+          <div style={{ marginBottom: 16, textAlign: 'center' }}>
+            <Text style={{ display: 'block', marginBottom: 8 }}>你觉得这个平台怎么样？</Text>
+            <Rate value={feedbackRating} onChange={setFeedbackRating} />
+            {feedbackRating > 0 && (
+              <Text type="secondary" style={{ marginLeft: 8, fontSize: 13 }}>
+                {feedbackRating <= 2 ? '😔 我们会继续改进' :
+                 feedbackRating <= 3 ? '🤔 还有进步空间' :
+                 feedbackRating <= 4 ? '😊 谢谢你的认可' : '🎉 太开心了！'}
+              </Text>
+            )}
+          </div>
+          <div style={{ marginBottom: 12 }}>
+            <Space wrap>
+              {[
+                { key: 'suggestion', label: '💡 建议' },
+                { key: 'bug', label: '🐛 问题' },
+                { key: 'feature', label: '✨ 新功能' },
+                { key: 'other', label: '💬 其他' },
+              ].map(({ key, label }) => (
+                <div
+                  key={key}
+                  onClick={() => setFeedbackType(key)}
+                  style={{
+                    padding: '4px 14px', borderRadius: 20, cursor: 'pointer', fontSize: 13,
+                    background: feedbackType === key ? '#fff0f5' : '#f5f5f5',
+                    color: feedbackType === key ? '#ff8fab' : '#666',
+                    border: feedbackType === key ? '1px solid #ff8fab' : '1px solid transparent',
+                  }}
+                >
+                  {label}
+                </div>
+              ))}
+            </Space>
+          </div>
+          <Input.TextArea
+            rows={4}
+            placeholder="告诉我们你的想法，每一条反馈都会认真看~"
+            value={feedbackContent}
+            onChange={(e) => setFeedbackContent(e.target.value)}
+            style={{ borderRadius: 12, marginBottom: 12 }}
+          />
+          <Button
+            type="primary"
+            block
+            loading={feedbackLoading}
+            disabled={!feedbackContent.trim()}
+            onClick={handleSubmitFeedback}
+            style={{ borderRadius: 24, background: 'linear-gradient(135deg, #ff8fab 0%, #c084fc 100%)', border: 'none' }}
+          >
+            提交反馈
+          </Button>
+        </div>
+      </Modal>
     </Layout>
     </AnxietyProvider>
   );

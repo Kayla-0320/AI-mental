@@ -15,8 +15,8 @@ class HealingController {
 
   async completeSession(req: AuthRequest, res: Response) {
     try {
-      const { sessionId } = req.params;
-      const result = await healingService.completeSession(sessionId, req.userId!, req.body);
+      const sessionId = req.params.sessionId as string;
+      const result = await healingService.completeSession(sessionId, req.userId! as string, req.body);
       res.json({ code: 0, data: result });
     } catch (error: any) {
       res.status(error.statusCode || 500).json({ code: error.code || 500, message: error.message });

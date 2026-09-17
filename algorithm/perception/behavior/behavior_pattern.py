@@ -1,10 +1,15 @@
 """
 行为模式分析模块 —— 基于用户行为特征的情绪推断
 
+支持两种数据源：
+1. 应用层行为事件（会话级别：时段/频率/打字速度）
+2. 传感器级键盘动力学（前端采集：击键间隔序列/删除模式/停顿分布）
+
 分析维度：
 - 使用时段模式（深夜活跃、作息紊乱）
 - 交互频率变化（突然增加/减少使用）
 - 会话特征（打字速度变化、消息长度变化）
+- 键盘动力学（击键间隔变异/删除爆发/停顿分布）
 - 功能使用偏好（回避社交、过度使用某些功能）
 - 行为节律性（日常规律性/紊乱程度）
 
@@ -12,12 +17,14 @@
     from perception.behavior.behavior_pattern import (
         BehaviorFeatures,
         extract_behavior_features,
+        extract_from_keyboard_dynamics,
         behavior_to_emotion_risk,
     )
 """
 from __future__ import annotations
 
 import math
+import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -398,6 +405,225 @@ def behavior_to_emotion_risk(features: BehaviorFeatures) -> dict[str, Any]:
             "late_night_ratio": features.late_night_ratio,
             "behavior_change_score": features.behavior_change_score,
         },
+    }
+
+
+# ============================================================
+# 传感器级键盘动力学分析
+# ============================================================
+
+@dataclass
+class KeyboardDynamicsData:
+    """前端采集的键盘动力学详细数据"""
+    # 击键间隔序列（毫秒）
+    key_intervals: list[float] = field(default_factory=list)
+    # 间隔变异系数
+    interval_cv: float = 0.0
+    # 平均间隔
+    avg_interval: float = 0.0
+    # 删除事件序列
+    deletion_events: list[dict[str, Any]] = field(default_factory=list)
+    # 删除率（删除次数/总按键数）
+    deletion_rate: float = 0.0
+    # 连续删除爆发次数（≥3次连续删除）
+    backspace_bursts: int = 0
+    # 停顿事件（>1.5秒）
+    long_pauses: list[float] = field(default_factory=list)
+    # 停顿频率（次/分钟）
+    pause_frequency: float = 0.0
+    # 按键压力指数（0-1）
+    pressure_index: float = 0.0
+    # 打字速度（字/分钟）
+    typing_speed: float = 0.0
+    # 节奏规律性（0-1）
+    rhythm_regularity: float = 0.0
+    # 采样时间戳
+    timestamp: float = field(default_factory=lambda: time.time())
+
+
+def extract_from_keyboard_dynamics(
+    dynamics_data: dict[str, Any] | KeyboardDynamicsData,
+    history: list[dict[str, Any] | KeyboardDynamicsData] | None = None,
+) -> dict[str, Any]:
+    """从前端传感器级键盘动力学数据提取行为特征
+
+    接收前端 useKeyboardDynamics Hook 采集的详细数据，
+    进行比应用层更深层的行为分析。
+
+    分析内容：
+    - 击键间隔分布 → 认知负荷/精力水平
+    - 删除模式 → 犹豫/完美主义/焦虑
+    - 停顿分布 → 思考困难/注意力分散
+    - 节奏规律性 → 情绪稳定性
+
+    Args:
+        dynamics_data: 当前会话的键盘动力学数据
+        history: 历史会话数据列表（用于趋势分析）
+
+    Returns:
+        dict with emotion_probs, risk_score, risk_label, detailed_metrics
+    """
+    import time as _time
+
+    # 解析输入
+    if isinstance(dynamics_data, dict):
+        kd = KeyboardDynamicsData(
+            key_intervals=dynamics_data.get("key_intervals", []),
+            interval_cv=dynamics_data.get("interval_cv", 0.0),
+            avg_interval=dynamics_data.get("avg_interval", 0.0),
+            deletion_rate=dynamics_data.get("deletion_rate", 0.0),
+            backspace_bursts=dynamics_data.get("backspace_bursts", 0),
+            pause_frequency=dynamics_data.get("pause_frequency", 0.0),
+            pressure_index=dynamics_data.get("pressure_index", 0.0),
+            typing_speed=dynamics_data.get("typing_speed", 0.0),
+            rhythm_regularity=dynamics_data.get("rhythm_regularity", 0.0),
+        )
+    else:
+        kd = dynamics_data
+
+    # 1. 击键间隔分析 → 认知负荷/精力
+    interval_signals: dict[str, float] = {}
+
+    if kd.avg_interval > 0:
+        # 平均间隔大 → 思考困难/精力不足
+        interval_signals["cognitive_load"] = float(np.clip(kd.avg_interval / 500, 0, 1))
+        # 间隔变异系数大 → 不稳定/注意力分散
+        interval_signals["attention_instability"] = float(np.clip(kd.interval_cv / 1.5, 0, 1))
+    else:
+        interval_signals["cognitive_load"] = 0.0
+        interval_signals["attention_instability"] = 0.0
+
+    # 2. 删除模式分析 → 犹豫/焦虑
+    deletion_signals: dict[str, float] = {}
+
+    # 删除率高 → 犹豫/完美主义/焦虑
+    deletion_signals["hesitation"] = float(np.clip(kd.deletion_rate / 0.3, 0, 1))
+    # 连续删除爆发 → 强烈不满/焦躁
+    deletion_signals["frustration"] = float(np.clip(kd.backspace_bursts / 5, 0, 1))
+
+    # 3. 停顿分析 → 思考困难/注意力
+    pause_signals: dict[str, float] = {}
+
+    # 停顿频率高 → 注意力分散/思考困难
+    pause_signals["focus_difficulty"] = float(np.clip(kd.pause_frequency / 5, 0, 1))
+
+    # 4. 节奏规律性 → 情绪稳定
+    rhythm_signals: dict[str, float] = {}
+
+    # 节奏规律性低 → 情绪不稳定
+    rhythm_signals["emotional_instability"] = 1.0 - kd.rhythm_regularity
+
+    # 5. 按键压力 → 紧张/愤怒
+    pressure_signals: dict[str, float] = {}
+
+    # 压力指数高 → 紧张/愤怒
+    pressure_signals["tension"] = float(np.clip(kd.pressure_index, 0, 1))
+
+    # 综合情绪推断
+    emotion_probs: dict[str, float] = {
+        "neutral": 0.5,
+        "anxiety": 0.0,
+        "depression": 0.0,
+        "frustration": 0.0,
+        "cognitive_fatigue": 0.0,
+    }
+
+    # 焦虑 = 删除率高 + 停顿多 + 节奏不规律
+    anxiety = np.mean([
+        deletion_signals.get("hesitation", 0) * 0.4,
+        pause_signals.get("focus_difficulty", 0) * 0.3,
+        rhythm_signals.get("emotional_instability", 0) * 0.3,
+    ])
+
+    # 抑郁 = 间隔大(慢) + 精力低 + 节奏不规律
+    depression = np.mean([
+        interval_signals.get("cognitive_load", 0) * 0.4,
+        (1 - kd.pressure_index) * 0.3,  # 低压力 = 低精力
+        rhythm_signals.get("emotional_instability", 0) * 0.3,
+    ])
+
+    # 挫折感 = 删除爆发 + 高压力
+    frustration = np.mean([
+        deletion_signals.get("frustration", 0) * 0.5,
+        pressure_signals.get("tension", 0) * 0.3,
+        deletion_signals.get("hesitation", 0) * 0.2,
+    ])
+
+    # 认知疲劳 = 间隔大 + 停顿多 + 节奏不规律
+    cognitive_fatigue = np.mean([
+        interval_signals.get("cognitive_load", 0) * 0.35,
+        pause_signals.get("focus_difficulty", 0) * 0.35,
+        interval_signals.get("attention_instability", 0) * 0.3,
+    ])
+
+    emotion_probs["anxiety"] = float(np.clip(anxiety, 0, 1))
+    emotion_probs["depression"] = float(np.clip(depression, 0, 1))
+    emotion_probs["frustration"] = float(np.clip(frustration, 0, 1))
+    emotion_probs["cognitive_fatigue"] = float(np.clip(cognitive_fatigue, 0, 1))
+
+    # 归一化
+    total = sum(emotion_probs.values())
+    emotion_probs = {k: v / total for k, v in emotion_probs.items()}
+
+    # 风险分数
+    risk_score = float(np.clip(
+        anxiety * 0.3 + depression * 0.3 + frustration * 0.2 + cognitive_fatigue * 0.2,
+        0, 1,
+    ))
+
+    if risk_score > 0.6:
+        risk_label = "high_risk"
+    elif risk_score > 0.3:
+        risk_label = "moderate_risk"
+    else:
+        risk_label = "low_risk"
+
+    # 趋势分析（如果有历史数据）
+    trend_info = {}
+    if history and len(history) >= 2:
+        prev_speeds = []
+        curr_speeds = []
+        for h in history[:-1]:
+            if isinstance(h, dict):
+                prev_speeds.append(h.get("typing_speed", 0))
+            else:
+                prev_speeds.append(h.typing_speed)
+        if isinstance(history[-1], dict):
+            curr_speeds.append(history[-1].get("typing_speed", 0))
+        else:
+            curr_speeds.append(history[-1].typing_speed)
+
+        if prev_speeds and curr_speeds:
+            prev_avg = np.mean(prev_speeds)
+            curr_avg = np.mean(curr_speeds)
+            if prev_avg > 0:
+                trend_info["typing_speed_change"] = round((curr_avg - prev_avg) / prev_avg, 4)
+
+    return {
+        "emotion_probs": emotion_probs,
+        "risk_score": risk_score,
+        "risk_label": risk_label,
+        "detailed_metrics": {
+            "cognitive_load": interval_signals.get("cognitive_load", 0),
+            "attention_instability": interval_signals.get("attention_instability", 0),
+            "hesitation": deletion_signals.get("hesitation", 0),
+            "frustration_signal": deletion_signals.get("frustration", 0),
+            "focus_difficulty": pause_signals.get("focus_difficulty", 0),
+            "emotional_instability": rhythm_signals.get("emotional_instability", 0),
+            "tension": pressure_signals.get("tension", 0),
+        },
+        "raw_metrics": {
+            "avg_interval_ms": kd.avg_interval,
+            "interval_cv": kd.interval_cv,
+            "deletion_rate": kd.deletion_rate,
+            "backspace_bursts": kd.backspace_bursts,
+            "pause_frequency": kd.pause_frequency,
+            "pressure_index": kd.pressure_index,
+            "typing_speed": kd.typing_speed,
+            "rhythm_regularity": kd.rhythm_regularity,
+        },
+        "trend": trend_info,
+        "confidence": 0.85 if len(kd.key_intervals) > 50 else 0.5,
     }
 
 

@@ -23,20 +23,58 @@ export default function MyGrowth() {
   const [stats, setStats] = useState<any>({ totalCheckIns: 0, totalHealingSessions: 0, totalAssessments: 0 });
   const [moodTrend, setMoodTrend] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [emotionKeywords, setEmotionKeywords] = useState<string[]>([]);
+  const [streakDays, setStreakDays] = useState(0);
 
   useEffect(() => {
     Promise.all([
       extraApi.getAllAchievements(),
       extraApi.getAchievements(),
       profileApi.getMoodTrend().catch(() => ({ data: [] })),
-    ]).then(([allRes, progressRes, moodRes]: any[]) => {
+      // 获取心情打卡历史以计算连续天数
+      (async () => {
+        try {
+          const res = await (await import('../../services')).moodApi.getCheckInHistory(365) as any;
+          return res.data?.checkIns || [];
+        } catch { return []; }
+      })(),
+    ]).then(([allRes, progressRes, moodRes, checkIns]: any[]) => {
       if (allRes.code === 0) setAllAchievements(allRes.data);
       if (progressRes.code === 0) {
         const ids = new Set<string>(progressRes.data.achievements.map((ua: any) => ua.achievementId));
         setUnlockedIds(ids);
         setStats(progressRes.data.stats);
       }
-      if (moodRes.data) setMoodTrend(moodRes.data.slice(-14));
+      if (moodRes.data) {
+        const trend = moodRes.data.slice(-14);
+        setMoodTrend(trend);
+        // 从心情趋势中提取情绪关键词
+        const keywords = new Set<string>();
+        trend.forEach((r: any) => {
+          if (r.mood) keywords.add(r.mood);
+          if (r.note) keywords.add(r.note);
+          if (r.tags) r.tags.forEach((t: string) => keywords.add(t));
+        });
+        const defaultKeywords = ['平静', '专注', '温暖', '好奇', '放松', '勇敢'];
+        const merged = Array.from(keywords).filter(k => k.length > 0).slice(0, 6);
+        setEmotionKeywords(merged.length >= 3 ? merged : [...merged, ...defaultKeywords.slice(0, 6 - merged.length)]);
+      } else {
+        setEmotionKeywords(['平静', '专注', '温暖', '好奇', '放松', '勇敢']);
+      }
+
+      // 计算连续打卡天数
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      let streak = 0;
+      for (let i = 0; i < checkIns.length; i++) {
+        const d = new Date(checkIns[i].checkInDate);
+        d.setHours(0, 0, 0, 0);
+        const diff = (today.getTime() - d.getTime()) / 86400000;
+        if (diff === i) streak++;
+        else break;
+      }
+      setStreakDays(streak);
+
       setLoading(false);
     });
   }, []);
@@ -99,7 +137,7 @@ export default function MyGrowth() {
                   { icon: '📅', label: '心情打卡', value: stats.totalCheckIns || 0, color: '#ff8fab' },
                   { icon: '🌿', label: '放松练习', value: stats.totalHealingSessions || 0, color: '#52c41a' },
                   { icon: '🔍', label: '心情检测', value: stats.totalAssessments || 0, color: '#6366f1' },
-                  { icon: '🔥', label: '连续天数', value: 0, color: '#fa8c16' },
+                  { icon: '🔥', label: '连续天数', value: streakDays, color: '#fa8c16' },
                 ].map(({ icon, label, value, color }) => (
                   <Col xs={12} sm={6} key={label}>
                     <Card className="cloud-card" style={{ textAlign: 'center' }}>
@@ -194,15 +232,15 @@ export default function MyGrowth() {
                   <SmileOutlined /> 你的情绪关键词
                 </Title>
                 <Space wrap size={[8, 8]}>
-                  {['平静', '专注', '温暖', '好奇', '放松', '勇敢'].map((word, i) => (
+                  {emotionKeywords.map((word, i) => (
                     <Tag
-                      key={word}
+                      key={word + i}
                       style={{
                         fontSize: 14,
                         padding: '6px 16px',
                         borderRadius: 20,
-                        background: ['#fff0f5', '#f0f5ff', '#fff7e6', '#f6ffed', '#f9f0ff', '#e6fffb'][i],
-                        color: ['#ff8fab', '#6366f1', '#fa8c16', '#52c41a', '#8b5cf6', '#13c2c2'][i],
+                        background: ['#fff0f5', '#f0f5ff', '#fff7e6', '#f6ffed', '#f9f0ff', '#e6fffb'][i % 6],
+                        color: ['#ff8fab', '#6366f1', '#fa8c16', '#52c41a', '#8b5cf6', '#13c2c2'][i % 6],
                         border: 'none',
                       }}
                     >

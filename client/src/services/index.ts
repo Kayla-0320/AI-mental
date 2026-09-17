@@ -27,9 +27,9 @@ export const consultationApi = {
 
 // 心理画像相关
 export const profileApi = {
-  getPsychological: () => api.get('/profile/profile/psychological'),
-  updateProfile: () => api.post('/profile/profile/update'),
-  getMoodTrend: (days = 30) => api.get(`/profile/profile/mood-trend?days=${days}`),
+  getPsychological: () => api.get('/profile/psychological'),
+  updateProfile: () => api.post('/profile/update'),
+  getMoodTrend: (days = 30) => api.get(`/profile/mood-trend?days=${days}`),
   getAssessments: () => api.get('/profile/assessments'),
   submitAssessment: (data: { type: string; title: string; answers: any }) =>
     api.post('/profile/assessments', data),
@@ -37,10 +37,10 @@ export const profileApi = {
     api.post('/profile/mood', data),
   getMoodRecords: (startDate?: string, endDate?: string) =>
     api.get(`/profile/mood?startDate=${startDate}&endDate=${endDate}`),
-  getTodayEmotionalState: () => api.get('/profile/profile/emotional-state'),
-  getCopingStrategies: () => api.get('/profile/profile/coping-strategies'),
+  getTodayEmotionalState: () => api.get('/profile/emotional-state'),
+  getCopingStrategies: () => api.get('/profile/coping-strategies'),
   generateRealityTask: (data: { anxietyLevel: number; context?: string }) =>
-    api.post('/profile/profile/reality-task', data),
+    api.post('/profile/reality-task', data),
 };
 
 // 疗愈室相关
@@ -71,6 +71,9 @@ export const expertApi = {
     api.post(`/expert/bookings/${bookingId}/messages`, { content }),
   getMessages: (bookingId: string, page = 1) =>
     api.get(`/expert/bookings/${bookingId}/messages?page=${page}`),
+  getMyProfile: () => api.get('/expert/my-profile'),
+  updateMyProfile: (data: { title?: string; specialties?: string; introduction?: string; pricePerSession?: number }) =>
+    api.put('/expert/my-profile', data),
 };
 
 // 治疗规划相关

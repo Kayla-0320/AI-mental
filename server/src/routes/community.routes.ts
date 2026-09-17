@@ -27,7 +27,7 @@ router.post('/posts', authenticate, async (req: AuthRequest, res: Response, next
 // 获取帖子详情
 router.get('/posts/:id', async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    const post = await communityService.getPost(req.params.id);
+    const post = await communityService.getPost(req.params.id as string);
     res.json({ code: 0, data: post });
   } catch (e) { next(e); }
 });
@@ -35,7 +35,7 @@ router.get('/posts/:id', async (req: AuthRequest, res: Response, next: NextFunct
 // 点赞
 router.post('/posts/:id/like', authenticate, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    const result = await communityService.toggleLike(req.params.id, req.userId!);
+    const result = await communityService.toggleLike(req.params.id as string, req.userId!);
     res.json({ code: 0, data: result });
   } catch (e) { next(e); }
 });
@@ -43,7 +43,7 @@ router.post('/posts/:id/like', authenticate, async (req: AuthRequest, res: Respo
 // 发表评论
 router.post('/posts/:id/comments', authenticate, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    const comment = await communityService.addComment(req.params.id, req.userId!, req.body.content, req.body.isAnonymous);
+    const comment = await communityService.addComment(req.params.id as string, req.userId!, req.body.content, req.body.isAnonymous);
     res.json({ code: 0, data: comment });
   } catch (e) { next(e); }
 });
@@ -61,7 +61,7 @@ router.get('/pending', authenticate, async (req: AuthRequest, res: Response, nex
 router.put('/posts/:id/approve', authenticate, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     if (req.userRole! !== 'ADMIN') return res.status(403).json({ code: 403, message: '无权限' });
-    const post = await communityService.approvePost(req.params.id, req.body.approved);
+    const post = await communityService.approvePost(req.params.id as string, req.body.approved);
     res.json({ code: 0, data: post });
   } catch (e) { next(e); }
 });

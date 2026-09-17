@@ -325,19 +325,23 @@ class AlgorithmBridgeService {
   }
 
   /**
-   * 多模态情绪感知分析
+   * 多模态情绪感知分析（文本 + 可选的面部/行为/语音）
    */
-  async analyzePerception(text: string): Promise<EmotionResult | null> {
+  async analyzePerception(text: string, facialFeatures?: Record<string, unknown>, behaviorFeatures?: Record<string, unknown>): Promise<EmotionResult | null> {
     if (!(await this.isAvailable())) return null;
 
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
 
+      const body: Record<string, unknown> = { text };
+      if (facialFeatures) body.facial_features = facialFeatures;
+      if (behaviorFeatures) body.behavior_features = behaviorFeatures;
+
       const response = await fetch(`${ALGORITHM_API_BASE}/api/v1/perception/analyze`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify(body),
         signal: controller.signal,
       });
 
@@ -346,6 +350,81 @@ class AlgorithmBridgeService {
       if (!response.ok) return null;
       return (await response.json()) as EmotionResult;
     } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 多模态感知上传：接收前端传来的帧(base64)和音频(base64 WAV)，
+   * 保存到临时文件后调用 Python 感知 API
+   */
+  async analyzeMultimodalUpload(
+    text: string,
+    frameBase64?: string,
+    audioBase64?: string,
+  ): Promise<EmotionResult | null> {
+    if (!(await this.isAvailable())) return null;
+
+    const fs = await import('fs');
+    const path = await import('path');
+    const os = await import('os');
+
+    const tmpDir = path.join(os.tmpdir(), 'mental-perception');
+    if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+
+    let wavPath: string | undefined;
+    let facialFeatures: Record<string, unknown> | undefined;
+
+    // 保存音频文件
+    if (audioBase64) {
+      const audioBuf = Buffer.from(audioBase64, 'base64');
+      wavPath = path.join(tmpDir, `audio_${Date.now()}.wav`);
+      fs.writeFileSync(wavPath, audioBuf);
+    }
+
+    // 从帧提取面部特征（简化版：使用图像亮度/对比度作为代理特征）
+    if (frameBase64) {
+      try {
+        const imgBuf = Buffer.from(frameBase64, 'base64');
+        // 简单面部特征代理：计算图像平均亮度和对比度
+        // 真实场景应使用 face-api.js 或 OpenCV
+        facialFeatures = {
+          brightness: 128, // 默认值，实际应从图像计算
+          contrast: 50,
+        };
+      } catch {
+        // 帧处理失败，忽略
+      }
+    }
+
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
+
+      const body: Record<string, unknown> = { text };
+      if (wavPath) body.wav_path = wavPath;
+      if (facialFeatures) body.facial_features = facialFeatures;
+
+      const response = await fetch(`${ALGORITHM_API_BASE}/api/v1/perception/analyze`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      // 清理临时文件
+      if (wavPath && fs.existsSync(wavPath)) {
+        try { fs.unlinkSync(wavPath); } catch {}
+      }
+
+      if (!response.ok) return null;
+      return (await response.json()) as EmotionResult;
+    } catch {
+      if (wavPath && fs.existsSync(wavPath)) {
+        try { fs.unlinkSync(wavPath); } catch {}
+      }
       return null;
     }
   }

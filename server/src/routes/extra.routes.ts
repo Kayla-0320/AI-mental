@@ -109,7 +109,7 @@ router.get('/feedback/all', authenticate, async (req: AuthRequest, res: Response
 router.put('/feedback/:id/reply', authenticate, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     if (req.userRole! !== 'ADMIN') return res.status(403).json({ code: 403, message: '无权限' });
-    const feedback = await feedbackService.replyFeedback(req.params.id, req.body.reply);
+    const feedback = await feedbackService.replyFeedback(req.params.id as string, req.body.reply);
     res.json({ code: 0, data: feedback });
   } catch (e) { next(e); }
 });

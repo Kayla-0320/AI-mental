@@ -4,9 +4,9 @@ import { Row, Col, Card, Typography, Button, Space, Tag, Progress, Spin, Empty, 
 import {
   MessageOutlined, HeartOutlined, TeamOutlined,
   ArrowRightOutlined, PhoneOutlined,
-  ThunderboltOutlined, BulbOutlined, SmileOutlined,
+  ThunderboltOutlined, BulbOutlined, SmileOutlined, MoonOutlined,
 } from '@ant-design/icons';
-import { profileApi, healingApi, moodApi, consultationApi } from '../../services';
+import { profileApi, healingApi, moodApi, consultationApi, extraApi } from '../../services';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -26,6 +26,10 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [crisisOpen, setCrisisOpen] = useState(false);
   const [streak, setStreak] = useState(0);
+  // 睡眠记录
+  const [sleepStep, setSleepStep] = useState(false);
+  const [sleepHours, setSleepHours] = useState<number | null>(null);
+  const [sleepLoading, setSleepLoading] = useState(false);
 
   useEffect(() => {
     const hour = new Date().getHours();
@@ -84,10 +88,30 @@ export default function Home() {
       setSelectedMood(moodIdx);
       message.success({ content: `已记录：${m.emoji} ${m.label}`, duration: 2 });
       loadStreak();
+      // 打卡成功后显示睡眠记录步骤
+      setSleepStep(true);
     } catch {
       message.error('记录失败，再试试？');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleSleepRecord = async (hours: number) => {
+    setSleepHours(hours);
+    setSleepLoading(true);
+    try {
+      await extraApi.recordSleep({
+        bedTime: '',
+        wakeTime: '',
+        quality: hours >= 7 ? 80 : hours >= 5 ? 60 : 40,
+      });
+      message.success(`已记录睡眠 ${hours} 小时`);
+    } catch {
+      // 静默失败，不影响体验
+    } finally {
+      setSleepLoading(false);
+      setTimeout(() => setSleepStep(false), 1500);
     }
   };
 
@@ -150,6 +174,33 @@ export default function Home() {
                   {moodEmojis[selectedMood].emoji} {moodEmojis[selectedMood].label}
                   {streak > 0 && <span style={{ marginLeft: 8 }}>🔥 连续 {streak} 天</span>}
                 </Tag>
+                {/* 睡眠记录步骤 */}
+                {sleepStep && (
+                  <div style={{ marginTop: 12 }}>
+                    <Text style={{ color: 'rgba(255,255,255,0.9)', fontSize: 13, display: 'block', marginBottom: 8 }}>
+                      <MoonOutlined /> 昨晚睡了多久？
+                    </Text>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      {[4, 5, 6, 7, 8, 9, 10].map(h => (
+                        <Button
+                          key={h}
+                          size="small"
+                          loading={sleepLoading && sleepHours === h}
+                          onClick={() => handleSleepRecord(h)}
+                          style={{
+                            borderRadius: 16,
+                            border: '1px solid rgba(255,255,255,0.3)',
+                            background: sleepHours === h ? 'rgba(255,255,255,0.25)' : 'rgba(255,255,255,0.1)',
+                            color: '#fff',
+                            fontSize: 12,
+                          }}
+                        >
+                          {h}h
+                        </Button>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </Col>
@@ -161,43 +212,50 @@ export default function Home() {
               onClick={() => navigate('/chat')}
               style={{ borderColor: '#fff', color: '#fff', borderRadius: 24, height: 48 }}
             >
-              想聊聊 <ArrowRightOutlined />
+              找 AI 聊聊 <ArrowRightOutlined />
             </Button>
           </Col>
         </Row>
       </Card>
 
-      {/* 紧急求助按钮 */}
+      {/* 有人陪你 - 温和的求助入口 */}
       <Card
         style={{
           borderRadius: 16,
-          background: 'linear-gradient(135deg, #fff5f5 0%, #fff0f6 100%)',
-          border: '1px solid #ffccc7',
+          background: 'linear-gradient(135deg, #f0f5ff 0%, #f9f0ff 100%)',
+          border: '1px solid #d6e4ff',
           marginBottom: 24,
         }}
-        bodyStyle={{ padding: '16px 24px' }}
+        bodyStyle={{ padding: '14px 24px' }}
       >
         <Row align="middle" justify="space-between">
           <Col>
             <Space>
-              <PhoneOutlined style={{ fontSize: 20, color: '#ff4d4f' }} />
+              <span style={{ fontSize: 20 }}>💛</span>
               <div>
-                <Text strong style={{ color: '#5a4a6a' }}>需要紧急帮助？</Text>
+                <Text strong style={{ color: '#5a4a6a' }}>有时候，聊一聊就能好很多</Text>
                 <Text type="secondary" style={{ fontSize: 12, display: 'block' }}>
-                  24小时心理援助热线 · 随时有人愿意听你说
+                  24小时有人在线陪你 · AI 或专业咨询师
                 </Text>
               </div>
             </Space>
           </Col>
           <Col>
-            <Button
-              danger
-              type="primary"
-              onClick={() => setCrisisOpen(true)}
-              style={{ borderRadius: 20 }}
-            >
-              立即求助
-            </Button>
+            <Space>
+              <Button
+                onClick={() => navigate('/chat')}
+                style={{ borderRadius: 20, color: '#6366f1', borderColor: '#6366f1' }}
+              >
+                找 AI
+              </Button>
+              <Button
+                type="primary"
+                onClick={() => setCrisisOpen(true)}
+                style={{ borderRadius: 20, background: '#6366f1', borderColor: '#6366f1' }}
+              >
+                专业帮助
+              </Button>
+            </Space>
           </Col>
         </Row>
       </Card>
@@ -205,12 +263,13 @@ export default function Home() {
       {/* 快捷入口 */}
       <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
         {[
-          { icon: '💬', title: '聊聊', desc: 'AI 陪你说话', color: '#6366f1', path: '/chat' },
-          { icon: '🫂', title: '同伴', desc: '和懂你的人在一起', color: '#ec4899', path: '/companions' },
-          { icon: '🌿', title: '放松空间', desc: '冥想、呼吸、放松', color: '#52c41a', path: '/healing' },
-          { icon: '☕', title: '找帮手', desc: '预约专业咨询师', color: '#f59e0b', path: '/experts' },
+          { icon: '💬', title: 'AI 倾诉', desc: '随时陪你说话', color: '#6366f1', path: '/chat' },
+          { icon: '💡', title: '话痨树洞', desc: '不给建议只引导', color: '#722ed1', path: '/socratic' },
+          { icon: '🫂', title: '同伴社区', desc: '和懂你的人在一起', color: '#ec4899', path: '/companions' },
+          { icon: '🌿', title: '疗愈空间', desc: '冥想、呼吸、放松', color: '#52c41a', path: '/healing' },
+          { icon: '☕', title: '预约咨询', desc: '专业咨询师', color: '#f59e0b', path: '/experts' },
         ].map(({ icon, title, desc, color, path }) => (
-          <Col xs={12} sm={6} key={title}>
+          <Col xs={12} sm={8} md={8} lg={4} key={title}>
             <Card
               hoverable
               onClick={() => navigate(path)}
@@ -225,24 +284,27 @@ export default function Home() {
         ))}
       </Row>
 
-      {/* 今日情绪洞察 */}
+      {/* 今日心情洞察 */}
       <Card
         title={<Space><ThunderboltOutlined style={{ color: '#6366f1' }} /> 今日心情洞察</Space>}
         style={{ borderRadius: 16, marginBottom: 24 }}
       >
         <Spin spinning={false}>
-          <Empty
-            description={
-              <span style={{ color: '#8a7a9a' }}>
-                和 AI 聊聊天，就能获得心情洞察哦~
-              </span>
-            }
-            image={Empty.PRESENTED_IMAGE_SIMPLE}
-          >
-            <Button type="primary" onClick={() => navigate('/chat')} style={{ borderRadius: 20 }}>
-              去聊聊
-            </Button>
-          </Empty>
+          <div style={{ textAlign: 'center', padding: '12px 0' }}>
+            <Text type="secondary" style={{ fontSize: 14 }}>
+              和 AI 聊聊天或做一次量表测评，就能获得你的专属心情洞察~
+            </Text>
+            <div style={{ marginTop: 12 }}>
+              <Space>
+                <Button type="primary" onClick={() => navigate('/chat')} style={{ borderRadius: 20 }}>
+                  去聊聊
+                </Button>
+                <Button onClick={() => navigate('/profile')} style={{ borderRadius: 20 }}>
+                  心理画像
+                </Button>
+              </Space>
+            </div>
+          </div>
         </Spin>
       </Card>
 

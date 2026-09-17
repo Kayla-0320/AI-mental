@@ -21,7 +21,7 @@ class LearningController {
 
   async getContentDetail(req: AuthRequest, res: Response) {
     try {
-      const result = await learningService.getContentDetail(req.params.contentId);
+      const result = await learningService.getContentDetail(req.params.contentId as string);
       res.json({ code: 0, data: result });
     } catch (error: any) {
       res.status(error.statusCode || 500).json({ code: error.code || 500, message: error.message });
@@ -41,7 +41,7 @@ class LearningController {
     try {
       const { contentId } = req.params;
       const { progress, notes } = req.body;
-      const result = await learningService.updateProgress(req.userId!, contentId, progress, notes);
+      const result = await learningService.updateProgress(req.userId!, contentId as string, progress, notes);
       res.json({ code: 0, data: result });
     } catch (error: any) {
       res.status(error.statusCode || 500).json({ code: error.code || 500, message: error.message });

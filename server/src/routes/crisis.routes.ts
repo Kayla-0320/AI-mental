@@ -38,7 +38,7 @@ router.post('/contacts', authenticate, async (req: AuthRequest, res: Response, n
 // 更新紧急联系人
 router.put('/contacts/:id', authenticate, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    const contact = await crisisService.updateContact(req.params.id, req.userId!, req.body);
+    const contact = await crisisService.updateContact(req.params.id as string, req.userId!, req.body);
     res.json({ code: 0, data: contact });
   } catch (e) { next(e); }
 });
@@ -46,7 +46,7 @@ router.put('/contacts/:id', authenticate, async (req: AuthRequest, res: Response
 // 删除紧急联系人
 router.delete('/contacts/:id', authenticate, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    await crisisService.deleteContact(req.params.id, req.userId!);
+    await crisisService.deleteContact(req.params.id as string, req.userId!);
     res.json({ code: 0, message: '删除成功' });
   } catch (e) { next(e); }
 });

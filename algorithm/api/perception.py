@@ -9,6 +9,7 @@ from typing import Optional
 
 from perception.perception_service import get_perception_service
 from shared.dataclasses import EmotionResult
+from perception.text_emotion.sprop_gnn import debias_predict, debias_predict_batch, get_debiaser
 
 router = APIRouter(prefix="/perception", tags=["感知层"])
 
@@ -68,3 +69,89 @@ async def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
         behavior_features=request.behavior_features,
     )
     return _emotion_result_to_response(result)
+
+
+# ----------------------------------------------------------
+# SProp GNN 语义盲法去偏 API
+# ----------------------------------------------------------
+
+class DebiasRequest(BaseModel):
+    """去偏分析请求体"""
+    text: str = Field(..., description="待分析文本")
+    protected_attr: Optional[int] = Field(None, description="受保护属性 (0/1, -1=未知)")
+
+
+class DebiasResponse(BaseModel):
+    """去偏分析响应体"""
+    text: str
+    original_predictions: list[float]
+    debiased_predictions: list[float]
+    fairness_score: float
+    bias_reduction: float
+    graph_stats: dict
+    latency_ms: float
+    dominant_emotion: str
+    dominant_score: float
+
+
+class DebiasBatchRequest(BaseModel):
+    """批量去偏请求体"""
+    texts: list[str] = Field(..., description="待分析文本列表")
+
+
+@router.post("/debias", response_model=DebiasResponse, summary="SProp GNN 语义盲法去偏分析")
+async def debias(request: DebiasRequest) -> DebiasResponse:
+    """SProp GNN 语义盲法去偏情绪预测
+
+    通过图神经网络构建语义图，在保留情绪信息的同时去除受保护属性偏见。
+    - 语义图构建：词级/句级节点 + 语义/位置/层级边
+    - GCN 消息传递：3 层图卷积
+    - 对抗去偏：梯度反转层最小化受保护属性预测
+    - SProp 正则化：确保群体间预测比例一致
+    """
+    result = debias_predict(request.text, request.protected_attr or -1)
+    EMOTION_LABELS = ['焦虑', '抑郁', '愤怒', '中性', '积极']
+    import numpy as np
+    debiased_arr = np.array(result.debiased_predictions)
+    dominant_idx = int(np.argmax(debiased_arr))
+
+    return DebiasResponse(
+        text=result.text,
+        original_predictions=result.original_predictions,
+        debiased_predictions=result.debiased_predictions,
+        fairness_score=result.fairness_score,
+        bias_reduction=result.bias_reduction,
+        graph_stats=result.graph_stats,
+        latency_ms=result.latency_ms,
+        dominant_emotion=EMOTION_LABELS[dominant_idx],
+        dominant_score=round(float(debiased_arr[dominant_idx]), 4),
+    )
+
+
+@router.post("/debias/batch", summary="批量 SProp GNN 去偏分析")
+async def debias_batch(request: DebiasBatchRequest):
+    """批量去偏情绪预测"""
+    results = debias_predict_batch(request.texts)
+    EMOTION_LABELS = ['焦虑', '抑郁', '愤怒', '中性', '积极']
+    import numpy as np
+
+    items = []
+    for r in results:
+        debiased_arr = np.array(r.debiased_predictions)
+        dominant_idx = int(np.argmax(debiased_arr))
+        items.append({
+            'text': r.text,
+            'dominant_emotion': EMOTION_LABELS[dominant_idx],
+            'dominant_score': round(float(debiased_arr[dominant_idx]), 4),
+            'fairness_score': r.fairness_score,
+            'bias_reduction': r.bias_reduction,
+            'latency_ms': r.latency_ms,
+        })
+
+    return {'results': items, 'count': len(items)}
+
+
+@router.get("/debias/stats", summary="SProp GNN 统计信息")
+async def debias_stats():
+    """获取去偏器统计信息"""
+    return get_debiaser().get_stats()

@@ -17,6 +17,7 @@ const menuItems = [
   { key: '/consultant/appointments', icon: <CalendarOutlined />, label: '预约管理' },
   { key: '/consultant/consultations', icon: <MessageOutlined />, label: '咨询记录' },
   { key: '/consultant/profiles', icon: <UserOutlined />, label: '来访者画像' },
+  { key: '/consultant/settings', icon: <SettingOutlined />, label: '设置' },
 ];
 
 export default function ConsultantLayout() {
@@ -48,7 +49,7 @@ export default function ConsultantLayout() {
 
   const userMenu = {
     items: [
-      { key: 'settings', icon: <SettingOutlined />, label: '个人设置' },
+      { key: 'settings', icon: <SettingOutlined />, label: '个人设置', onClick: () => navigate('/consultant/settings') },
       { type: 'divider' as const },
       { key: 'logout', icon: <LogoutOutlined />, label: '退出登录', onClick: handleLogout },
     ],

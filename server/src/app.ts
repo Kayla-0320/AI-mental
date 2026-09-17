@@ -45,7 +45,7 @@ app.use(express.urlencoded({ extended: true }));
 // 限流
 app.use('/api/', rateLimit({
   windowMs: 15 * 60 * 1000, // 15分钟
-  max: 200,
+  max: 1000, // 开发阶段放宽
   message: { code: 429, message: '请求过于频繁，请稍后再试' },
 }));
 

@@ -27,16 +27,19 @@ export function useBlinkDetection() {
   const blinkEventsRef = useRef<{ time: number; duration: number }[]>([]);
   const isBlinkingRef = useRef(false);
   const blinkStartRef = useRef(0);
-  const lastFrameBrightnessRef = useRef(0);
   const sessionStartRef = useRef(0);
-  const thresholdRef = useRef(0);
+  const frameCountRef = useRef(0);
+
+  // 滚动亮度历史（用于自适应阈值）
+  const brightnessHistoryRef = useRef<number[]>([]);
+  const MAX_HISTORY = 30; // 保留最近30帧的亮度值
 
   const getEyeRegionBrightness = (ctx: CanvasRenderingContext2D, width: number, height: number): number => {
-    // 取面部中心偏上区域（大致是眼睛位置）
-    const eyeRegionWidth = Math.floor(width * 0.5);
-    const eyeRegionHeight = Math.floor(height * 0.2);
+    // 取面部中心偏上区域（大致是眼睛位置），缩小采样区域减少噪声
+    const eyeRegionWidth = Math.floor(width * 0.35);
+    const eyeRegionHeight = Math.floor(height * 0.12);
     const startX = Math.floor((width - eyeRegionWidth) / 2);
-    const startY = Math.floor(height * 0.25);
+    const startY = Math.floor(height * 0.2);
 
     const imageData = ctx.getImageData(startX, startY, eyeRegionWidth, eyeRegionHeight);
     const data = imageData.data;
@@ -44,7 +47,6 @@ export function useBlinkDetection() {
     const pixelCount = data.length / 4;
 
     for (let i = 0; i < data.length; i += 4) {
-      // 灰度值 = 0.299R + 0.587G + 0.114B
       totalBrightness += 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
     }
 
@@ -67,49 +69,58 @@ export function useBlinkDetection() {
     ctx.drawImage(video, 0, 0);
 
     const brightness = getEyeRegionBrightness(ctx, canvas.width, canvas.height);
+    frameCountRef.current++;
 
-    // 自适应阈值（基于初始几帧的平均值）
-    if (thresholdRef.current === 0) {
-      thresholdRef.current = brightness * 0.85;
-    }
+    // 更新滚动亮度历史
+    const history = brightnessHistoryRef.current;
+    history.push(brightness);
+    if (history.length > MAX_HISTORY) history.shift();
 
     const now = Date.now();
 
-    // 检测眨眼：亮度突然下降（眼睛闭合时进入更多暗色区域）
-    if (brightness < thresholdRef.current * 0.7) {
+    // 前10帧用于建立基线，不检测眨眼
+    if (frameCountRef.current < 10) {
+      animFrameRef.current = requestAnimationFrame(detectFrame);
+      return;
+    }
+
+    // 自适应阈值：使用滚动平均值和标准差
+    const avg = history.reduce((s, v) => s + v, 0) / history.length;
+    const variance = history.reduce((s, v) => s + (v - avg) ** 2, 0) / history.length;
+    const stdDev = Math.sqrt(variance);
+
+    // 眨眼判定：亮度低于平均值超过1.5个标准差
+    const blinkThreshold = avg - Math.max(stdDev * 1.5, 5);
+
+    if (brightness < blinkThreshold) {
       if (!isBlinkingRef.current) {
-        // 开始眨眼
         isBlinkingRef.current = true;
         blinkStartRef.current = now;
       }
     } else {
       if (isBlinkingRef.current) {
-        // 眨眼结束
         const duration = now - blinkStartRef.current;
-        // 过滤掉过短的检测（<50ms 可能是噪声）
-        if (duration >= 50 && duration < 1000) {
+        // 有效眨眼：80ms ~ 600ms
+        if (duration >= 80 && duration < 600) {
           blinkEventsRef.current.push({ time: now, duration });
         }
         isBlinkingRef.current = false;
       }
     }
 
-    lastFrameBrightnessRef.current = brightness;
-
     // 每 3 秒更新一次指标
     const elapsed = (now - sessionStartRef.current) / 1000;
     if (elapsed > 3) {
       const blinks = blinkEventsRef.current;
-      const blinkRate = Math.round((blinks.length / elapsed) * 60);
-      const avgDuration = blinks.length > 0
-        ? Math.round(blinks.reduce((s, b) => s + b.duration, 0) / blinks.length)
+      // 只统计最近60秒内的眨眼
+      const recentBlinks = blinks.filter(b => now - b.time < 60000);
+      const blinkRate = Math.round((recentBlinks.length / Math.max(elapsed, 1)) * 60);
+      const avgDuration = recentBlinks.length > 0
+        ? Math.round(recentBlinks.reduce((s, b) => s + b.duration, 0) / recentBlinks.length)
         : 0;
-      const longBlinks = blinks.filter(b => b.duration > 400).length;
+      const longBlinks = recentBlinks.filter(b => b.duration > 400).length;
 
-      // 焦虑指数计算：
-      // 正常眨眼频率 15-20 次/分钟
-      // 焦虑时可能增加到 25-30+ 或减少到 <10
-      // 长眨眼增多也表示疲劳/焦虑
+      // 焦虑指数计算
       let anxietyIndex = 0;
       if (blinkRate > 25) anxietyIndex += Math.min(40, (blinkRate - 25) * 4);
       else if (blinkRate < 10 && blinkRate > 0) anxietyIndex += Math.min(30, (10 - blinkRate) * 3);
@@ -141,21 +152,30 @@ export function useBlinkDetection() {
       video.srcObject = stream;
       video.autoplay = true;
       video.playsInline = true;
+      // 镜像翻转，让用户看到正常的自己
+      video.style.transform = 'scaleX(-1)';
       videoRef.current = video;
 
       const canvas = document.createElement('canvas');
       canvasRef.current = canvas;
 
-      await new Promise<void>((resolve) => {
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('摄像头超时')), 5000);
         video.onloadedmetadata = () => {
-          video.play();
-          resolve();
+          clearTimeout(timeout);
+          video.play().then(resolve).catch(reject);
+        };
+        video.onerror = () => {
+          clearTimeout(timeout);
+          reject(new Error('视频加载失败'));
         };
       });
 
+      // 重置状态
       blinkEventsRef.current = [];
       isBlinkingRef.current = false;
-      thresholdRef.current = 0;
+      brightnessHistoryRef.current = [];
+      frameCountRef.current = 0;
       sessionStartRef.current = Date.now();
 
       setMetrics(prev => ({ ...prev, isDetecting: true, error: undefined }));
@@ -164,8 +184,9 @@ export function useBlinkDetection() {
       setMetrics(prev => ({
         ...prev,
         isDetecting: false,
-        error: err.name === 'NotAllowedError' ? '摄像头权限被拒绝' : '无法访问摄像头',
+        error: err.name === 'NotAllowedError' ? '摄像头权限被拒绝' : err.message || '无法访问摄像头',
       }));
+      throw err;
     }
   }, [detectFrame]);
 

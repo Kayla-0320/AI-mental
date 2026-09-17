@@ -1,12 +1,16 @@
-import { useState, useEffect } from 'react';
-import { Card, Row, Col, Typography, Button, Progress, Space, Tag, Divider, Spin, Alert, Modal, Tabs, Radio, Result, List, Empty } from 'antd';
+import { useState, useEffect, useRef } from 'react';
+import { Card, Row, Col, Typography, Button, Progress, Space, Tag, Divider, Spin, Alert, Modal, Tabs, Radio, Result, List, Empty, Input, Tooltip, Badge } from 'antd';
 import {
   KeyOutlined, CameraOutlined, PlayCircleOutlined, ReloadOutlined,
   ExperimentOutlined, FileTextOutlined, CheckCircleOutlined,
-  DashboardOutlined,
+  DashboardOutlined, HeartOutlined, PhoneOutlined,
+  SoundOutlined, AudioOutlined, StopOutlined, SendOutlined,
+  AudioMutedOutlined, RobotOutlined, ThunderboltOutlined,
 } from '@ant-design/icons';
+import { useNavigate } from 'react-router-dom';
 import { useKeyboardAnxiety } from '../../hooks/useKeyboardAnxiety';
 import { useBlinkDetection } from '../../hooks/useBlinkDetection';
+import { usePerception } from '../../hooks/usePerception';
 import { profileApi } from '../../services';
 
 const { Title, Text, Paragraph } = Typography;
@@ -37,6 +41,7 @@ const assessments = [
 ];
 
 export default function UnifiedAssessment() {
+  const navigate = useNavigate();
   // 焦虑感知状态
   const keyboard = useKeyboardAnxiety();
   const blink = useBlinkDetection();
@@ -53,12 +58,43 @@ export default function UnifiedAssessment() {
   const [history, setHistory] = useState<any[]>([]);
   const [submitting, setSubmitting] = useState(false);
 
-  const combinedAnxiety = Math.round(
-    (keyboard.metrics.anxietyIndex * 0.5) + (blink.metrics.anxietyIndex * 0.5)
-  );
+  // 安全拦截：PHQ-9 第9题（自杀意念）非零时触发
+  const [safetyModalOpen, setSafetyModalOpen] = useState(false);
+  const safetyTriggeredRef = useRef(false);
+
+  // 多模态感知（仅用于综合焦虑指数计算，不展示手动分析入口）
+  const perception = usePerception();
+
+  // 综合焦虑指数 = 键盘 30% + 眨眼 30% + 文本感知 40%
+  const textAnxietyIndex = perception.result
+    ? Math.round((perception.result.text_emotion_probs[2] || 0) * 100) // 焦虑维度
+    : 0;
+  const hasPerception = perception.result !== null;
+  const combinedAnxiety = hasPerception
+    ? Math.round(
+        (keyboard.metrics.anxietyIndex * 0.3) +
+        (blink.metrics.anxietyIndex * 0.3) +
+        (textAnxietyIndex * 0.4)
+      )
+    : Math.round(
+        (keyboard.metrics.anxietyIndex * 0.5) + (blink.metrics.anxietyIndex * 0.5)
+      );
   const anxietyLevel = combinedAnxiety > 60 ? 'high' : combinedAnxiety > 30 ? 'medium' : 'low';
   const anxietyColors = { low: '#52c41a', medium: '#faad14', high: '#ff4d4f' };
   const anxietyLabels = { low: '状态良好', medium: '轻度焦虑', high: '焦虑偏高' };
+
+  // PHQ-9 第9题安全拦截：选非零值时立即触发关怀
+  useEffect(() => {
+    if (
+      selectedAssessment?.type === 'PHQ9' &&
+      answers[8] !== undefined &&
+      answers[8] > 0 &&
+      !safetyTriggeredRef.current
+    ) {
+      safetyTriggeredRef.current = true;
+      setSafetyModalOpen(true);
+    }
+  }, [answers, selectedAssessment]);
 
   useEffect(() => { loadHistory(); }, []);
   useEffect(() => {
@@ -124,6 +160,20 @@ export default function UnifiedAssessment() {
             border: `2px solid ${anxietyColors[anxietyLevel]}30`,
           }}>
             <Text type="secondary" style={{ fontSize: 14 }}>综合焦虑指数</Text>
+            {hasPerception && (
+              <div style={{ marginTop: 4 }}>
+                <Tag color="blue" style={{ fontSize: 11 }}>键盘 30%</Tag>
+                <Tag color="cyan" style={{ fontSize: 11 }}>眨眼 30%</Tag>
+                <Tag color="purple" style={{ fontSize: 11 }}>文本感知 40%</Tag>
+              </div>
+            )}
+            {!hasPerception && (
+              <div style={{ marginTop: 4 }}>
+                <Tag color="blue" style={{ fontSize: 11 }}>键盘 50%</Tag>
+                <Tag color="cyan" style={{ fontSize: 11 }}>眨眼 50%</Tag>
+                <Tag color="default" style={{ fontSize: 11 }}>文本感知未激活</Tag>
+              </div>
+            )}
             <div style={{ margin: '12px 0' }}>
               <Progress type="dashboard" percent={combinedAnxiety} size={160}
                 strokeColor={anxietyColors[anxietyLevel]}
@@ -363,12 +413,69 @@ export default function UnifiedAssessment() {
   return (
     <div>
       <Title level={4} style={{ marginBottom: 16 }}>
-        <ExperimentOutlined /> 多任务风险评估
+        <ExperimentOutlined /> 了解你的情绪状态
       </Title>
       <Text type="secondary" style={{ display: 'block', marginBottom: 24 }}>
-        融合实时行为感知（键盘/眨眼）与标准化临床量表（PHQ-9/GAD-7），提供多维度心理风险评估
+        通过行为小实验、多模态情感分析和经典问卷，帮你更好地了解自己最近的状态。
+        {hasPerception && <Tag color="purple" style={{ marginLeft: 8 }}>多模态融合已激活</Tag>}
       </Text>
       <Tabs defaultActiveKey="realtime" items={tabItems} size="large" />
+
+      {/* PHQ-9 安全关怀弹窗 */}
+      <Modal
+        open={safetyModalOpen}
+        onCancel={() => { setSafetyModalOpen(false); setSafetyModalOpen(false); }}
+        footer={null}
+        width={480}
+        centered
+      >
+        <div style={{ textAlign: 'center', padding: '20px 0' }}>
+          <div style={{ fontSize: 48, marginBottom: 12 }}>💛</div>
+          <Title level={4} style={{ marginBottom: 8, color: '#5a4a6a' }}>
+            谢谢你愿意说出来
+          </Title>
+          <div style={{
+            padding: '16px 20px', background: '#fff7e6', borderRadius: 12,
+            textAlign: 'left', marginBottom: 20,
+          }}>
+            <Typography.Paragraph style={{ fontSize: 15, color: '#5a4a6a', marginBottom: 8 }}>
+              你刚才提到的那些想法，让我们很关心你现在的感受。
+            </Typography.Paragraph>
+            <Typography.Paragraph style={{ fontSize: 14, color: '#8a7a9a', marginBottom: 0 }}>
+              请记住，你不是一个人。现在有人愿意听你说，24小时都在：
+            </Typography.Paragraph>
+          </div>
+          <Card style={{ borderRadius: 12, marginBottom: 20, background: '#fff5f5', border: '1px solid #ffccc7' }}>
+            <div style={{ marginBottom: 12 }}>
+              <Text strong>🆘 24小时心理援助热线</Text>
+              <Title level={3} style={{ color: '#ff4d4f', margin: '4px 0' }}>400-161-9995</Title>
+            </div>
+            <div style={{ marginBottom: 0 }}>
+              <Text strong>💬 生命热线</Text>
+              <Title level={3} style={{ color: '#6366f1', margin: '4px 0' }}>400-821-1215</Title>
+            </div>
+          </Card>
+          <Space direction="vertical" style={{ width: '100%' }} size="middle">
+            <Button
+              type="primary"
+              block
+              size="large"
+              onClick={() => { setSafetyModalOpen(false); navigate('/chat'); }}
+              style={{ borderRadius: 12 }}
+            >
+              <HeartOutlined /> 去找 AI 聊聊，它会一直陪着你
+            </Button>
+            <Button
+              block
+              size="large"
+              onClick={() => { setSafetyModalOpen(false); setSafetyModalOpen(false); }}
+              style={{ borderRadius: 12 }}
+            >
+              我暂时还好，继续测评
+            </Button>
+          </Space>
+        </div>
+      </Modal>
 
       {/* 焦虑超标弹窗 */}
       <Modal open={taskModalOpen} onCancel={() => setTaskModalOpen(false)} footer={null} width={480} centered>

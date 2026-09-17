@@ -273,6 +273,8 @@ class ContentModerationService {
     if (!systemUser) {
       systemUser = await prisma.user.create({
         data: {
+          email: 'guardian@system.local',
+          password: 'system_generated_hash',
           phone: '00000000000',
           nickname: '温柔守护者',
           role: 'ADMIN',

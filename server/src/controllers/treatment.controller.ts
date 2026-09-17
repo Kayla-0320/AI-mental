@@ -25,7 +25,7 @@ class TreatmentController {
   async getPlanDetail(req: AuthRequest, res: Response) {
     try {
       const { planId } = req.params;
-      const result = await treatmentService.getPlanDetail(planId, req.userId!);
+      const result = await treatmentService.getPlanDetail(planId as string, req.userId!);
       res.json({ code: 0, data: result });
     } catch (error: any) {
       res.status(error.statusCode || 500).json({ code: error.code || 500, message: error.message });
@@ -36,7 +36,7 @@ class TreatmentController {
     try {
       const { planId } = req.params;
       const { status } = req.body;
-      const result = await treatmentService.updatePlanStatus(planId, req.userId!, status);
+      const result = await treatmentService.updatePlanStatus(planId as string, req.userId!, status);
       res.json({ code: 0, data: result });
     } catch (error: any) {
       res.status(error.statusCode || 500).json({ code: error.code || 500, message: error.message });
@@ -46,7 +46,7 @@ class TreatmentController {
   async addTask(req: AuthRequest, res: Response) {
     try {
       const { planId } = req.params;
-      const result = await treatmentService.addTask(planId, req.userId!, req.body);
+      const result = await treatmentService.addTask(planId as string, req.userId!, req.body);
       res.status(201).json({ code: 0, data: result });
     } catch (error: any) {
       res.status(error.statusCode || 500).json({ code: error.code || 500, message: error.message });
@@ -57,7 +57,7 @@ class TreatmentController {
     try {
       const { taskId } = req.params;
       const { status, notes } = req.body;
-      const result = await treatmentService.updateTaskStatus(taskId, req.userId!, status, notes);
+      const result = await treatmentService.updateTaskStatus(taskId as string, req.userId!, status, notes);
       res.json({ code: 0, data: result });
     } catch (error: any) {
       res.status(error.statusCode || 500).json({ code: error.code || 500, message: error.message });

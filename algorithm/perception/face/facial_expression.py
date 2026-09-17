@@ -1,9 +1,13 @@
 """
 面部微表情检测模块 —— 基于面部动作单元 (AU) 的情绪识别
 
+支持两种输入源：
+1. MediaPipe FaceMesh 468 关键点 + blendshapes（前端推荐）
+2. 传统 68 点 landmarks（回退方案）
+
 提取面部特征：
 - 面部动作编码系统 (FACS) 的 Action Units
-- 面部关键点（68 点）几何特征
+- 面部关键点几何特征
 - 表情强度与持续时间
 - 微表情瞬态检测（< 500ms）
 
@@ -18,6 +22,7 @@
     from perception.face.facial_expression import (
         FacialFeatures,
         extract_facial_features,
+        extract_from_mediapipe,
         features_to_emotion_risk,
     )
 """
@@ -522,6 +527,220 @@ def features_to_emotion_risk(features: FacialFeatures) -> dict[str, Any]:
             "frame_count": features.frame_count,
         },
     }
+
+
+# ============================================================
+# MediaPipe FaceMesh 468 点支持
+# ============================================================
+
+# MediaPipe FaceMesh → FACS AU 映射（基于 blendshapes 名称）
+# MediaPipe 的 blendshapes 直接对应 FACS AU
+MEDIAPIPE_BLENDSHAPE_TO_AU: dict[str, str] = {
+    "browInnerUp": "au1_inner_brow_raiser",
+    "browDownLeft": "au4_brow_lowerer",
+    "browDownRight": "au4_brow_lowerer",
+    "eyeBlinkLeft": "au7_lid_tightener",
+    "eyeBlinkRight": "au7_lid_tightener",
+    "eyeWideLeft": "au5_upper_lid_raiser",
+    "eyeWideRight": "au5_upper_lid_raiser",
+    "cheekPuff": "au9_nose_wrinkler",
+    "cheekSquintLeft": "au6_cheek_raiser",
+    "cheekSquintRight": "au6_cheek_raiser",
+    "jawOpen": "au26_jaw_drop",
+    "jawForward": "au26_jaw_drop",
+    "mouthSmileLeft": "au12_lip_corner_puller",
+    "mouthSmileRight": "au12_lip_corner_puller",
+    "mouthFrownLeft": "au15_lip_corner_depressor",
+    "mouthFrownRight": "au15_lip_corner_depressor",
+    "mouthDimplerLeft": "au12_lip_corner_puller",
+    "mouthDimplerRight": "au12_lip_corner_puller",
+    "mouthStretchLeft": "au20_lip_stretcher",
+    "mouthStretchRight": "au20_lip_stretcher",
+    "mouthPucker": "au20_lip_stretcher",
+    "mouthPressLeft": "au4_brow_lowerer",
+    "mouthPressRight": "au4_brow_lowerer",
+    "mouthShrugLower": "au17_chin_raiser",
+    "mouthShrugUpper": "au10_upper_lip_raiser",
+    "noseSneerLeft": "au9_nose_wrinkler",
+    "noseSneerRight": "au9_nose_wrinkler",
+    "mouthRollLower": "au15_lip_corner_depressor",
+    "mouthRollUpper": "au10_upper_lip_raiser",
+}
+
+# MediaPipe FaceMesh 468 点中的关键索引（与 68 点对应区域）
+MEDIAPIPE_LANDMARK_GROUPS: dict[str, list[int]] = {
+    "left_eye": [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246],
+    "right_eye": [362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398],
+    "left_brow": [70, 63, 105, 66, 107],
+    "right_brow": [336, 296, 334, 293, 300],
+    "outer_lips": [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 308, 324, 318, 402, 317],
+    "inner_lips": [78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308, 324, 318, 402, 317],
+    "face_oval": [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109],
+    "nose_tip": [1, 2, 98, 327],
+}
+
+
+def extract_from_mediapipe(
+    blendshapes_sequence: list[dict[str, float]],
+    landmarks_468_sequence: list[np.ndarray] | None = None,
+    fps: float = 30.0,
+) -> FacialFeatures:
+    """从 MediaPipe FaceMesh 数据提取面部特征
+
+    支持前端 MediaPipe FaceLandmarker 输出的 468 关键点 + blendshapes。
+    blendshapes 直接映射到 FACS AU，比 68 点几何估计更精确。
+
+    Args:
+        blendshapes_sequence: 每帧的 blendshapes 字典列表
+            例: [{"browInnerUp": 0.3, "mouthSmileLeft": 0.8, ...}, ...]
+        landmarks_468_sequence: 每帧的 468 点坐标列表（可选，用于几何特征）
+            每个形状 (468, 3) 或 (468, 2)
+        fps: 帧率
+
+    Returns:
+        FacialFeatures
+    """
+    if not blendshapes_sequence:
+        return FacialFeatures()
+
+    num_frames = len(blendshapes_sequence)
+
+    # 1. 从 blendshapes 提取 AU 强度（主要来源）
+    au_frame_values: dict[str, list[float]] = {au: [] for au in set(MEDIAPIPE_BLENDSHAPE_TO_AU.values())}
+
+    for frame_bs in blendshapes_sequence:
+        # 同一 AU 可能对应多个 blendshape（左右脸），取最大值
+        au_frame_max: dict[str, float] = {}
+        for bs_name, au_name in MEDIAPIPE_BLENDSHAPE_TO_AU.items():
+            bs_value = frame_bs.get(bs_name, 0.0)
+            if au_name not in au_frame_max or bs_value > au_frame_max[au_name]:
+                au_frame_max[au_name] = bs_value
+
+        for au_name, value in au_frame_max.items():
+            au_frame_values[au_name].append(value)
+
+    # 计算 AU 均值和最大值
+    au_means = {au: float(np.mean(vals)) if vals else 0.0 for au, vals in au_frame_values.items()}
+    au_maxs = {au: float(max(vals)) if vals else 0.0 for au, vals in au_frame_values.items()}
+
+    # 2. 从 468 点提取几何特征（如果有）
+    ear_values = []
+    mouth_widths = []
+    mouth_opens = []
+    brow_dists = []
+
+    if landmarks_468_sequence:
+        for lm468 in landmarks_468_sequence:
+            # 从 468 点中提取 EAR
+            left_eye = [lm468[i][:2] for i in MEDIAPIPE_LANDMARK_GROUPS["left_eye"] if i < len(lm468)]
+            right_eye = [lm468[i][:2] for i in MEDIAPIPE_LANDMARK_GROUPS["right_eye"] if i < len(lm468)]
+
+            if len(left_eye) >= 6:
+                ear_l = _compute_ear_from_points(left_eye)
+                ear_values.append(ear_l)
+            if len(right_eye) >= 6:
+                ear_r = _compute_ear_from_points(right_eye)
+                ear_values.append(ear_r)
+
+            # 嘴宽/张嘴比
+            outer_lips = [lm468[i][:2] for i in MEDIAPIPE_LANDMARK_GROUPS["outer_lips"] if i < len(lm468)]
+            if len(outer_lips) >= 4:
+                mw, mo = _compute_mouth_from_points(outer_lips)
+                mouth_widths.append(mw)
+                mouth_opens.append(mo)
+
+            # 眉毛距离
+            left_brow = [lm468[i][:2] for i in MEDIAPIPE_LANDMARK_GROUPS["left_brow"] if i < len(lm468)]
+            if left_brow and len(left_eye) >= 2:
+                brow_y = np.mean([p[1] for p in left_brow])
+                eye_y = np.mean([p[1] for p in left_eye[:4]])
+                face_h = abs(lm468[10][1] - lm468[152][1]) if 152 < len(lm468) else 1.0
+                brow_dists.append(abs(brow_y - eye_y) / max(face_h, 1e-6))
+
+    # 3. 微表情检测
+    au_dicts = []
+    for frame_bs in blendshapes_sequence:
+        au_dict: dict[str, float] = {}
+        for bs_name, au_name in MEDIAPIPE_BLENDSHAPE_TO_AU.items():
+            val = frame_bs.get(bs_name, 0.0)
+            if au_name not in au_dict or val > au_dict[au_name]:
+                au_dict[au_name] = val
+        au_dicts.append(au_dict)
+
+    micro_events = _detect_micro_expressions(au_dicts, fps)
+
+    # 4. 构建 FacialFeatures
+    features = FacialFeatures(
+        au1_inner_brow_raiser=au_means.get("au1_inner_brow_raiser", 0.0),
+        au2_outer_brow_raiser=au_means.get("au2_outer_brow_raiser", 0.0),
+        au4_brow_lowerer=au_means.get("au4_brow_lowerer", 0.0),
+        au5_upper_lid_raiser=au_means.get("au5_upper_lid_raiser", 0.0),
+        au6_cheek_raiser=au_means.get("au6_cheek_raiser", 0.0),
+        au7_lid_tightener=au_means.get("au7_lid_tightener", 0.0),
+        au9_nose_wrinkler=au_means.get("au9_nose_wrinkler", 0.0),
+        au10_upper_lip_raiser=au_means.get("au10_upper_lip_raiser", 0.0),
+        au12_lip_corner_puller=au_means.get("au12_lip_corner_puller", 0.0),
+        au15_lip_corner_depressor=au_means.get("au15_lip_corner_depressor", 0.0),
+        au17_chin_raiser=au_means.get("au17_chin_raiser", 0.0),
+        au20_lip_stretcher=au_means.get("au20_lip_stretcher", 0.0),
+        au26_jaw_drop=au_means.get("au26_jaw_drop", 0.0),
+        brow_distance_ratio=np.mean(brow_dists) if brow_dists else 0.15,
+        mouth_width_ratio=np.mean(mouth_widths) if mouth_widths else 0.3,
+        eye_aspect_ratio=np.mean(ear_values) if ear_values else 0.28,
+        mouth_open_ratio=np.mean(mouth_opens) if mouth_opens else 0.1,
+        micro_expression_count=len(micro_events),
+        micro_expression_duration_avg=(
+            np.mean([e.duration_ms for e in micro_events]) if micro_events else 0.0
+        ),
+        expression_intensity_mean=np.mean(list(au_maxs.values())) if au_maxs else 0.0,
+        expression_intensity_max=max(au_maxs.values()) if au_maxs else 0.0,
+        frame_count=num_frames,
+        fps=fps,
+        detection_confidence=0.95 if num_frames > 10 else 0.7,  # MediaPipe 置信度更高
+    )
+
+    return features
+
+
+def _compute_ear_from_points(eye_points: list) -> float:
+    """从任意数量的眼部关键点计算 EAR"""
+    pts = [np.array(p[:2], dtype=float) for p in eye_points]
+    if len(pts) < 4:
+        return 0.28
+
+    # 简化 EAR：垂直距离均值 / 水平距离
+    n = len(pts)
+    horizontal = np.linalg.norm(pts[0] - pts[n // 2])
+    if horizontal < 1e-6:
+        return 0.28
+
+    vertical_sum = 0.0
+    count = 0
+    for i in range(1, n // 2):
+        j = n - i
+        if j < n:
+            vertical_sum += np.linalg.norm(pts[i] - pts[j])
+            count += 1
+
+    ear = vertical_sum / max(count, 1) / horizontal
+    return float(np.clip(ear, 0, 0.5))
+
+
+def _compute_mouth_from_points(lip_points: list) -> tuple[float, float]:
+    """从唇部关键点计算嘴宽比和张嘴比"""
+    pts = [np.array(p[:2], dtype=float) for p in lip_points]
+    if len(pts) < 4:
+        return 0.3, 0.1
+
+    n = len(pts)
+    mouth_width = np.linalg.norm(pts[0] - pts[n // 2])
+    mouth_height = np.linalg.norm(pts[n // 4] - pts[3 * n // 4])
+    face_width = mouth_width * 2.5  # 估算脸宽
+
+    width_ratio = mouth_width / max(face_width, 1e-6)
+    open_ratio = mouth_height / max(mouth_width, 1e-6)
+
+    return float(width_ratio), float(open_ratio)
 
 
 def features_to_summary(features: FacialFeatures) -> dict[str, Any]:

@@ -9,19 +9,24 @@ import Home from './pages/patient/Home';
 import Chat from './pages/patient/Chat';
 import Healing from './pages/patient/Healing';
 import Experts from './pages/patient/Experts';
-import UnifiedAssessment from './pages/patient/UnifiedAssessment';
 import PatientRoom from './pages/patient/PatientRoom';
 import Settings from './pages/patient/Settings';
 import Companions from './pages/patient/Companions';
 import MyGrowth from './pages/patient/MyGrowth';
+import Profile from './pages/patient/Profile';
+import SocraticChat from './pages/patient/SocraticChat';
 import ConsultantDashboard from './pages/consultant/ConsultantDashboard';
 import ConsultantAppointments from './pages/consultant/ConsultantAppointments';
 import ConsultantConsultations from './pages/consultant/ConsultantConsultations';
 import ConsultantProfiles from './pages/consultant/ConsultantProfiles';
 import ConsultantRoom from './pages/consultant/ConsultantRoom';
+import ConsultantSettings from './pages/consultant/ConsultantSettings';
 import Dashboard from './pages/admin/Dashboard';
 import AdminUsers from './pages/admin/AdminUsers';
 import AdminConsultants from './pages/admin/AdminConsultants';
+import AdminReview from './pages/admin/AdminReview';
+import AdminCrisis from './pages/admin/AdminCrisis';
+import AdminFeedback from './pages/admin/AdminFeedback';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
@@ -49,23 +54,24 @@ export default function App() {
         <Route index element={<Home />} />
         <Route path="chat" element={<Chat />} />
         <Route path="chat/:conversationId" element={<Chat />} />
+        <Route path="socratic" element={<SocraticChat />} />
         <Route path="companions" element={<Companions />} />
         <Route path="healing" element={<Healing />} />
-        <Route path="assessment" element={<UnifiedAssessment />} />
+        <Route path="assessment" element={<Navigate to="/profile" replace />} />
+        <Route path="anxiety" element={<Navigate to="/profile" replace />} />
         <Route path="growth" element={<MyGrowth />} />
+        <Route path="profile" element={<Profile />} />
         <Route path="experts" element={<Experts />} />
         <Route path="experts/room/:bookingId" element={<PatientRoom />} />
         <Route path="settings" element={<Settings />} />
         {/* 旧路由重定向 */}
         <Route path="treehole" element={<Navigate to="/companions" replace />} />
         <Route path="community" element={<Navigate to="/companions" replace />} />
-        <Route path="profile" element={<Navigate to="/growth" replace />} />
         <Route path="achievements" element={<Navigate to="/growth" replace />} />
         <Route path="sleep" element={<Navigate to="/healing" replace />} />
         <Route path="feedback" element={<Navigate to="/settings" replace />} />
         <Route path="treatment" element={<Navigate to="/chat" replace />} />
         <Route path="learning" element={<Navigate to="/healing" replace />} />
-        <Route path="anxiety" element={<Navigate to="/assessment" replace />} />
       </Route>
 
       {/* 咨询师端 */}
@@ -75,6 +81,7 @@ export default function App() {
         <Route path="consultations" element={<ConsultantConsultations />} />
         <Route path="consultations/:bookingId" element={<ConsultantRoom />} />
         <Route path="profiles" element={<ConsultantProfiles />} />
+        <Route path="settings" element={<ConsultantSettings />} />
       </Route>
 
       {/* 管理后台 */}
@@ -82,6 +89,9 @@ export default function App() {
         <Route index element={<Dashboard />} />
         <Route path="users" element={<AdminUsers />} />
         <Route path="consultants" element={<AdminConsultants />} />
+        <Route path="review" element={<AdminReview />} />
+        <Route path="crisis" element={<AdminCrisis />} />
+        <Route path="feedback" element={<AdminFeedback />} />
       </Route>
 
       <Route path="*" element={<Navigate to="/" />} />

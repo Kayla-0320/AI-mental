@@ -3,6 +3,7 @@ import { Layout, Menu, Avatar, Dropdown, Space, Typography } from 'antd';
 import {
   DashboardOutlined, UserOutlined, TeamOutlined, MessageOutlined,
   FileTextOutlined, BarChartOutlined, LogoutOutlined, SettingOutlined,
+  AuditOutlined, SafetyCertificateOutlined, SoundOutlined,
 } from '@ant-design/icons';
 import { useAuthStore } from '../../store/authStore';
 
@@ -13,9 +14,9 @@ const menuItems = [
   { key: '/admin', icon: <DashboardOutlined />, label: '数据概览' },
   { key: '/admin/users', icon: <UserOutlined />, label: '用户管理' },
   { key: '/admin/consultants', icon: <TeamOutlined />, label: '咨询师管理' },
-  { key: '/admin/consultations', icon: <MessageOutlined />, label: '咨询记录' },
-  { key: '/admin/assessments', icon: <FileTextOutlined />, label: '测评管理' },
-  { key: '/admin/stats', icon: <BarChartOutlined />, label: '统计分析' },
+  { key: '/admin/review', icon: <AuditOutlined />, label: '社区审核' },
+  { key: '/admin/crisis', icon: <SafetyCertificateOutlined />, label: '危机管理' },
+  { key: '/admin/feedback', icon: <SoundOutlined />, label: '反馈管理' },
 ];
 
 export default function AdminLayout() {

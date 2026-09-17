@@ -8,6 +8,8 @@ router.use(authenticate);
 
 router.get('/consultants', expertController.getConsultants);
 router.get('/consultants/:consultantId', expertController.getConsultantDetail);
+router.get('/my-profile', expertController.getMyProfile);
+router.put('/my-profile', expertController.updateMyProfile);
 router.post('/bookings', expertController.createBooking);
 router.get('/bookings', expertController.getBookings);
 router.get('/bookings/:bookingId', expertController.getBookingById);

@@ -245,15 +245,21 @@ export default function Experts() {
                       renderItem={(item: any) => (
                         <List.Item
                           actions={[
-                            item.status === 'IN_PROGRESS' || item.status === 'CONFIRMED' ? (
+                            item.status !== 'COMPLETED' && item.status !== 'CANCELLED' ? (
                               <Button
                                 key="enter"
                                 type="primary"
                                 size="small"
-                                icon={<VideoCameraOutlined />}
+                                icon={
+                                  item.type === 'VIDEO' ? <VideoCameraOutlined /> :
+                                  item.type === 'VOICE' ? <PhoneOutlined /> :
+                                  <MessageOutlined />
+                                }
                                 onClick={() => navigate(`/experts/room/${item.id}`)}
                               >
-                                进入咨询室
+                                {item.type === 'VIDEO' ? '进入视频咨询' :
+                                 item.type === 'VOICE' ? '进入语音咨询' :
+                                 '进入文字咨询'}
                               </Button>
                             ) : null,
                           ]}
@@ -267,9 +273,14 @@ export default function Experts() {
                               </Space>
                             }
                             description={
-                              <Text type="secondary" style={{ fontSize: 12 }}>
-                                {item.scheduledAt ? new Date(item.scheduledAt).toLocaleString() : '时间待定'}
-                              </Text>
+                              <Space size={4}>
+                                <Text type="secondary" style={{ fontSize: 12 }}>
+                                  {item.scheduledAt ? new Date(item.scheduledAt).toLocaleString() : '时间待定'}
+                                </Text>
+                                <Tag color={item.type === 'VIDEO' ? 'purple' : item.type === 'VOICE' ? 'blue' : 'green'} style={{ fontSize: 10 }}>
+                                  {item.type === 'VIDEO' ? '视频' : item.type === 'VOICE' ? '语音' : '文字'}
+                                </Tag>
+                              </Space>
                             }
                           />
                         </List.Item>
