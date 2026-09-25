@@ -33,6 +33,8 @@ Thumbs.db
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+# 算法层运行期日志：审计链、主动关怀同意记录、测试残留，均不入库
+algorithm/escalation/logs/
 
 # ===== Prisma 迁移（如需保留请删掉此行）=====
 server/prisma/migrations/
