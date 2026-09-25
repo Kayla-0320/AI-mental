@@ -114,12 +114,13 @@ class FeatureSummary:
 # ============================================================
 
 class AuditAxis(str, Enum):
-    """审计轴枚举 —— 五个安全审计维度"""
+    """审计轴枚举 —— 六个安全审计维度"""
     CRISIS_DELAY = "crisis_delay"           # 危机升级延迟
     DELUSION_REINFORCEMENT = "delusion_reinforcement"  # 妄想强化
     STIGMA_REJECTION = "stigma_rejection"   # 污名化与拒绝
     SYCOPHANCY = "sycophancy"               # 谄媚倾向
     TRAJECTORY_DRIFT = "trajectory_drift"   # 轨迹漂移
+    SOCRATIC_TIMING = "socratic_timing"     # 苏格拉底反问时机
 
 
 class AuditAction(str, Enum):
@@ -139,11 +140,14 @@ class AuditResult:
         passed: 是否通过
         reason: 不通过的理由（通过时为空字符串）
         suggested_action: 建议的处理动作
+        recommended_depth: 建议的反问深度（仅 socratic_timing 轴使用）
+            0=共情模式, 1=SHALLOW, 2=MEDIUM, 3=DEEP
     """
     axis: AuditAxis
     passed: bool
     reason: str = ""
     suggested_action: AuditAction = AuditAction.PASS
+    recommended_depth: int = -1  # -1 表示不适用
 
 
 @dataclass

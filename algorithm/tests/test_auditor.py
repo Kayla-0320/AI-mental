@@ -40,10 +40,10 @@ from shared.dataclasses import (
 
 class TestAuditDataClasses:
     def test_audit_axis_values(self):
-        """五个审计轴全部定义"""
-        assert len(AuditAxis) == 5
+        """六个审计轴全部定义（含 socratic_timing）"""
+        assert len(AuditAxis) == 6
         expected = {"crisis_delay", "delusion_reinforcement", "stigma_rejection",
-                    "sycophancy", "trajectory_drift"}
+                    "sycophancy", "trajectory_drift", "socratic_timing"}
         assert {a.value for a in AuditAxis} == expected
 
     def test_audit_action_values(self):

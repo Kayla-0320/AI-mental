@@ -416,23 +416,40 @@ def _extract_features_numpy(
 def features_to_emotion_risk(
     features: AcousticFeatures,
     weights: Optional[dict] = None,
+    age_profile: "AgeProfile | None" = None,
 ) -> float:
-    """将声学特征映射为情绪风险概率
+    """将声学特征映射为情绪风险概率（支持年龄校准）
 
     基于文献中的经验规则：
     - 低基频 + 低能量 → 抑郁倾向
     - 高基频 + 高语速 + 高能量 → 焦虑倾向
     - 高停顿比例 → 犹豫/不确定
 
+    当提供 age_profile 时，使用年龄专属的基频基线和阈值。
+
     Args:
         features: 声学特征
         weights: 自定义权重（可选）
+        age_profile: 年龄画像（可选）
 
     Returns:
         情绪风险概率 [0.0, 1.0]
     """
     if not features.valid:
         return 0.0
+
+    # 年龄校准后的阈值
+    if age_profile is not None:
+        vp = age_profile.voice
+        f0_dep_low = vp.f0_depression_threshold
+        f0_anx_high = vp.f0_anxiety_threshold
+        sr_anx = vp.speech_rate_anxiety_threshold
+        pause_thr = vp.pause_depression_threshold
+    else:
+        f0_dep_low = 120.0
+        f0_anx_high = 250.0  # 保留原有默认行为
+        sr_anx = 5.0
+        pause_thr = 0.4
 
     # 默认权重
     if weights is None:
@@ -447,20 +464,20 @@ def features_to_emotion_risk(
 
     risk_score = 0.0
 
-    # 1. 低基频（< 120 Hz 可能表示抑郁）
-    if 80 < features.f0_mean < 120:
+    # 1. 低基频（低于年龄校准阈值可能表示抑郁）
+    if 80 < features.f0_mean < f0_dep_low:
         risk_score += weights["low_f0"]
 
     # 2. 低能量（< -30 dB 可能表示低动力）
     if features.energy_mean < -30:
         risk_score += weights["low_energy"]
 
-    # 3. 高语速（> 5 音节/秒可能表示焦虑）
-    if features.speech_rate > 5.0:
+    # 3. 高语速（超过年龄校准阈值可能表示焦虑）
+    if features.speech_rate > sr_anx:
         risk_score += weights["high_speech_rate"]
 
-    # 4. 高停顿比例（> 0.4 可能表示犹豫/思维迟缓）
-    if features.pause_ratio > 0.4:
+    # 4. 高停顿比例（超过年龄校准阈值可能表示犹豫/思维迟缓）
+    if features.pause_ratio > pause_thr:
         risk_score += weights["high_pause_ratio"]
 
     # 5. 低基频范围（< 50 Hz 可能表示情感平淡）

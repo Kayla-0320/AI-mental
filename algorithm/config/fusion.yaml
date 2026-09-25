@@ -39,3 +39,41 @@ fallback:
   enabled: true
   # 单模态降级时的置信度衰减系数（单模态不如双模态可靠）
   confidence_decay: 0.85
+
+# ============================================================
+# 年龄分层融合配置
+# ============================================================
+# 基于发展心理学研究，不同年龄段青少年的情绪表达特征不同，
+# 因此各模态的融合权重也不同。
+#
+# 设计原理：
+# - 初中生面部掩饰弱 → 面部权重大 (0.25)
+# - 大学生掩饰强 → 面部权重低 (0.10)，文本权重高 (0.55)
+# - 语音权重各年龄组保持一致 (0.20)
+# - 风险阈值偏移：初中=-0.05(更敏感), 大学=+0.05(减少误报)
+# ============================================================
+
+age_profiles:
+  early_adolescent:  # 12-15岁（初中）
+    modality_weights:
+      text: 0.40
+      audio: 0.20
+      face: 0.25
+      behavior: 0.15
+    risk_threshold_offset: -0.05
+
+  mid_adolescent:    # 15-18岁（高中）
+    modality_weights:
+      text: 0.50
+      audio: 0.20
+      face: 0.15
+      behavior: 0.15
+    risk_threshold_offset: 0.0
+
+  young_adult:       # 18-22岁（大学）
+    modality_weights:
+      text: 0.55
+      audio: 0.20
+      face: 0.10
+      behavior: 0.15
+    risk_threshold_offset: 0.05

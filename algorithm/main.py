@@ -13,10 +13,12 @@ app = FastAPI(
 )
 
 # CORS 中间件（允许前端跨域调用）
+# 注意：allow_origins=["*"] 与 allow_credentials=True 不兼容（CORS 规范）
+# 前端 fetch 调用不携带 credentials，因此 allow_credentials 设为 False
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )

@@ -1,0 +1,37 @@
+# ============================================================
+# 个人基线校准配置
+# ============================================================
+# 与前端 client/src/hooks/usePersonalBaseline.ts 保持一致
+# 所有阈值集中管理，不硬编码在代码中
+
+ema:
+  # EMA 平滑系数（越小越稳定）
+  # 与前端 EMA_ALPHA 一致
+  alpha: 0.05
+
+calibration:
+  # 基线校准所需最小样本数
+  # 与前端 CALIBRATION_SAMPLES 一致
+  min_samples: 20
+
+deviation:
+  # 显著偏离的 Z-score 阈值
+  # |z| > significant_threshold 标记为显著偏离
+  significant_threshold: 2.0
+
+  # 低偏离阈值（|z| < low_threshold 时权重降低）
+  low_threshold: 0.5
+
+storage:
+  # JSON 持久化文件路径（相对于本配置文件所在目录）
+  baselines_file: "outputs/baselines.json"
+
+modality_mapping:
+  # 前端模态名 → 后端模态名映射
+  # 前端 usePersonalBaseline.ts 中 PersonalBaseline 的字段名
+  heartRate: "heartRate"
+  breathingRate: "breathingRate"
+  typingSpeed: "typingSpeed"
+  blinkRate: "blinkRate"
+  voiceF0: "voiceF0"
+  speechRate: "speechRate"

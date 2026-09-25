@@ -461,15 +461,36 @@ def _au_to_emotion(au_key: str) -> str:
 # 情绪风险映射
 # ============================================================
 
-def features_to_emotion_risk(features: FacialFeatures) -> dict[str, Any]:
-    """将面部特征映射为情绪风险结果
+def features_to_emotion_risk(
+    features: FacialFeatures,
+    age_profile: "AgeProfile | None" = None,
+) -> dict[str, Any]:
+    """将面部特征映射为情绪风险结果（支持年龄校准）
+
+    当提供 age_profile 时：
+    - AU 强度按年龄基线归一化（初中生表达直接，大学生更含蓄）
+    - 微表情检测灵敏度按年龄调整（大学生掩饰多，需更灵敏）
+    - 掩饰检测权重按年龄调整
 
     Args:
         features: 面部特征
+        age_profile: 年龄画像（可选）
 
     Returns:
         dict with emotion_probs, risk_score, risk_label, confidence, metadata
     """
+    # 年龄校准参数
+    if age_profile is not None:
+        fp = age_profile.face
+        au_baseline = fp.au_intensity_baseline
+        micro_threshold = fp.micro_expression_threshold
+        masking_weight = fp.masking_detection_weight
+        micro_risk_weight = fp.micro_expression_risk_weight
+    else:
+        au_baseline = 0.5
+        micro_threshold = 0.25
+        masking_weight = 0.3
+        micro_risk_weight = 0.05
     # 计算每种情绪的得分
     emotion_scores: dict[str, float] = {}
 
@@ -501,9 +522,26 @@ def features_to_emotion_risk(features: FacialFeatures) -> dict[str, Any]:
         for name in ["sadness", "fear", "anger", "distress"]
     )
 
-    # 微表情加成：频繁的微表情增加风险
-    micro_bonus = min(features.micro_expression_count * 0.05, 0.15)
+    # 年龄校准的微表情加成
+    # 不同年龄段微表情检测灵敏度不同
+    effective_micro_count = 0
+    if features.micro_expression_duration_avg > 0:
+        # 微表情持续时间低于年龄阈值才算有效微表情
+        if features.micro_expression_duration_avg < micro_threshold * 1000:  # ms
+            effective_micro_count = features.micro_expression_count
+    else:
+        effective_micro_count = features.micro_expression_count
+
+    micro_bonus = min(effective_micro_count * micro_risk_weight, 0.15)
     negative_risk = min(negative_risk + micro_bonus, 1.0)
+
+    # 掩饰检测：AU 强度与整体表情一致性
+    # 高掩饰权重 + 低 AU 强度 + 高微表情数 → 可能在掩饰真实情绪
+    if masking_weight > 0.2 and features.expression_intensity_mean < au_baseline * 0.5:
+        if features.micro_expression_count > 2:
+            # 掩饰风险加成
+            masking_bonus = masking_weight * 0.1 * min(features.micro_expression_count / 5.0, 1.0)
+            negative_risk = min(negative_risk + masking_bonus, 1.0)
 
     # 情绪标签
     if negative_risk > 0.6:

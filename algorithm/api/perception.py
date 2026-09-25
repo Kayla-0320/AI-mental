@@ -7,11 +7,23 @@ from fastapi import APIRouter
 from pydantic import BaseModel, Field
 from typing import Optional
 
-from perception.perception_service import get_perception_service
+from perception.perception_service import get_perception_service, PerceptionService
 from shared.dataclasses import EmotionResult
 from perception.text_emotion.sprop_gnn import debias_predict, debias_predict_batch, get_debiaser
+from perception.age_config import AgeGroup, get_age_profile, get_all_age_groups
 
 router = APIRouter(prefix="/perception", tags=["感知层"])
+
+# 按年龄组缓存 PerceptionService 实例，避免每次请求重复加载模型/初始化融合引擎
+_service_cache: dict[str, PerceptionService] = {}
+
+
+def _get_service_for_age(age_group) -> PerceptionService:
+    """获取指定年龄组的 PerceptionService 缓存实例"""
+    key = age_group.value if age_group is not None else "default"
+    if key not in _service_cache:
+        _service_cache[key] = PerceptionService(age_group=age_group)
+    return _service_cache[key]
 
 
 # ----------------------------------------------------------
@@ -24,6 +36,12 @@ class AnalyzeRequest(BaseModel):
     wav_path: Optional[str] = Field(None, description="WAV 音频文件路径（可选）")
     facial_features: Optional[dict] = Field(None, description="面部特征字典（可选，含 AU 强度等）")
     behavior_features: Optional[dict] = Field(None, description="行为特征字典（可选，含活跃时段等）")
+    age_group: Optional[str] = Field(
+        None,
+        description="年龄分组: early_adolescent(12-15岁初中) / mid_adolescent(15-18岁高中) / young_adult(18-22岁大学)",
+    )
+    age: Optional[int] = Field(None, description="用户实际年龄（可选，自动推断年龄分组）")
+    user_id: Optional[str] = Field(None, description="用户 ID（可选，用于更新心理数字孪生）")
 
 
 class AnalyzeResponse(BaseModel):
@@ -52,7 +70,7 @@ def _emotion_result_to_response(result: EmotionResult) -> AnalyzeResponse:
 
 @router.post("/analyze", response_model=AnalyzeResponse, summary="多模态情感分析")
 async def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
-    """统一情感分析接口（支持文本/语音/面部/行为四模态融合）
+    """统一情感分析接口（支持文本/语音/面部/行为四模态融合 + 年龄差异化校准）
 
     - 仅传 text → 文本单模态分析（使用真实 RoBERTa 模型）
     - 同时传 text + wav_path → 文本+语音融合
@@ -60,13 +78,29 @@ async def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
     - 同时传 text + behavior_features → 文本+行为融合
     - 全部传入 → 四模态融合
     - 任何模态缺失时自动降级
+    - 传入 age_group 或 age 启用年龄差异化校准
     """
-    service = get_perception_service()
+    # 解析年龄画像
+    age_profile = None
+    if request.age_group is not None:
+        try:
+            ag = AgeGroup(request.age_group)
+            age_profile = get_age_profile(ag)
+        except ValueError:
+            pass
+    elif request.age is not None:
+        from perception.age_config import get_age_profile_by_age
+        age_profile = get_age_profile_by_age(request.age)
+
+    # 使用带年龄画像的缓存 PerceptionService 实例（避免每次请求重复初始化）
+    service = _get_service_for_age(age_profile.age_group if age_profile else None)
     result = service.analyze_multimodal(
         text=request.text,
         wav_path=request.wav_path,
         facial_features=request.facial_features,
         behavior_features=request.behavior_features,
+        age_profile=age_profile,
+        user_id=request.user_id,
     )
     return _emotion_result_to_response(result)
 
@@ -155,3 +189,17 @@ async def debias_batch(request: DebiasBatchRequest):
 async def debias_stats():
     """获取去偏器统计信息"""
     return get_debiaser().get_stats()
+
+
+# ----------------------------------------------------------
+# 年龄分组 API
+# ----------------------------------------------------------
+
+@router.get("/age-groups", summary="获取年龄分组列表")
+async def list_age_groups():
+    """获取所有年龄分组的摘要信息
+
+    返回各年龄段的分组名称、年龄范围、描述，
+    供前端展示和选择使用。
+    """
+    return {"age_groups": get_all_age_groups()}

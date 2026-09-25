@@ -38,18 +38,88 @@ from shared.dataclasses import CrisisAlert, RiskAssessment, RiskLevel
 class DialogState(str, Enum):
     """对话状态枚举
 
-    五个状态对应心理咨询的典型阶段：
+    六个状态对应心理咨询的典型阶段：
     - INIT: 建立关系（1-2 轮）
     - EXPLORE: 探索问题（3-8 轮）
+    - SOCRATIC_READY: 苏格拉底引导就绪（情绪平复 + 非危机 + 用户有探索意愿）
     - INTERVENE: 实施干预（持续至风险降低或轮次上限）
     - CRISIS: 危机响应（任何时刻都可能触发）
     - CLOSE: 结束对话（风险降低且完成干预后）
     """
     INIT = "INIT"
     EXPLORE = "EXPLORE"
+    SOCRATIC_READY = "SOCRATIC_READY"
     INTERVENE = "INTERVENE"
     CRISIS = "CRISIS"
     CLOSE = "CLOSE"
+
+
+# ============================================================
+# 对话模式定义
+# ============================================================
+
+class DialogueMode(str, Enum):
+    """对话模式枚举
+
+    双模态对话引擎：同一对话流中动态切换模式。
+    - EMPATHY: 共情模式（默认），以倾听、情绪反映、陪伴为主
+    - SOCRATIC: 苏格拉底引导模式，以反问、认知探索为主
+
+    切换条件（全部满足才进入 SOCRATIC）：
+    1. 情绪已平复（连续 2 轮无强负面情绪）
+    2. 非危机状态（risk_level ∈ {low, medium}）
+    3. 非显著基线偏离（|Z| ≤ 2.0）
+    4. 用户表达探索意愿（关键词 + 语义判断）
+    """
+    EMPATHY = "EMPATHY"
+    SOCRATIC = "SOCRATIC"
+
+
+# ============================================================
+# 反问深度分级
+# ============================================================
+
+class SocraticDepth(str, Enum):
+    """苏格拉底反问深度分级
+
+    三级深度对应不同的认知重构阶段：
+    - SHALLOW: 浅层反问（情绪刚平复，或基线边缘偏离）
+    - MEDIUM: 中层反问（情绪稳定，基线正常，用户主动探索）
+    - DEEP: 深层反问（情绪稳定 + 非危机 + 用户连续 2 轮主动探索）
+
+    深度选择规则：
+    1. SHALLOW：情绪刚平复（calm_turns == 2），或 |Z| ∈ [1.5, 2.0]
+    2. MEDIUM：情绪稳定（calm_turns >= 3），基线正常（|Z| < 1.5），用户主动探索
+    3. DEEP：情绪稳定 + 非危机 + 用户连续 2 轮主动探索（consecutive_exploration >= 2）
+
+    与 CBT 5 步绑定：
+    - SHALLOW → 识别自动思维 / 识别认知扭曲
+    - MEDIUM → 检验证据 / 寻找替代解释
+    - DEEP → 评估情绪变化 + 制定行动计划
+    """
+    SHALLOW = "SHALLOW"
+    MEDIUM = "MEDIUM"
+    DEEP = "DEEP"
+
+
+# 探索意愿关键词（用于判断用户是否准备好进入苏格拉底模式）
+_EXPLORATION_INTENT_KEYWORDS = [
+    # 直接探索意愿
+    "我想想想", "让我想想", "为什么", "是怎么回事", "什么意思",
+    "我想了解", "帮我分析", "你说得对", "有道理", "继续",
+    "我想探索", "我想弄清楚", "怎么改善", "怎么办",
+    # 间接探索信号
+    "我也在想", "你说得有道理", "换个角度", "从另一个角度看",
+    "我还没想过这个", "有点意思", "然后呢", "具体来说",
+]
+
+# 回避反问关键词
+_AVOIDANCE_KEYWORDS = [
+    "不想说", "不知道", "别问了", "算了", "跳过", "换个话题",
+    "不想聊这个", "别追问", "不想回答", "没想法", "随便",
+    "不知道怎么说", "不想谈这个", "换个方式", "不想继续",
+    "好烦", "不想被问", "别问了", "够了",
+]
 
 
 # ============================================================
@@ -120,6 +190,14 @@ STATE_ALLOWED_ACTIONS: dict[DialogState, list[ActionType]] = {
     # 理由：需要充分收集信息，理解来访者的核心困扰
     DialogState.EXPLORE: [
         ActionType.OPEN_QUESTION,
+        ActionType.EMOTION_REFLECTION,
+    ],
+
+    # SOCRATIC_READY 阶段：苏格拉底引导就绪
+    # 理由：情绪已平复、用户有探索意愿，可以开始认知探索
+    DialogState.SOCRATIC_READY: [
+        ActionType.OPEN_QUESTION,
+        ActionType.CBT_GUIDE,
         ActionType.EMOTION_REFLECTION,
     ],
 
@@ -221,12 +299,10 @@ def transition(
         return DialogState.INIT
 
     # --------------------------------------------------------
-    # 规则 5：EXPLORE → INTERVENE（探索充分后进入干预）
+    # 规则 5：EXPLORE → SOCRATIC_READY / INTERVENE
     # 设计理由：
-    #   - 至少探索 EXPLORE_MIN_TURNS 轮（确保信息充分）
-    #   - 风险为 LOW/MEDIUM 且轮次足够 → 进入干预
-    #   - 风险为 HIGH → 进入干预（需要更积极的引导）
-    #   - 超过 EXPLORE_MAX_TURNS → 强制进入干预（防止无限探索）
+    #   - 情绪平复 + 非危机 + 用户有探索意愿 → SOCRATIC_READY
+    #   - 否则按原有逻辑进入 INTERVENE
     # --------------------------------------------------------
     if current_state == DialogState.EXPLORE:
         # 高风险 → 直接进入干预（需要更积极的引导技术）
@@ -244,6 +320,20 @@ def transition(
 
         # 条件不满足 → 继续探索
         return DialogState.EXPLORE
+
+    # --------------------------------------------------------
+    # 规则 5b：SOCRATIC_READY → INTERVENE / EXPLORE
+    # 设计理由：
+    #   - 触发苏格拉底反问 → 进入 INTERVENE
+    #   - 用户连续 2 次回避 → 退回 EXPLORE（重新共情）
+    #   - 风险回升 → 退回 EXPLORE
+    # --------------------------------------------------------
+    if current_state == DialogState.SOCRATIC_READY:
+        # 风险回升 → 退回探索阶段
+        if risk_level == RiskLevel.HIGH:
+            return DialogState.EXPLORE
+        # 默认保持 SOCRATIC_READY，等待干预触发
+        return DialogState.SOCRATIC_READY
 
     # --------------------------------------------------------
     # 规则 6：INTERVENE → CLOSE（干预完成后结束）
@@ -281,6 +371,128 @@ def transition(
 
     # 兜底：保持当前状态（理论上不应到达此处）
     return current_state
+
+
+# ============================================================
+# 模式评估辅助函数
+# ============================================================
+
+def has_exploration_intent(user_input: str) -> bool:
+    """检测用户输入是否包含探索意愿
+
+    通过关键词匹配判断用户是否准备好进入苏格拉底引导模式。
+    临床依据：动机式访谈 (MI) 中，来访者的探索信号是认知重构的前提。
+
+    Args:
+        user_input: 用户当前输入文本
+
+    Returns:
+        bool: 是否包含探索意愿
+    """
+    if not user_input:
+        return False
+    return any(kw in user_input for kw in _EXPLORATION_INTENT_KEYWORDS)
+
+
+def is_avoidance(user_input: str) -> bool:
+    """检测用户输入是否为回避反问
+
+    通过关键词匹配判断用户是否在回避苏格拉底式反问。
+    临床依据：青少年在情绪未平复时，反问会引发“被审问”感，
+    回避信号是系统应退回共情模式的重要指标。
+
+    Args:
+        user_input: 用户当前输入文本
+
+    Returns:
+        bool: 是否为回避表达
+    """
+    if not user_input:
+        return False
+    return any(kw in user_input for kw in _AVOIDANCE_KEYWORDS)
+
+
+def evaluate_mode(
+    user_input: str,
+    risk_level: RiskLevel,
+    consecutive_calm_turns: int,
+    max_abs_z_score: float = 0.0,
+) -> DialogueMode:
+    """评估当前对话模式
+
+    根据四个条件综合判断是否应切换到苏格拉底引导模式：
+    1. 情绪已平复（连续 2 轮无强负面情绪）
+    2. 非危机状态（risk_level ∈ {low, medium}）
+    3. 非显著基线偏离（|Z| ≤ 2.0）
+    4. 用户表达探索意愿
+
+    全部满足 → SOCRATIC 模式；任一不满足 → EMPATHY 模式。
+
+    Args:
+        user_input: 用户当前输入文本
+        risk_level: 当前风险评估等级
+        consecutive_calm_turns: 连续无强负面情绪的轮次数
+        max_abs_z_score: 个人基线最大 Z-score 绝对值
+
+    Returns:
+        DialogueMode: 当前应采用的对话模式
+    """
+    # 条件 1：情绪已平复（连续 2 轮无强负面情绪）
+    emotion_calm = consecutive_calm_turns >= 2
+
+    # 条件 2：非危机状态
+    non_crisis = risk_level in (RiskLevel.LOW, RiskLevel.MEDIUM)
+
+    # 条件 3：非显著基线偏离（|Z| ≤ 2.0）
+    baseline_stable = abs(max_abs_z_score) <= 2.0
+
+    # 条件 4：用户表达探索意愿
+    exploration = has_exploration_intent(user_input)
+
+    # 全部满足 → SOCRATIC；否则 → EMPATHY
+    if emotion_calm and non_crisis and baseline_stable and exploration:
+        return DialogueMode.SOCRATIC
+    return DialogueMode.EMPATHY
+
+
+def evaluate_depth(
+    consecutive_calm_turns: int,
+    max_abs_z_score: float,
+    consecutive_exploration_turns: int,
+    risk_level: RiskLevel,
+) -> SocraticDepth:
+    """评估苏格拉底反问深度
+
+    根据情绪稳定性、基线偏离和探索连续性判断反问深度。
+
+    深度选择规则：
+    1. DEEP：情绪稳定（calm_turns >= 4）+ 非危机 + 连续 2 轮主动探索
+    2. MEDIUM：情绪稳定（calm_turns >= 3）+ 基线正常（|Z| < 1.5）+ 用户主动探索
+    3. SHALLOW：情绪刚平复（calm_turns == 2），或基线边缘偏离（|Z| ∈ [1.5, 2.0]）
+
+    Args:
+        consecutive_calm_turns: 连续无强负面情绪轮次
+        max_abs_z_score: 个人基线最大 Z-score 绝对值
+        consecutive_exploration_turns: 连续主动探索轮次
+        risk_level: 当前风险等级
+
+    Returns:
+        SocraticDepth: 反问深度
+    """
+    # DEEP：情绪稳定 + 非危机 + 用户连续 2 轮主动探索
+    if (consecutive_calm_turns >= 4
+            and risk_level in (RiskLevel.LOW, RiskLevel.MEDIUM)
+            and consecutive_exploration_turns >= 2):
+        return SocraticDepth.DEEP
+
+    # MEDIUM：情绪稳定 + 基线正常 + 用户主动探索
+    if (consecutive_calm_turns >= 3
+            and abs(max_abs_z_score) < 1.5
+            and abs(max_abs_z_score) <= 2.0):
+        return SocraticDepth.MEDIUM
+
+    # SHALLOW：情绪刚平复，或基线边缘偏离
+    return SocraticDepth.SHALLOW
 
 
 # ============================================================
@@ -488,6 +700,8 @@ def create_crisis_alert(
 class DialogEngine:
     """对话状态机引擎 —— 管理对话状态转移和动作选择
 
+    双模态对话引擎：在共情模式和苏格拉底引导模式之间动态切换。
+
     使用方式：
         engine = DialogEngine(user_id="user_123")
         engine.start(risk_level=RiskLevel.MEDIUM)
@@ -503,6 +717,15 @@ class DialogEngine:
         self.current_state = DialogState.INIT
         self.turn_count = 0
         self.state_history: list[tuple[int, DialogState]] = [(0, DialogState.INIT)]
+        # 双模态对话引擎新增属性
+        self.current_mode: DialogueMode = DialogueMode.EMPATHY
+        self.consecutive_calm_turns: int = 0   # 连续无强负面情绪轮次
+        self.consecutive_avoidance_count: int = 0  # 连续回避反问次数
+        self.max_abs_z_score: float = 0.0       # 个人基线最大 Z-score 绝对值
+        # 反问深度分级新增属性
+        self.current_depth: SocraticDepth = SocraticDepth.SHALLOW
+        self.consecutive_exploration_turns: int = 0  # 连续主动探索轮次
+        self.depth_frozen_turns: int = 0  # 深度冻结剩余轮次（回避后降级冻结）
 
     def start(self, risk_level: RiskLevel = RiskLevel.LOW) -> Action:
         """启动对话引擎
@@ -516,6 +739,15 @@ class DialogEngine:
         self.current_state = DialogState.INIT
         self.turn_count = 0
         self.state_history = [(0, DialogState.INIT)]
+        # 重置双模态属性
+        self.current_mode = DialogueMode.EMPATHY
+        self.consecutive_calm_turns = 0
+        self.consecutive_avoidance_count = 0
+        self.max_abs_z_score = 0.0
+        # 重置反问深度属性
+        self.current_depth = SocraticDepth.SHALLOW
+        self.consecutive_exploration_turns = 0
+        self.depth_frozen_turns = 0
 
         # 如果初始评估就是 CRISIS，直接进入危机状态
         if risk_level == RiskLevel.CRISIS:
@@ -523,6 +755,113 @@ class DialogEngine:
             self.state_history.append((0, DialogState.CRISIS))
 
         return select_action(self.current_state, self.turn_count, risk_level)
+
+    def update_emotion_state(self, has_strong_negative: bool) -> None:
+        """更新情绪状态计数器
+
+        Args:
+            has_strong_negative: 当前轮是否有强负面情绪
+        """
+        if has_strong_negative:
+            self.consecutive_calm_turns = 0
+        else:
+            self.consecutive_calm_turns += 1
+
+    def update_baseline_z_score(self, max_abs_z: float) -> None:
+        """更新个人基线 Z-score
+
+        Args:
+            max_abs_z: 当前轮的最大 Z-score 绝对值
+        """
+        self.max_abs_z_score = max_abs_z
+
+    def record_avoidance(self, is_avoid: bool) -> None:
+        """记录用户回避行为
+
+        Args:
+            is_avoid: 当前轮是否为回避反问
+        """
+        if is_avoid:
+            self.consecutive_avoidance_count += 1
+        else:
+            self.consecutive_avoidance_count = 0
+
+    def should_exit_socratic(self) -> bool:
+        """是否应退出苏格拉底模式
+
+        用户连续 2 次回避反问 → 自动退回共情模式。
+
+        Returns:
+            bool: 是否应退出
+        """
+        return self.consecutive_avoidance_count >= 2
+
+    def evaluate_and_update_mode(self, user_input: str, risk_level: RiskLevel) -> DialogueMode:
+        """评估并更新对话模式
+
+        根据四条件综合判断，并处理回避逻辑。
+        同时更新反问深度分级。
+
+        Args:
+            user_input: 用户当前输入
+            risk_level: 当前风险等级
+
+        Returns:
+            DialogueMode: 更新后的对话模式
+        """
+        # 用户连续 2 次回避 → 强制退回共情
+        if self.should_exit_socratic():
+            self.current_mode = DialogueMode.EMPATHY
+            self.consecutive_exploration_turns = 0
+            # 回避后降级冻结 3 轮
+            self.depth_frozen_turns = 3
+            # 同时退回 EXPLORE 状态
+            if self.current_state == DialogState.SOCRATIC_READY:
+                self.current_state = DialogState.EXPLORE
+                self.state_history.append((self.turn_count, DialogState.EXPLORE))
+            return self.current_mode
+
+        # 更新连续探索轮次
+        if has_exploration_intent(user_input):
+            self.consecutive_exploration_turns += 1
+        else:
+            self.consecutive_exploration_turns = 0
+
+        # 正常评估模式
+        new_mode = evaluate_mode(
+            user_input=user_input,
+            risk_level=risk_level,
+            consecutive_calm_turns=self.consecutive_calm_turns,
+            max_abs_z_score=self.max_abs_z_score,
+        )
+        self.current_mode = new_mode
+
+        # 如果进入 SOCRATIC 模式，评估深度
+        if new_mode == DialogueMode.SOCRATIC:
+            # 如果当前在 EXPLORE，切到 SOCRATIC_READY
+            if self.current_state == DialogState.EXPLORE:
+                self.current_state = DialogState.SOCRATIC_READY
+                self.state_history.append((self.turn_count, DialogState.SOCRATIC_READY))
+
+            # 评估反问深度（如果未冻结）
+            if self.depth_frozen_turns > 0:
+                self.depth_frozen_turns -= 1
+                # 冻结期间最多保持 SHALLOW
+                if self.current_depth != SocraticDepth.SHALLOW:
+                    self.current_depth = SocraticDepth.SHALLOW
+            else:
+                self.current_depth = evaluate_depth(
+                    consecutive_calm_turns=self.consecutive_calm_turns,
+                    max_abs_z_score=self.max_abs_z_score,
+                    consecutive_exploration_turns=self.consecutive_exploration_turns,
+                    risk_level=risk_level,
+                )
+        else:
+            # 退出 SOCRATIC 模式时重置深度
+            self.current_depth = SocraticDepth.SHALLOW
+            self.consecutive_exploration_turns = 0
+
+        return self.current_mode
 
     def next_turn(
         self,
@@ -579,7 +918,14 @@ class DialogEngine:
         return {
             "user_id": self.user_id,
             "current_state": self.current_state.value,
+            "current_mode": self.current_mode.value,
+            "current_depth": self.current_depth.value,
             "turn_count": self.turn_count,
+            "consecutive_calm_turns": self.consecutive_calm_turns,
+            "consecutive_avoidance_count": self.consecutive_avoidance_count,
+            "consecutive_exploration_turns": self.consecutive_exploration_turns,
+            "max_abs_z_score": self.max_abs_z_score,
+            "depth_frozen_turns": self.depth_frozen_turns,
             "state_history": [
                 {"turn": t, "state": s.value} for t, s in self.state_history
             ],
@@ -597,18 +943,22 @@ stateDiagram-v2
 
     %% 正常流程
     INIT --> EXPLORE : turn_count >= 2\\n（建立关系完成）
+    EXPLORE --> SOCRATIC_READY : 情绪平复 + 非危机\\n+ 基线稳定 + 探索意愿
     EXPLORE --> INTERVENE : turn_count >= 2 且\\nrisk ∈ {LOW, MEDIUM}\\n（探索充分）
+    SOCRATIC_READY --> INTERVENE : 触发苏格拉底反问
     INTERVENE --> CLOSE : risk = LOW 且\\ntrend = improving\\n（干预有效）
 
     %% 危机触发（任何状态）
     INIT --> CRISIS : risk = CRISIS\\n或 risk = HIGH 且\\ntrend = worsening
     EXPLORE --> CRISIS : risk = CRISIS\\n或 risk = HIGH 且\\ntrend = worsening
+    SOCRATIC_READY --> CRISIS : risk = CRISIS\\n（任何时刻）
     INTERVENE --> CRISIS : risk = CRISIS\\n或 risk = HIGH 且\\ntrend = worsening
 
     %% 危机恢复
     CRISIS --> CLOSE : risk = LOW\\n（危机解除）
 
-    %% 风险回升
+    %% 风险回升 / 回避
+    SOCRATIC_READY --> EXPLORE : risk = HIGH\\n或 用户连续 2 次回避
     INTERVENE --> EXPLORE : risk = HIGH\\n（风险回升，重新评估）
 
     %% 强制结束
@@ -621,6 +971,7 @@ stateDiagram-v2
     %% 自循环
     INIT --> INIT : turn_count < 2
     EXPLORE --> EXPLORE : 继续探索
+    SOCRATIC_READY --> SOCRATIC_READY : 等待干预触发
     INTERVENE --> INTERVENE : 继续干预
     CRISIS --> CRISIS : risk ≠ LOW\\n（等待升级层）
 
@@ -628,6 +979,10 @@ stateDiagram-v2
     note right of CRISIS
         🔴 必须触发升级层接口
         🔴 禁止生成诊断性语言
+    end note
+    note right of SOCRATIC_READY
+        🟢 苏格拉底引导就绪
+        🟢 需四条件全部满足
     end note
 ```
 """

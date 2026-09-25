@@ -110,10 +110,13 @@ class TestPerceptionService(unittest.TestCase):
         self.assertIsNone(result.audio_risk_prob)
 
     def test_multimodal_text_only_has_fallback_evidence(self):
-        """降级模式 evidence 中必须包含降级说明"""
+        """evidence 中必须包含融合模式说明（HUAF-TC 层级或传统降级）"""
         result = self.service.analyze_multimodal(text="测试文本")
-        has_fallback = any("降级" in e for e in result.evidence)
-        self.assertTrue(has_fallback, f"缺少降级说明，evidence={result.evidence}")
+        has_info = any(
+            "降级" in e or "基础感知层" in e or "L1" in e or "数字孪生" in e
+            for e in result.evidence
+        )
+        self.assertTrue(has_info, f"缺少融合模式说明，evidence={result.evidence}")
 
     def test_multimodal_with_audio_returns_emotion_result(self):
         """同时传入文本和音频时必须返回 EmotionResult"""
@@ -156,9 +159,12 @@ class TestPerceptionService(unittest.TestCase):
         )
         self.assertIsInstance(result, EmotionResult)
         self.assertIsNone(result.audio_risk_prob)
-        # 应包含降级说明
-        has_fallback = any("降级" in e for e in result.evidence)
-        self.assertTrue(has_fallback)
+        # 应包含融合模式说明（HUAF-TC 层级或传统降级）
+        has_info = any(
+            "降级" in e or "基础感知层" in e or "L1" in e or "数字孪生" in e
+            for e in result.evidence
+        )
+        self.assertTrue(has_info, f"缺少融合模式说明，evidence={result.evidence}")
 
     def test_multimodal_with_audio_has_fusion_evidence(self):
         """融合模式 evidence 中必须包含融合说明"""

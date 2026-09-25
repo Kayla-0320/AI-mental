@@ -39,13 +39,13 @@ from shared.dataclasses import (
 
 class TestDialogState:
     def test_five_states_defined(self):
-        """五个状态全部定义"""
-        assert len(DialogState) == 5
+        """六个状态全部定义（含 SOCRATIC_READY）"""
+        assert len(DialogState) == 6
 
     def test_state_names(self):
         """状态名称正确"""
         names = {s.value for s in DialogState}
-        assert names == {"INIT", "EXPLORE", "INTERVENE", "CRISIS", "CLOSE"}
+        assert names == {"INIT", "EXPLORE", "SOCRATIC_READY", "INTERVENE", "CRISIS", "CLOSE"}
 
 
 class TestActionType:

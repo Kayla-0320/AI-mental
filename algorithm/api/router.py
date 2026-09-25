@@ -10,6 +10,9 @@ from api.escalation import router as escalation_router
 from api.audit import router as audit_router
 from api.privacy import router as privacy_router
 from api.federated import router as federated_router
+from api.sim_vail import router as sim_vail_router
+from api.phenotype import router as phenotype_router
+from api.digital_twin import router as digital_twin_router
 
 api_router = APIRouter(prefix="/api/v1")
 
@@ -20,3 +23,6 @@ api_router.include_router(escalation_router)
 api_router.include_router(audit_router)
 api_router.include_router(privacy_router)
 api_router.include_router(federated_router)
+api_router.include_router(sim_vail_router)
+api_router.include_router(phenotype_router)
+api_router.include_router(digital_twin_router)

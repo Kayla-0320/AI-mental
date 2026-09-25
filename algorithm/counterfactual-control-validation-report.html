@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8">
+<title>In-Silico 反事实最优控制验证报告</title>
+<style>
+body{font-family:'Segoe UI','Microsoft YaHei',sans-serif;background:#f6f4fb;margin:0;padding:32px;color:#333}
+.wrap{max-width:1180px;margin:auto}
+h1{color:#531dab} h2{color:#722ed1;border-left:4px solid #722ed1;padding-left:10px}
+.card{background:#fff;border-radius:12px;padding:20px 24px;margin:16px 0;box-shadow:0 2px 8px rgba(114,46,209,.08)}
+table{border-collapse:collapse;width:100%;font-size:12.5px} td,th{padding:7px 9px;border-bottom:1px solid #eee;text-align:left;vertical-align:top}
+th{background:#f9f0ff;color:#531dab}
+.formula{background:#f9f0ff;border-radius:8px;padding:12px 16px;font-family:Consolas,monospace;font-size:13.5px;color:#531dab;line-height:1.7}
+.tag{display:inline-block;background:#722ed1;color:#fff;border-radius:12px;padding:2px 10px;font-size:12px;margin-right:6px}
+.note{color:#888;font-size:13px;line-height:1.6}
+.warn{background:#fff7e6;border-left:4px solid #fa8c16;padding:10px 14px;border-radius:6px;color:#873800;font-size:13px;line-height:1.6}
+.good{background:#f6ffed;border-left:4px solid #52c41a;padding:10px 14px;border-radius:6px;color:#135200;font-size:13px;line-height:1.6}
+</style></head><body><div class="wrap">
+<h1>🧬 In-Silico Patient 反事实最优控制验证报告</h1>
+<p><span class="tag">结构因果模型</span><span class="tag">do-算子</span>
+<span class="tag">Pearl 三步反事实</span><span class="tag">生成式平行未来</span>
+<span class="tag">MPC 最优救援</span><span class="tag">最小能量救援</span></p>
+
+<div class="card">
+<h2>真值系统与评估目标</h2>
+<div class="formula">
+SCM：X_(t+1) = A·X_t + b + U，&nbsp; U~N(0,Σ)，clip[0,1]；&nbsp; 谱半径 ρ(A)=0.55&lt;1（稳定）<br>
+因果链：sleep → rumination → cognition → mood（维度按字母序 ['cognition', 'mood', 'rumination', 'sleep']）<br>
+控制景观：U(z)=h(z₀²−1)²+(c/2)z₁²，h=0.1,c=0.1,d=0.03；双阱吸引子 z₀=±1，鞍点 z₀=0<br>
+决策目标：J = 危机率 + λ·(干预能量 Σ‖u‖² / 时域)
+</div>
+<p class="note">全部为<b>合成数据、已知真值</b>；SCM 历史 T=2000，控制历史 T=8000（dt=1）。
+第一部分用真值参数直接构造 ground-truth SCM，与拟合 SCM 走<b>同一 do/反事实代码路径</b>，
+差异纯粹来自 A、b、Σ 的恢复误差。</p>
+</div>
+
+<div class="card">
+<h2>第一部分：SCM 恢复 · do-干预均值恢复 · 反事实一致性</h2>
+<table>
+<tr><th>随机种子</th><th>A 相对误差</th><th>b 最大绝对误差</th>
+<th>do 末态均值恢复误差（max）</th><th>反事实无操作恒等 max|effect|</th>
+<th>反事实真值恢复误差</th><th>反事实方向一致率</th></tr>
+<tr><td>seed 0</td><td>5.8%</td><td>0.0128</td><td>0.0071（真值效应 0.293）</td><td>0.0e+00</td><td>0.0064</td><td>100%</td></tr>
+<tr><td>seed 1</td><td>13.6%</td><td>0.0509</td><td>0.0481（真值效应 0.293）</td><td>0.0e+00</td><td>0.0519</td><td>100%</td></tr>
+</table>
+<div class="good"><b>无操作恒等（Pearl 三步自洽）：</b>当 do(X_j = 该步<b>观测值</b>) 时，
+Abduction→Action→Prediction 重算的反事实末态与事实末态之差应<b>精确为 0</b>
+（上表 max|effect| ≈ 1e-16~1e-3 量级，源于浮点与 clip），验证三步法实现正确——
+"若当时没有改变任何东西，则轨迹不变"。</div>
+<p class="note"><b>do 均值恢复误差</b>=|E_fit[X_final|do] − E_true[X_final|do]|（同起点、
+clamp 持续钳制、8 步、2000 蒙特卡洛样本，括号为真值效应量作参照）；
+<b>反事实真值恢复误差</b>=拟合 SCM 与真值 SCM 在 12 份证据上的反事实末态最大偏差均值（clamp 持续 do(sleep=0.15)）；
+<b>方向一致率</b>=对真值反事实效应显著（|effect|&gt;0.02）的各维度，拟合效应符号与真值一致的比例。误差随 A 恢复精度而定，属线性 SCM 近似。</p>
+</div>
+
+<div class="card">
+<h2>第二部分：MPC vs 现有时机搜索 vs 无干预</h2>
+<p class="note">三臂均从<b>健康吸引子</b>统一出发，K=300 条平行未来、同一评估随机种子，
+统计在时域内坠入危机球（半径 0.25·‖crisis−health‖）的比率。时机基线=固定救援方向、
+幅度 0.3，网格搜索起始时机 t* 后<b>持续</b>施加（JITAI 范式的模拟器直译）；
+MPC=CEM 联合优化时机+靶点+剂量的完整序列，在 λ=0（纯危机率）与 λ=1（能量感知）下各优化一次。</p>
+<table>
+<tr><th>配置</th><th>无干预危机率</th><th>时机搜索（危机率/能量）</th>
+<th>MPC λ=0（危机率/能量）</th><th>MPC λ=1（危机率/能量）</th>
+<th>J(λ=1) 时机</th><th>J(λ=1) MPC</th><th>J(λ=1) 最优</th></tr>
+<tr><td>seed 3（k=2，H=12）</td><td>0.017（下降 —）</td><td>0.000（↓0.017，E=1.08）</td><td>0.007（↓0.010，E=0.70）</td><td>0.013（↓0.003，E=0.15）</td><td>0.0900</td><td>0.0259</td><td><b>MPC λ=1</b></td></tr>
+<tr><td>seed 3（k=2，H=30）</td><td>0.070（下降 —）</td><td>0.007（↓0.063，E=2.70）</td><td>0.033（↓0.037，E=1.18）</td><td>0.030（↓0.040，E=0.99）</td><td>0.0967</td><td>0.0630</td><td><b>MPC λ=1</b></td></tr>
+<tr><td>seed 11（k=2，H=12）</td><td>0.013（下降 —）</td><td>0.000（↓0.013，E=1.08）</td><td>0.003（↓0.010，E=0.28）</td><td>0.017（↓-0.003，E=0.12）</td><td>0.0900</td><td>0.0266</td><td><b>MPC λ=0</b></td></tr>
+<tr><td>seed 11（k=2，H=30）</td><td>0.080（下降 —）</td><td>0.000（↓0.080，E=2.70）</td><td>0.030（↓0.050，E=1.11）</td><td>0.033（↓0.047，E=0.81）</td><td>0.0900</td><td>0.0603</td><td><b>MPC λ=1</b></td></tr>
+</table>
+<p class="note">括号内“↓x”为相对<b>无干预</b>的危机率下降；E=Σ‖u‖²为干预能量（≈干预负担）。
+J(λ=1) 列给出把干预负担计入后的决策目标，末列标注该目标下的最优臂。</p>
+</div>
+
+<div class="card">
+<h2>结论（诚实呈现，含 MPC 不占优区间）</h2>
+<p><b>(1) SCM / 反事实内核正确：</b>在稳定真值 VAR(1) 上，拟合 A 的相对误差与 do-干预末态均值
+恢复误差均随结构恢复精度而定；<b>无操作反事实精确恒等于事实</b>（Pearl 三步自洽），
+反事实真值恢复误差与方向一致率见上表，验证 do-算子正确截断入边、三步法自洽。</p>
+<p><b>(2) 三种干预都能降低危机率，但存在明确的 Pareto 权衡。</b>
+在<b>原始危机率</b>这一单一指标上，MPC 相对暴力持续时机基线：胜 0 / 负 8
+（跨种子×时域×λ 计）。<b>这正是 MPC 的不占优区间</b>：当时机基线可无代价地持续施加最大剂量、
+且逃逸方向单一（合成景观的近 1D 逃逸）时，暴力干预把危机率压得更低，MPC 的节能无收益。</p>
+<p><b>(3) MPC 的价值在能量效率（Pareto 前沿）。</b>MPC 以约 <b>1.5~8.7×</b> 更低的干预能量
+逼近时机基线的危机率下降；一旦把干预负担计入决策目标 J（λ 足够大），MPC 反超：
+J(λ=1) 目标下 MPC 胜 8 / 负 0。交叉点由 λ 决定——λ→0（干预免费）时
+时机基线占优，λ 增大（干预有代价，贴近临床现实）时 MPC 占优。这与 MPC 显式最小化
+J=危机率+λ·能量的设计一致，也说明<b>“最优干预”依赖于对干预代价的显式建模</b>。</p>
+<p><b>(4) 最小能量救援（逆向 instanton）：</b>seed 3：逆向 instanton 39 步，能量 2.66，救援后壁垒恢复 ΔU≈0.1307，主靶点「m0」<br>seed 11：逆向 instanton 39 步，能量 2.61，救援后壁垒恢复 ΔU≈0.1351，主靶点「m1」。救援方向由崩溃 instanton 反向
+闭式给出，与 MPC 学到的靶点在语义上一致（均指向把状态推回健康阱、重新抬高壁垒）。</p>
+<div class="warn"><b>边界与诚实标注：</b>本实验基于合成数据、已知真值，仅验证算法数值行为，
+<b>不构成任何临床有效性声明</b>。潜空间控制经 PCA 伪逆映射回模态属文档化近似；时机基线假定了
+已知救援方向，在真正多向逃逸（高维、多竞争崩溃路径）的景观中 MPC 的靶点选择优势会更明显；
+CEM 为经验最优（有限候选/迭代），非全局最优；真实心理系统非线性、非高斯，线性 SCM 反事实仅在
+“噪声固定”假设下成立。数据不足时上层 DigitalTwinManager 各方法静默回退现有时机优化，绝不抛错。</div>
+</div>
+<p class="note">生成时间：2026-09-23 08:26:35 ｜ 合成数据实验，结论仅用于算法行为验证</p>
+</div></body></html>

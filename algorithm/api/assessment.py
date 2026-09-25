@@ -2,6 +2,7 @@
 评估层路由 —— 心理状态评估 API 端点
 
 提供多模态→量表分值自动映射、风险预测和趋势分析接口。
+包含个人基线同步与偏离计算接口。
 """
 import time
 from typing import Optional
@@ -15,6 +16,15 @@ from assessment.scale import (
     interpret_score, ScaleName,
     PHQ9_CUTOFFS, GAD7_CUTOFFS, PSS10_CUTOFFS,
 )
+from assessment.personal_baseline import (
+    sync_baseline,
+    compute_deviation,
+    get_baseline,
+    PersonalBaseline,
+    BaselineDeviation,
+)
+from assessment.comorbidity import analyze_comorbidity as _analyze_comorbidity
+from perception.perception_service import get_perception_service
 
 router = APIRouter(prefix="/assessment", tags=["评估层"])
 
@@ -174,7 +184,7 @@ async def estimate_scales(request: ScaleEstimateRequest):
     )
 
 
-@router.post("/risk-trend", response_model=RiskTrendResponse,
+@router.api_route("/risk-trend", methods=["GET", "POST"], response_model=RiskTrendResponse,
              summary="风险趋势分析")
 async def risk_trend(user_id: str, days: int = 7):
     """分析用户近期风险变化趋势
@@ -234,4 +244,273 @@ async def risk_trend(user_id: str, days: int = 7):
         trend=trend,
         current_risk=trend[-1].risk_level if trend else "low",
         trend_direction=direction,
+    )
+
+
+# ============================================================
+# 个人基线接口
+# ============================================================
+
+class BaselineSyncRequest(BaseModel):
+    """基线同步请求
+
+    支持两种模式：
+    1. 完整同步：发送 {"metrics": {...}, "emotion_baseline": [...], "sample_count": N}
+    2. 增量更新：发送实时观测值 {"heartRate": 72, "breathingRate": 16, ...}
+    """
+    user_id: str = Field(..., description="用户唯一标识")
+    baseline_data: dict = Field(..., description="基线数据（完整结构或增量观测）")
+
+
+class BaselineDeviationRequest(BaseModel):
+    """基线偏离计算请求"""
+    user_id: str = Field(..., description="用户唯一标识")
+    current_features: dict = Field(
+        ...,
+        description="当前各模态观测值，如 {\"heartRate\": 72, \"emotionProbs\": [0.1, 0.3, 0.4, 0.1, 0.1]}",
+    )
+
+
+class BaselineMetricResponse(BaseModel):
+    """单模态基线指标响应"""
+    mean: float
+    std: float
+    n: int
+
+
+class PersonalBaselineResponse(BaseModel):
+    """个人基线响应"""
+    user_id: str
+    metrics: dict[str, BaselineMetricResponse]
+    emotion_baseline: list[float]
+    created_at: float
+    last_updated: float
+    sample_count: int
+    calibrated: bool
+
+
+class BaselineDeviationResponse(BaseModel):
+    """基线偏离响应"""
+    user_id: str
+    computed_at: float
+    modality_z_scores: dict[str, float]
+    emotion_z_scores: list[float]
+    significant_deviations: list[str]
+    confidence: float
+    calibrated: bool
+
+
+@router.post("/baseline/sync", response_model=PersonalBaselineResponse,
+             summary="同步个人基线数据")
+async def sync_baseline_endpoint(request: BaselineSyncRequest):
+    """同步前端个人基线数据到后端
+
+    支持两种模式：
+    1. 完整同步：前端发送完整 PersonalBaseline 结构
+    2. 增量更新：前端发送实时观测值，后端用 EMA 更新
+
+    与前端 usePersonalBaseline.ts 的 EMA 算法保持一致（alpha=0.05）。
+    """
+    baseline = sync_baseline(request.user_id, request.baseline_data)
+    config = __import__("assessment.personal_baseline", fromlist=["load_baseline_config"]).load_baseline_config()
+    min_samples = config.get("calibration", {}).get("min_samples", 20)
+
+    return PersonalBaselineResponse(
+        user_id=baseline.user_id,
+        metrics={
+            k: BaselineMetricResponse(mean=v.mean, std=v.std, n=v.n)
+            for k, v in baseline.metrics.items()
+        },
+        emotion_baseline=baseline.emotion_baseline,
+        created_at=baseline.created_at,
+        last_updated=baseline.last_updated,
+        sample_count=baseline.sample_count,
+        calibrated=baseline.sample_count >= min_samples,
+    )
+
+
+@router.post("/baseline/deviation", response_model=BaselineDeviationResponse,
+             summary="计算基线偏离度")
+async def compute_deviation_endpoint(request: BaselineDeviationRequest):
+    """计算当前特征相对个人基线的 Z-score 偏离
+
+    |z| > 2 表示显著偏离个人常态。
+    返回各模态 Z-score、显著偏离维度列表、置信度。
+    """
+    deviation = compute_deviation(request.user_id, request.current_features)
+
+    return BaselineDeviationResponse(
+        user_id=deviation.user_id,
+        computed_at=deviation.computed_at,
+        modality_z_scores=deviation.modality_z_scores,
+        emotion_z_scores=deviation.emotion_z_scores,
+        significant_deviations=deviation.significant_deviations,
+        confidence=deviation.confidence,
+        calibrated=deviation.calibrated,
+    )
+
+
+@router.get("/baseline/{user_id}", response_model=PersonalBaselineResponse,
+            summary="获取个人基线")
+async def get_baseline_endpoint(user_id: str):
+    """获取指定用户的个人基线数据
+
+    返回完整的基线指标（6 个生理/行为模态 + 5 维情绪）。
+    若无基线数据返回 404。
+    """
+    baseline = get_baseline(user_id)
+    if baseline is None:
+        raise HTTPException(status_code=404, detail=f"用户 {user_id} 无基线数据")
+
+    from assessment.personal_baseline import load_baseline_config
+    config = load_baseline_config()
+    min_samples = config.get("calibration", {}).get("min_samples", 20)
+
+    return PersonalBaselineResponse(
+        user_id=baseline.user_id,
+        metrics={
+            k: BaselineMetricResponse(mean=v.mean, std=v.std, n=v.n)
+            for k, v in baseline.metrics.items()
+        },
+        emotion_baseline=baseline.emotion_baseline,
+        created_at=baseline.created_at,
+        last_updated=baseline.last_updated,
+        sample_count=baseline.sample_count,
+        calibrated=baseline.sample_count >= min_samples,
+    )
+
+
+# ============================================================
+# 共病模式分析接口
+# ============================================================
+
+class ComorbidityRequest(BaseModel):
+    """共病分析请求"""
+    user_id: str = Field(..., description="用户 ID")
+    depression_prob: float = Field(..., ge=0.0, le=1.0, description="抑郁风险概率")
+    anxiety_prob: float = Field(..., ge=0.0, le=1.0, description="焦虑风险概率")
+    sleep_prob: float = Field(..., ge=0.0, le=1.0, description="睡眠风险概率")
+
+
+class ComorbidityResponse(BaseModel):
+    """共病分析响应"""
+    user_id: str
+    comorbidity_type: str
+    comorbidity_name: str
+    depression_prob: float
+    anxiety_prob: float
+    sleep_prob: float
+    risk_combinations: list[str]
+    severity_score: float
+    recommendation: str
+    timestamp: float
+
+
+@router.post("/comorbidity/analyze", response_model=ComorbidityResponse,
+             summary="共病模式分析")
+async def comorbidity_analyze(request: ComorbidityRequest) -> ComorbidityResponse:
+    """分析用户的共病模式
+
+    基于多任务模型输出的三个风险概率，判定共病类型：
+    - 抑郁 + 焦虑（最常见）
+    - 抑郁 + 睡眠障碍
+    - 焦虑 + 睡眠障碍
+    - 三重共病
+    """
+    from assessment.comorbidity import COMORBIDITY_NAMES
+
+    result = _analyze_comorbidity(
+        user_id=request.user_id,
+        depression_prob=request.depression_prob,
+        anxiety_prob=request.anxiety_prob,
+        sleep_prob=request.sleep_prob,
+    )
+
+    return ComorbidityResponse(
+        user_id=result.user_id,
+        comorbidity_type=result.comorbidity_type.value,
+        comorbidity_name=COMORBIDITY_NAMES[result.comorbidity_type],
+        depression_prob=result.depression_prob,
+        anxiety_prob=result.anxiety_prob,
+        sleep_prob=result.sleep_prob,
+        risk_combinations=result.risk_combinations,
+        severity_score=result.severity_score,
+        recommendation=result.recommendation,
+        timestamp=result.timestamp,
+    )
+
+
+# ============================================================
+# 便捷文本风险评估接口（供 Node.js 桥接层调用）
+# ============================================================
+
+class TextPredictRequest(BaseModel):
+    """文本风险评估请求（供桥接层调用）"""
+    user_id: str = Field(..., description="用户 ID")
+    text: str = Field(..., description="待评估文本")
+
+
+class TextPredictResponse(BaseModel):
+    """文本风险评估响应"""
+    phq9_estimated: list[float]
+    gad7_estimated: list[float]
+    risk_level: str
+    confidence: float
+    evidence: list[dict]
+    emotion_probs: list[float]
+
+
+@router.post("/predict", response_model=TextPredictResponse,
+             summary="文本风险快速评估")
+async def text_predict(request: TextPredictRequest) -> TextPredictResponse:
+    """文本风险快速评估 —— 感知 + 量表映射一步完成
+
+    供 Node.js 桥接层直接调用，输入文本即出风险评估。
+    内部流程：文本感知 → 情绪概率 → 量表映射 → 风险等级
+    """
+    # 步骤 1：文本情感感知
+    perception = get_perception_service()
+    emotion_result = perception.analyze_text(request.text)
+
+    # 步骤 2：量表映射
+    scale_results = map_all(emotion_result)
+
+    # 提取 PHQ-9 和 GAD-7 估值
+    phq9 = scale_results.get("PHQ-9")
+    gad7 = scale_results.get("GAD-7")
+
+    phq9_estimated = [
+        phq9.total_score if phq9 else 0,
+        phq9.max_score if phq9 else 27,
+    ]
+    gad7_estimated = [
+        gad7.total_score if gad7 else 0,
+        gad7.max_score if gad7 else 21,
+    ]
+
+    # 推断风险等级
+    risk_level = "low"
+    for scale_name, result in scale_results.items():
+        severity = result.severity if hasattr(result, 'severity') else "mild"
+        if severity in ("moderate", "severe"):
+            risk_level = "high"
+        elif severity == "mild" and risk_level != "high":
+            risk_level = "medium"
+
+    # 构建证据列表
+    evidence = []
+    for scale_name, result in scale_results.items():
+        evidence.append({
+            "source": f"assessment.{scale_name}",
+            "description": f"{scale_name}: {result.severity} (score={result.total_score})",
+            "weight": emotion_result.confidence,
+        })
+
+    return TextPredictResponse(
+        phq9_estimated=phq9_estimated,
+        gad7_estimated=gad7_estimated,
+        risk_level=risk_level,
+        confidence=emotion_result.confidence,
+        evidence=evidence,
+        emotion_probs=emotion_result.text_emotion_probs,
     )

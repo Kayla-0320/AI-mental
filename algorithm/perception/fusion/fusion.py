@@ -83,16 +83,19 @@ def fuse_weighted_average(
     text_probs: np.ndarray,
     audio_probs: Optional[np.ndarray],
     config: Optional[dict] = None,
+    age_profile: "AgeProfile | None" = None,
 ) -> np.ndarray:
-    """加权平均融合
+    """加权平均融合（支持年龄自适应）
 
     将文本和语音的概率分布按配置权重加权求和。
     若 audio_probs 为 None，降级为文本单模态。
+    当提供 age_profile 时，使用年龄专属模态权重。
 
     Args:
         text_probs: 文本情绪概率分布，形状 (n_samples, 5) 或 (5,)
         audio_probs: 语音情绪概率分布，形状同 text_probs；None 时降级
         config: 融合配置，默认从 fusion.yaml 加载
+        age_profile: 年龄画像（可选）
 
     Returns:
         融合后的概率分布，形状同输入
@@ -100,9 +103,20 @@ def fuse_weighted_average(
     if config is None:
         config = load_fusion_config()
 
-    wa_config = config["weighted_average"]
-    text_weight = wa_config["text_weight"]
-    audio_weight = wa_config["audio_weight"]
+    # 年龄专属权重优先
+    if age_profile is not None:
+        fp = age_profile.fusion
+        text_weight = fp.text_weight
+        audio_weight = fp.audio_weight
+        # 重新归一化（仅文本+语音两模态）
+        total_w = text_weight + audio_weight
+        if total_w > 0:
+            text_weight = text_weight / total_w
+            audio_weight = audio_weight / total_w
+    else:
+        wa_config = config["weighted_average"]
+        text_weight = wa_config["text_weight"]
+        audio_weight = wa_config["audio_weight"]
 
     # 模态缺失降级
     if audio_probs is None:
@@ -264,11 +278,13 @@ def fuse_multimodal(
     strategy: str = "weighted_average",
     stacking_model: Optional[StackingFusion] = None,
     config: Optional[dict] = None,
+    age_profile: "AgeProfile | None" = None,
 ) -> EmotionResult:
-    """统一多模态融合接口
+    """统一多模态融合接口（支持年龄自适应）
 
     将文本和语音的 EmotionResult 融合为统一的 EmotionResult 输出，
     供下游模块（评估层、干预层）消费。
+    当提供 age_profile 时，使用年龄专属融合权重和风险阈值偏移。
 
     Args:
         text_result: 文本模态的 EmotionResult
@@ -276,6 +292,7 @@ def fuse_multimodal(
         strategy: 融合策略 "weighted_average" / "stacking" / "dynamic"
         stacking_model: Stacking 模型实例（仅 strategy="stacking" 时需要）
         config: 融合配置
+        age_profile: 年龄画像（可选）
 
     Returns:
         融合后的 EmotionResult
@@ -295,7 +312,7 @@ def fuse_multimodal(
 
     # 执行融合
     if strategy == "weighted_average":
-        fused_probs = fuse_weighted_average(text_probs, audio_probs, config)
+        fused_probs = fuse_weighted_average(text_probs, audio_probs, config, age_profile=age_profile)
     elif strategy == "stacking":
         if stacking_model is not None and stacking_model.is_fitted:
             fused_probs = stacking_model.predict(text_probs, audio_probs)
@@ -322,6 +339,13 @@ def fuse_multimodal(
         decay = config.get("fallback", {}).get("confidence_decay", 0.85)
         fused_confidence *= decay
 
+    # 年龄校准的风险阈值偏移（影响置信度解释）
+    if age_profile is not None:
+        offset = age_profile.fusion.risk_threshold_offset
+        # 初中生更敏感（offset < 0 → 置信度略微提升）
+        # 大学生减少误报（offset > 0 → 置信度略微降低）
+        fused_confidence = max(0.0, min(1.0, fused_confidence - offset * 0.5))
+
     # 构建证据列表
     evidence = list(text_result.evidence)
     if audio_result is not None:
@@ -329,6 +353,8 @@ def fuse_multimodal(
         evidence.append(f"融合策略: {strategy}")
     else:
         evidence.append(f"模态降级: 仅文本通道 (策略={strategy})")
+    if age_profile is not None:
+        evidence.append(f"年龄融合权重: text={age_profile.fusion.text_weight}, audio={age_profile.fusion.audio_weight}")
 
     return EmotionResult(
         text_emotion_probs=fused_probs.tolist(),

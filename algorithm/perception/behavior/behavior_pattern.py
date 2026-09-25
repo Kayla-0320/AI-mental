@@ -289,8 +289,11 @@ def extract_behavior_features(
 # 行为 → 情绪风险映射
 # ============================================================
 
-def behavior_to_emotion_risk(features: BehaviorFeatures) -> dict[str, Any]:
-    """将行为特征映射为情绪风险
+def behavior_to_emotion_risk(
+    features: BehaviorFeatures,
+    age_profile: "AgeProfile | None" = None,
+) -> dict[str, Any]:
+    """将行为特征映射为情绪风险（支持年龄校准）
 
     基于行为心理学研究的经验规则：
     - 深夜活跃 + 作息紊乱 → 抑郁/焦虑风险
@@ -298,12 +301,30 @@ def behavior_to_emotion_risk(features: BehaviorFeatures) -> dict[str, Any]:
     - 打字速度减慢 + 消息变短 → 抑郁风险
     - 使用频率突增 + 深夜使用 → 焦虑风险
 
+    当提供 age_profile 时：
+    - 深夜时段判定按年龄调整（初中=23:00, 高中=0:00, 大学=1:00）
+    - 打字速度基线按年龄调整
+    - 社交参与度阈值按年龄调整
+
     Args:
         features: 行为特征
+        age_profile: 年龄画像（可选）
 
     Returns:
         dict with emotion_probs, risk_score, risk_label, confidence, metadata
     """
+    # 年龄校准参数
+    if age_profile is not None:
+        bp = age_profile.behavior
+        social_low_thr = bp.social_engagement_low_threshold
+        behavior_change_thr = bp.behavior_change_threshold
+        session_freq_w = bp.session_frequency_weight
+        session_reg_w = bp.session_regularity_weight
+    else:
+        social_low_thr = 0.2
+        behavior_change_thr = 0.4
+        session_freq_w = 0.5
+        session_reg_w = 0.5
     emotion_probs: dict[str, float] = {
         "neutral": 0.5,
         "depression": 0.0,
@@ -312,9 +333,9 @@ def behavior_to_emotion_risk(features: BehaviorFeatures) -> dict[str, Any]:
         "sleep_disorder": 0.0,
     }
 
-    # 抑郁指标
+    # 抑郁指标（使用年龄校准阈值）
     depression_signals = []
-    if features.social_engagement < 0.2:
+    if features.social_engagement < social_low_thr:
         depression_signals.append(0.4)
     if features.avoidance_score > 0.3:
         depression_signals.append(0.3)
@@ -323,13 +344,13 @@ def behavior_to_emotion_risk(features: BehaviorFeatures) -> dict[str, Any]:
     if features.message_length_trend < -0.2:
         depression_signals.append(0.2)
     if features.session_frequency_change < -0.3:
-        depression_signals.append(0.3)
+        depression_signals.append(0.3 * session_freq_w / 0.5)  # 年龄校准权重
     if features.circadian_regularity < 0.3:
-        depression_signals.append(0.2)
+        depression_signals.append(0.2 * session_reg_w / 0.5)
 
     depression_risk = np.mean(depression_signals) if depression_signals else 0.0
 
-    # 焦虑指标
+    # 焦虑指标（使用年龄校准阈值）
     anxiety_signals = []
     if features.late_night_ratio > 0.3:
         anxiety_signals.append(0.3)
@@ -337,20 +358,21 @@ def behavior_to_emotion_risk(features: BehaviorFeatures) -> dict[str, Any]:
         anxiety_signals.append(0.3)
     if features.typing_speed_trend > 0.2:
         anxiety_signals.append(0.2)
-    if features.behavior_change_score > 0.4:
+    if features.behavior_change_score > behavior_change_thr:
         anxiety_signals.append(0.3)
     if features.circadian_regularity < 0.4:
         anxiety_signals.append(0.2)
 
     anxiety_risk = np.mean(anxiety_signals) if anxiety_signals else 0.0
 
-    # 压力指标
+    # 压力指标（打字速度基线按年龄调整）
     stress_signals = []
-    if features.typing_speed_mean > 80:  # 打字很快
+    typing_baseline = age_profile.behavior.typing_speed_baseline if age_profile else 40.0
+    if features.typing_speed_mean > typing_baseline * 2:  # 打字很快（相对年龄基线）
         stress_signals.append(0.2)
     if features.session_duration_trend > 0.2:
         stress_signals.append(0.2)
-    if features.behavior_change_score > 0.3:
+    if features.behavior_change_score > behavior_change_thr * 0.75:
         stress_signals.append(0.3)
 
     stress_risk = np.mean(stress_signals) if stress_signals else 0.0

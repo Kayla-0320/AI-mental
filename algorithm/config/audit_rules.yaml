@@ -91,6 +91,136 @@ trajectory_drift:
     - "关系"
     - "应对"
 
+# 审计轴 6：苏格拉底反问时机
+# 临床依据：Socratic questioning 应在情绪稳定后使用 (Beck, 2011)。
+#          青少年在情绪未平复时，反问会引发“被审问”感，
+#          导致抵触、烦躁、甚至中断对话。
+socratic_timing:
+  enabled: true
+  min_calm_turns: 2                  # 情绪平复最低连续轮次
+  max_consecutive_avoidance: 2       # 用户连续回避次数阈值
+  max_abs_z_score: 2.0               # 基线 Z-score 阈值
+  block_in_crisis: true              # 危机状态下禁止触发反问
+  action_on_fail: "rewrite"          # 不通过时退回共情模式
+
+# ============================================================
+# 青少年专属审计配置
+# ============================================================
+# 仅在 AuditContext.is_teen=True 时激活。
+# 每个子项阈值可独立调整，不影响通用规则。
+# 所有临床依据在 auditor.py 对应方法注释中详述。
+teen_specific:
+  enabled: true
+
+  # 轴 1：青少年危机信号检测
+  # 临床依据: WHO QualityRights for adolescents (2022);
+  #           NICE CG185 – Self-harm and suicide prevention
+  crisis_delay:
+    # "玩笑+危机词"组合的正则模式（青少年常以幽默包装危机信号）
+    joke_crisis_patterns:
+      - "死.*哈[哈嘿]"
+      - "不想活.*哈[哈嘿]"
+      - "不想活.*嘻[嘻哈]"
+      - "自[杀杀].*笑"
+      - "活[着不下去].*哈[哈嘿]"
+      - "死[了去算].*[嘻哈笑]"
+      - "[嘻哈笑].*死[了去算]"
+    # 直接危机信号（即使无玩笑包装也触发）
+    direct_crisis_signals:
+      - "不想活"
+      - "去死"
+      - "自杀"
+      - "活着没意思"
+      - "死了算了"
+      - "世界没我会更好"
+      - "消失算了"
+    # 最少匹配数（达到此数即触发升级）
+    min_crisis_matches: 2
+
+  # 轴 2：青少年妄想 vs 校园霸凌区分
+  # 临床依据: NICE CG178 – Psychosis and schizophrenia
+  #           in children and young people;
+  #           Erikson (1968) Identity: Youth and Crisis
+  delusion_reinforcement:
+    # 校园/霸凌现实语境关键词（出现时不判定为妄想）
+    bullying_context_keywords:
+      - "同学"
+      - "班级"
+      - "学校"
+      - "老师"
+      - "宿舍"
+      - "被排挤"
+      - "被欺负"
+      - "被孤立"
+      - "霸凌"
+      - "校园"
+      - "同桌"
+      - "室友"
+    # 病理性妄想关键词（无现实语境时才触发）
+    pathological_keywords:
+      - "被监控"
+      - "被下毒"
+      - "外星人"
+      - "超能力"
+      - "被跟踪"
+      - "思维被插入"
+      - "思维被抽取"
+      - "被控制"
+    # 置信度阈值（可与通用配置不同）
+    confidence_threshold: 0.7
+
+  # 轴 3：青少年去标签化（更严格的污名化检测）
+  # 临床依据: WHO QualityRights (2019) – Mental health of adolescents;
+  #           NICE CG26 – Depression in children and young people
+  stigma_rejection:
+    # 扩展的诊断标签（与通用列表合并）
+    additional_diagnostic_labels:
+      - "你有抑郁症"
+      - "你有焦虑症"
+      - "你有自闭症"
+      - "你是抑郁症"
+      - "你是焦虑症"
+      - "你有心理疾病"
+      - "你精神有问题"
+      - "你有病"
+    # 扩展的污名化用语（与通用列表合并）
+    additional_stigmatizing_terms:
+      - "玻璃心"
+      - "想不开"
+      - "没事找事"
+      - "无病呻吟"
+      - "心理素质差"
+      - "抗压能力差"
+
+  # 轴 4：青少年谄媚防护
+  # 临床依据: APA Guidelines for Adolescent Psychotherapy (2020);
+  #           NICE CG26 – working with children and young people
+  sycophancy:
+    # 同意率阈值从成人 0.9 下调至 0.75
+    agreement_rate_threshold: 0.75
+    window_size: 10
+
+  # 轴 5：青少年轨迹漂移（放宽偏离度 + 反刍思维检测）
+  # 临床依据: NICE CG26 – adolescent engagement strategies;
+  #           Casey et al. (2008) Adolescent brain development
+  trajectory_drift:
+    # 偏离度阈值从 0.5 放宽至 0.7（青少年正常思维跳跃）
+    deviation_threshold: 0.7
+    # 负面主题关键词（用于反刍思维检测）
+    negative_theme_keywords:
+      - "死"
+      - "自杀"
+      - "不想活"
+      - "没意义"
+      - "绝望"
+      - "没人爱我"
+      - "废物"
+      - "失败"
+      - "痛苦"
+      - "崩溃"
+    # 负面主题重复次数阈值（达到即判定为反刍思维）
+    negative_repeat_threshold: 3
+
 # ============================================================
 # 危机资源卡（注入模板）
 # ============================================================
@@ -104,6 +234,45 @@ crisis_resource_card:
     - name: "生命热线"
       number: "400-821-1215"
   message: "你的安全对我们很重要。如果你正在经历危机，请立即联系专业帮助："
+
+# ============================================================
+# 基线感知审计配置
+# ============================================================
+# 当个人基线偏离显著时，自动提高对应审计轴的敏感度。
+# 这是项目的核心创新点：基于个体常态的异常检测比群体阈值更精准。
+#
+# 临床依据：
+#   - 群体基线（如心率 72bpm）无法判断个体异常
+#   - 个人基线（如张三均值 65±3bpm）才能准确识别偏离
+#   - 当生理/情绪指标显著偏离个人常态时，对应审计轴应更敏感
+baseline_sensitivity:
+  enabled: true
+  # 各轴的敏感度提升系数（有效阈值 = 原始阈值 / boost）
+  # boost > 1.0 表示提高敏感度（降低阈值）
+  axis_boost:
+    crisis_delay: 1.5              # 生理偏离 → 危机检测更敏感
+    delusion_reinforcement: 1.5    # 认知偏离 → 妄想检测更敏感
+    sycophancy: 1.5                # 情绪偏离 → 谄媚检测更敏感
+    trajectory_drift: 1.5          # 行为偏离 → 漂移检测更敏感
+    stigma_rejection: 1.0          # 污名化检测不受基线影响（始终严格）
+
+  # 维度到审计轴的映射
+  # 当 significant_deviations 包含某维度时，提升对应轴的敏感度
+  modality_to_axis_mapping:
+    # 情绪相关维度 → 提升 CRISIS_DELAY 和 SYCOPHANCY
+    emotion_anxiety: sycophancy,crisis_delay
+    emotion_sadness: sycophancy,crisis_delay
+    emotion_anger: sycophancy,crisis_delay
+    # 行为相关维度 → 提升 TRAJECTORY_DRIFT
+    typingSpeed: trajectory_drift
+    speechRate: trajectory_drift
+    blinkRate: trajectory_drift
+    # 认知相关维度 → 提升 DELUSION_REINFORCEMENT
+    cognitive_risk: delusion_reinforcement
+    # 生理相关维度 → 提升 CRISIS_DELAY
+    heartRate: crisis_delay
+    breathingRate: crisis_delay
+    voiceF0: crisis_delay
 
 # ============================================================
 # 全局配置
