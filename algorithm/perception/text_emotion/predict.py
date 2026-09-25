@@ -5,11 +5,20 @@
     from perception.text_emotion.predict import predict
 
     result = predict("我今天心情很低落")
-    # result = {"label": "depression", "confidence": 0.85, "probs": [...]}
+    # result = {"label": "depression", "confidence": 0.85, "probs": [...],
+    #           "engine": "roberta_valence", "mapping": "valence_only"}
 
-模型加载优先级：
-    1. 本地训练的 RoBERTa 模型（outputs/model/）
-    2. jieba + 情感词典（内置轻量方案，覆盖正/负/中性）
+引擎优先级（2026 更新）：
+    1. **效价三分类 RoBERTa**（outputs/valence_model/）—— 在 EATD 484 条**人工标注**上
+       微调，按被试分组 5 折 CV macro-F1 0.8588、acc 0.8677。见 valence_model.py。
+    2. 本地训练的 5 类 RoBERTa（outputs/model/）—— 保留的历史路径。⚠️ 其训练数据由
+       dataset.generate_fake_data() 合成，不应产出上线权重，详见该函数注释。
+    3. jieba + 情感词典 —— 轻量降级方案。
+
+⚠️ 标签空间不一致：路径 1 训练的是 3 类**效价**，而平台下游要 5 类。
+   anxiety / anger 不是模型学出来的，是由词典线索推断的；无线索时负向质量全部
+   归入 depression(悲伤)。因此返回结果里带 `mapping` 字段标明本次用了哪种映射，
+   消费方不应把 probs[0]/probs[2] 当作模型预测值。详见 valence_model.map_valence_to_platform()。
 """
 from __future__ import annotations
 
@@ -32,6 +41,13 @@ from perception.text_emotion.config import (
     NUM_LABELS,
 )
 from perception.text_emotion.model import TextEmotionClassifier
+from perception.text_emotion.valence_model import (
+    get_valence_model,
+    map_valence_to_platform,
+    dominant_label,
+    MAP_TYPED,
+    MAP_VALENCE_ONLY,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -263,24 +279,80 @@ def _lexicon_predict(text: str) -> dict:
 # 预测接口
 # ============================================================
 
+# 词典给出的「负向类型」线索低于此值就认为没有类型证据，
+# 不再用它拆分负向质量（避免把中性基线 [0.05,0.05,0.05] 当成真实线索）
+_MIN_TYPED_WEIGHT = 0.15
+
+
+def _lexicon_typed_weights(text: str) -> Optional[list[float]]:
+    """用词典取负向情绪类型的相对线索强度 (anxiety, depression, anger)。
+
+    返回 None 表示「没有可用的类型证据」，调用方应走 valence_only 映射：
+      * 词典不可用（如缺 jieba）→ None
+      * 词典一个情感词都没匹配到 → None（此时它的输出恒为中性基线，不是线索）
+      * 词典在负向三通道上的最大概率低于 _MIN_TYPED_WEIGHT → None
+    """
+    try:
+        lex = _lexicon_predict(text)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("词典类型线索不可用: %s", exc)
+        return None
+
+    if not lex.get("matched"):
+        return None
+    probs = lex.get("probs") or []
+    if len(probs) < NUM_LABELS:
+        return None
+    typed = [float(probs[0]), float(probs[1]), float(probs[2])]
+    if max(typed) < _MIN_TYPED_WEIGHT:
+        return None
+    return typed
+
+
 @torch.no_grad()
 def predict(text: str) -> dict:
     """文本情感预测
 
-    优先使用本地训练的 RoBERTa 模型，
-    模型不可用时自动切换到 jieba + 情感词典方案。
+    引擎优先级：效价 RoBERTa → 5 类 RoBERTa → jieba 词典。
 
     Args:
         text: 待预测的中文文本
 
     Returns:
         {
-            "label": "anxiety",           # 预测类别
-            "confidence": 0.85,           # 预测置信度
-            "probs": [0.35, 0.10, ...]    # 5 类概率分布
+            "label": "depression",        # 平台 5 类标签
+            "confidence": 0.85,
+            "probs": [a, d, g, n, p],     # [焦虑, 抑郁, 愤怒, 中性, 积极]
+            "engine": "roberta_valence",  # 实际使用的引擎
+            "mapping": "valence_only",    # 3类→5类 的映射方式（仅效价引擎有）
+            "valence": [neg, neu, pos],   # 模型原始效价分布（仅效价引擎有）
+            "matched": [...],             # 词典匹配词
         }
     """
-    # 优先：本地训练的 RoBERTa 模型
+    # ── 优先级 1：效价三分类 RoBERTa（真实标注训练，CV macro-F1 0.8588）──
+    vm = get_valence_model()
+    if vm.available:
+        try:
+            p3 = vm.predict_valence(text)
+            typed = _lexicon_typed_weights(text)
+            probs5, mapping = map_valence_to_platform(
+                float(p3[0]), float(p3[1]), float(p3[2]), typed_weights=typed,
+            )
+            label, conf = dominant_label(probs5)
+            return {
+                "label": label,
+                "confidence": round(conf, 4),
+                "probs": [round(p, 4) for p in probs5],
+                "engine": "roberta_valence",
+                "mapping": mapping,
+                "valence": [round(float(x), 4) for x in p3],
+                "matched": ([] if typed is None else ["词典类型线索"]),
+                "n_seeds": vm.n_seeds,
+            }
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"效价 RoBERTa 推理失败，降级: {e}")
+
+    # ── 优先级 2：本地 5 类 RoBERTa（历史路径；训练数据为合成数据，见 dataset.py）──
     if _trained_model_available:
         try:
             model, tokenizer, device = _load_model_and_tokenizer()
@@ -305,11 +377,12 @@ def predict(text: str) -> dict:
                 "label": pred_label,
                 "confidence": round(confidence, 4),
                 "probs": [round(p, 4) for p in probs],
+                "engine": "roberta5",
             }
         except Exception as e:
             logger.warning(f"RoBERTa 推理失败，切换到词典方案: {e}")
 
-    # 降级：jieba + 情感词典（替代原来的规则引擎）
+    # ── 优先级 3：jieba + 情感词典 ──
     return _lexicon_predict(text)
 
 

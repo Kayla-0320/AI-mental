@@ -250,7 +250,20 @@ _FAKE_SAMPLES = {
 def generate_fake_data(num_per_class: int = 80, output_path: Optional[str] = None) -> str:
     """生成扩充版情感训练数据
 
-    通过模板变体 + 随机组合生成更多样化的样本。
+    ⚠️⚠️ 这是**合成数据**，不是真实语料，不得用于产出上线模型 ⚠️⚠️
+
+    数据来源是下方 `_FAKE_SAMPLES` 中手写的几十条模板文本，再靠
+    「加前后缀 + 随机替换程度副词」凑到每类 80 条。其后果：
+      * 每条样本都与其模板近乎重复，训练集与验证集之间没有真正的独立性；
+      * 在它上面训出的 5 类分类器，验证指标高只是因为它记住了模板，
+        对真实口语（尤其本项目 EATD 语料那种高度含蓄的表达）没有效度；
+      * 更危险的是它**看起来**像一个正常的 RoBERTa 训练流程。
+
+    真实可用的文本情绪权重请用 `tools/roberta_sentiment/train.py --full` 生成
+    （EATD 484 条人工标注，分组 CV macro-F1 0.8588），推理入口见
+    `perception/text_emotion/valence_model.py`。
+
+    本函数保留仅为复现历史流程与单元测试，请勿用于部署。
 
     Args:
         num_per_class: 每个类别生成的样本数量
