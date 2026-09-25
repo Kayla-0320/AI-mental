@@ -24,9 +24,9 @@ export default function AdminConsultants() {
       setConsultants(list.map((c: any) => ({ ...c, key: c.id })));
     } catch {
       setConsultants([
-        { key: '1', id: '1', user: { nickname: '张咨询师' }, title: '心理咨询师', rating: 4.8, status: 'APPROVED', specialties: '["焦虑","抑郁"]', pricePerSession: 200 },
-        { key: '2', id: '2', user: { nickname: '李老师' }, title: '心理治疗师', rating: 4.5, status: 'APPROVED', specialties: '["压力","睡眠"]', pricePerSession: 300 },
-        { key: '3', id: '3', user: { nickname: '王医生' }, title: '精神科医师', rating: 0, status: 'PENDING', specialties: '["创伤","PTSD"]', pricePerSession: 500 },
+        { key: '1', id: '1', user: { nickname: '张咨询师' }, title: '心理咨询师', rating: 4.8, status: 'APPROVED', specialties: '["焦虑","抑郁"]' },
+        { key: '2', id: '2', user: { nickname: '李老师' }, title: '心理治疗师', rating: 4.5, status: 'APPROVED', specialties: '["压力","睡眠"]' },
+        { key: '3', id: '3', user: { nickname: '王医生' }, title: '精神科医师', rating: 0, status: 'PENDING', specialties: '["创伤","PTSD"]' },
       ]);
     } finally { setLoading(false); }
   };
@@ -51,7 +51,6 @@ export default function AdminConsultants() {
     { title: '姓名', key: 'name', render: (_: any, r: any) => r.user?.nickname || '未知' },
     { title: '职称', dataIndex: 'title', key: 'title' },
     { title: '评分', dataIndex: 'rating', key: 'rating', render: (v: number) => v > 0 ? <Rate disabled value={v} style={{ fontSize: 14 }} /> : <Text type="secondary">暂无</Text> },
-    { title: '单价', dataIndex: 'pricePerSession', key: 'pricePerSession', render: (v: number) => `¥${v}` },
     { title: '状态', dataIndex: 'status', key: 'status', render: (s: string) => <Tag color={statusColors[s]}>{statusLabels[s]}</Tag> },
     {
       title: '操作', key: 'action',
@@ -99,9 +98,6 @@ export default function AdminConsultants() {
               {JSON.parse(selected.specialties || '[]').map((s: string, i: number) => (
                 <Tag key={i} color="purple">{s}</Tag>
               ))}
-            </div>
-            <div style={{ marginBottom: 16 }}>
-              <Text strong>单价：</Text><Text>¥{selected.pricePerSession}/次</Text>
             </div>
             <div>
               <Text strong>简介：</Text>

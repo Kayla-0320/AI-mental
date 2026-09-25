@@ -4,7 +4,7 @@ import { Layout, Menu, Avatar, Dropdown, Badge, Space, Typography, Popover, List
 import {
   HomeOutlined, MessageOutlined, UserOutlined, HeartOutlined,
   TeamOutlined, BellOutlined, LogoutOutlined, SettingOutlined,
-  CoffeeOutlined, TrophyOutlined, BulbOutlined,
+  CoffeeOutlined, TrophyOutlined, ThunderboltOutlined,
   SoundOutlined, MenuOutlined, CloseOutlined,
 } from '@ant-design/icons';
 import { useAuthStore } from '../../store/authStore';
@@ -21,10 +21,10 @@ const { Text } = Typography;
 const menuItems = [
   { key: '/', icon: <HomeOutlined />, label: '首页' },
   { key: '/chat', icon: <MessageOutlined />, label: 'AI 倾诉' },
-  { key: '/socratic', icon: <BulbOutlined />, label: '话痨树洞' },
   { key: '/companions', icon: <TeamOutlined />, label: '同伴社区' },
   { key: '/healing', icon: <HeartOutlined />, label: '疗愈空间' },
   { key: '/growth', icon: <TrophyOutlined />, label: '我的成长' },
+  { key: '/twin', icon: <ThunderboltOutlined />, label: '数字孪生' },
   { key: '/profile', icon: <UserOutlined />, label: '心理画像' },
   { key: '/experts', icon: <CoffeeOutlined />, label: '我的咨询' },
   { key: '/settings', icon: <SettingOutlined />, label: '设置' },
@@ -233,26 +233,29 @@ export default function PatientLayout() {
         </Content>
       </Layout>
 
-      {/* 全局焦虑感知：浮动按钮 + 现实任务弹窗 + 危机干预 */}
-      <AnxietyFloatingWidget />
+      {/* 全局浮动按钮组：统一容器，对齐大小和间距 */}
       <RealityTaskModal />
-      <CrisisInterventionWidget />
-
-      {/* 反馈浮动按钮 */}
-      <div
-        onClick={() => setFeedbackOpen(true)}
-        style={{
-          position: 'fixed', bottom: isMobile ? 80 : 32, right: 24, width: 48, height: 48,
-          borderRadius: '50%', background: 'linear-gradient(135deg, #ff8fab 0%, #c084fc 100%)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          cursor: 'pointer', boxShadow: '0 4px 12px rgba(255,143,171,0.4)',
-          zIndex: 100, transition: 'transform 0.2s',
-        }}
-        onMouseEnter={(e) => { e.currentTarget.style.transform = 'scale(1.1)'; }}
-        onMouseLeave={(e) => { e.currentTarget.style.transform = 'scale(1)'; }}
-        title="反馈建议"
-      >
-        <SoundOutlined style={{ fontSize: 20, color: '#fff' }} />
+      <div style={{
+        position: 'fixed', bottom: 24, right: 20, zIndex: 1000,
+        display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12,
+      }}>
+        <CrisisInterventionWidget />
+        <AnxietyFloatingWidget />
+        <div
+          onClick={() => setFeedbackOpen(true)}
+          style={{
+            width: 48, height: 48, borderRadius: '50%',
+            background: 'linear-gradient(135deg, #ff8fab 0%, #c084fc 100%)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            cursor: 'pointer', boxShadow: '0 4px 12px rgba(255,143,171,0.4)',
+            transition: 'transform 0.2s', flexShrink: 0,
+          }}
+          onMouseEnter={(e) => { e.currentTarget.style.transform = 'scale(1.1)'; }}
+          onMouseLeave={(e) => { e.currentTarget.style.transform = 'scale(1)'; }}
+          title="反馈建议"
+        >
+          <SoundOutlined style={{ fontSize: 22, color: '#fff' }} />
+        </div>
       </div>
 
       {/* 移动端底部Tab */}

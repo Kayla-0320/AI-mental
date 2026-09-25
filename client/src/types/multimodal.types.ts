@@ -214,6 +214,14 @@ export interface ComprehensiveEmotionState {
   text: TextAnalysis;
   voice: VoiceAnalysis;
   facial: FacialAnalysis;
+  // 新增 7 模态
+  circadian: CircadianAnalysis;
+  cognitiveDistortion: CognitiveDistortionAnalysis;
+  hrv: HRVAnalysis;
+  breathing: BreathingAnalysis;
+  behavioralActivation: BehavioralActivationAnalysis;
+  eyeMovement: EyeMovementAnalysis;
+  voiceSemantics: VoiceSemanticsAnalysis;
 
   // 融合元数据
   fusionWeights: {
@@ -221,6 +229,13 @@ export interface ComprehensiveEmotionState {
     voice: number;
     facial: number;
     keyboard: number;
+    circadian: number;
+    cognitive: number;
+    hrv: number;
+    breathing: number;
+    behavioralAct: number;
+    eye: number;
+    voiceSemantics: number;
   };
   activeModalities: string[];      // 当前活跃的模态列表
   lastUpdated: number;
@@ -229,6 +244,88 @@ export interface ComprehensiveEmotionState {
   caringMessage: string;
   evidence: string[];
   narrativeAnalysis: string;       // 叙事性多模态分析长文本
+}
+
+// ===== 新增 7 模态类型定义 =====
+
+// ===== 昼夜节律分析 =====
+export interface CircadianAnalysis {
+  riskScore: number;               // 昼夜节律风险 0-1
+  lateNightRisk: number;           // 深夜活动风险 0-1
+  regularityScore: number;         // 作息规律性 0-1
+  lastActivityHour: number;        // 最近活动小时 (0-23)
+  isActive: boolean;
+  timestamp: number;
+}
+
+// ===== 认知扭曲深度分析 =====
+export interface CognitiveDistortionAnalysis {
+  riskScore: number;               // 认知扭曲风险 0-1
+  categories: {
+    catastrophizing: number;       // 灾难化 0-1
+    blackAndWhite: number;         // 非黑即白 0-1
+    overgeneralization: number;    // 过度概括 0-1
+    selfBlame: number;             // 自我归咎 0-1
+    hopelessness: number;          // 无望感 0-1
+    mindReading: number;           // 读心术 0-1
+    shouldStatements: number;      // 应该陈述 0-1
+  };
+  totalDistortionCount: number;
+  timestamp: number;
+}
+
+// ===== rPPG 心率变异性分析 =====
+export interface HRVAnalysis {
+  riskScore: number;               // HRV 风险 0-1
+  heartRate: number;               // 心率 bpm
+  hrvRmssd: number;                // HRV RMSSD ms
+  signalQuality: number;           // 信号质量 0-1
+  isMeasuring: boolean;
+  timestamp: number;
+}
+
+// ===== 呼吸模式分析 =====
+export interface BreathingAnalysis {
+  riskScore: number;               // 呼吸风险 0-1
+  breathingRate: number;           // 呼吸频率 次/分
+  regularityCV: number;            // 规律性变异系数
+  sighCount: number;               // 叹气次数
+  signalQuality: number;           // 信号质量 0-1
+  isMeasuring: boolean;
+  timestamp: number;
+}
+
+// ===== 行为激活水平分析 =====
+export interface BehavioralActivationAnalysis {
+  riskScore: number;               // 行为退缩风险 0-1
+  dailyInteractionCount: number;   // 今日互动次数
+  explorationRate: number;         // 功能探索率 0-1
+  socialWithdrawalScore: number;   // 社交退缩分 0-1
+  trendDirection: 'improving' | 'stable' | 'declining';
+  isActive: boolean;
+  timestamp: number;
+}
+
+// ===== 眼动模式分析 =====
+export interface EyeMovementAnalysis {
+  riskScore: number;               // 眼动风险 0-1
+  blinkRate: number;               // 眨眼频率 次/分
+  downwardGazeRatio: number;       // 向下注视比例 0-1
+  attentionScatter: number;        // 注意力分散度 0-1
+  signalQuality: number;           // 信号质量 0-1
+  isMeasuring: boolean;
+  timestamp: number;
+}
+
+// ===== 语音深层语义分析 =====
+export interface VoiceSemanticsAnalysis {
+  riskScore: number;               // 语义风险 0-1
+  firstPersonSingularRatio: number; // 第一人称单数密度
+  firstPersonPluralRatio: number;   // 第一人称复数密度
+  absolutistRatio: number;         // 绝对化表达密度
+  selfReferentialDensity: number;  // 自我指涉密度
+  negativeAffectRatio: number;     // 消极情感词比例
+  timestamp: number;
 }
 
 // ===== 默认值 =====
@@ -277,4 +374,43 @@ export const defaultFacial: FacialAnalysis = {
   dominantExpression: '平静', expressionIntensity: 0,
   emotionMapping: { happiness: 0, sadness: 0, anger: 0, fear: 0, surprise: 0, disgust: 0, distress: 0 },
   isDetecting: false, confidence: 0, frameCount: 0, timestamp: 0,
+};
+
+// ===== 新增 7 模态默认值 =====
+export const defaultCircadian: CircadianAnalysis = {
+  riskScore: 0, lateNightRisk: 0, regularityScore: 0.5,
+  lastActivityHour: 12, isActive: false, timestamp: 0,
+};
+
+export const defaultCognitiveDistortion: CognitiveDistortionAnalysis = {
+  riskScore: 0,
+  categories: { catastrophizing: 0, blackAndWhite: 0, overgeneralization: 0, selfBlame: 0, hopelessness: 0, mindReading: 0, shouldStatements: 0 },
+  totalDistortionCount: 0, timestamp: 0,
+};
+
+export const defaultHRV: HRVAnalysis = {
+  riskScore: 0, heartRate: 0, hrvRmssd: 0, signalQuality: 0,
+  isMeasuring: false, timestamp: 0,
+};
+
+export const defaultBreathing: BreathingAnalysis = {
+  riskScore: 0, breathingRate: 0, regularityCV: 0, sighCount: 0,
+  signalQuality: 0, isMeasuring: false, timestamp: 0,
+};
+
+export const defaultBehavioralActivation: BehavioralActivationAnalysis = {
+  riskScore: 0, dailyInteractionCount: 0, explorationRate: 0,
+  socialWithdrawalScore: 0, trendDirection: 'stable' as const,
+  isActive: false, timestamp: 0,
+};
+
+export const defaultEyeMovement: EyeMovementAnalysis = {
+  riskScore: 0, blinkRate: 0, downwardGazeRatio: 0, attentionScatter: 0,
+  signalQuality: 0, isMeasuring: false, timestamp: 0,
+};
+
+export const defaultVoiceSemantics: VoiceSemanticsAnalysis = {
+  riskScore: 0, firstPersonSingularRatio: 0, firstPersonPluralRatio: 0,
+  absolutistRatio: 0, selfReferentialDensity: 0, negativeAffectRatio: 0,
+  timestamp: 0,
 };

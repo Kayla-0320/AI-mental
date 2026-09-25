@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Row, Col, Card, Typography, Statistic, Space, Tag, Progress, Table, Tabs, Tooltip, Timeline, Badge, Divider } from 'antd';
+import { useState, useEffect } from 'react';
+import { Row, Col, Card, Typography, Statistic, Space, Tag, Progress, Table, Tabs, Tooltip, Timeline, Badge, Divider, message } from 'antd';
 import {
   UserOutlined, MessageOutlined, TeamOutlined, FileTextOutlined,
   RiseOutlined, SafetyCertificateOutlined, AuditOutlined,
@@ -8,20 +8,36 @@ import {
   DashboardOutlined, ExperimentOutlined, EyeOutlined,
 } from '@ant-design/icons';
 import { AreaChart, Area, BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer } from 'recharts';
+import { adminApi } from '../../services';
 
 const { Title, Text } = Typography;
 
 export default function Dashboard() {
   const [activeTab, setActiveTab] = useState('overview');
-
-  // 模拟数据
-  const stats = {
-    totalUsers: 1234,
-    activeUsers: 456,
-    totalConsultants: 28,
-    totalConversations: 5678,
-    totalAssessments: 890,
+  const [stats, setStats] = useState({
+    totalUsers: 0,
+    activeUsers: 0,
+    newToday: 0,
+    totalConsultants: 0,
+    onlineConsultants: 0,
+    totalConversations: 0,
+    totalAssessments: 0,
+    todayMoodCheckIns: 0,
     avgRating: 4.6,
+    recentActivities: [] as any[],
+  });
+
+  useEffect(() => {
+    loadStats();
+  }, []);
+
+  const loadStats = async () => {
+    try {
+      const res = await adminApi.getStats() as any;
+      if (res.data) setStats(prev => ({ ...prev, ...res.data }));
+    } catch {
+      message.error('加载统计数据失败');
+    }
   };
 
   return (
@@ -34,7 +50,7 @@ export default function Dashboard() {
           <Card style={{ borderRadius: 12 }}>
             <Statistic title="注册用户" value={stats.totalUsers} prefix={<UserOutlined />}
               valueStyle={{ color: '#6366f1' }} />
-            <Text type="secondary" style={{ marginTop: 8 }}>较昨日 +12</Text>
+            <Text type="secondary" style={{ marginTop: 8 }}>今日新增 {stats.newToday}</Text>
           </Card>
         </Col>
         <Col xs={24} sm={12} lg={6}>
@@ -53,9 +69,9 @@ export default function Dashboard() {
         </Col>
         <Col xs={24} sm={12} lg={6}>
           <Card style={{ borderRadius: 12 }}>
-            <Statistic title="咨询师" value={stats.totalConsultants} prefix={<TeamOutlined />}
+            <Statistic title="公益咨询师" value={stats.totalConsultants} prefix={<TeamOutlined />}
               valueStyle={{ color: '#f59e0b' }} />
-            <Text type="secondary" style={{ marginTop: 8 }}>在线 {Math.floor(stats.totalConsultants * 0.6)}</Text>
+            <Text type="secondary" style={{ marginTop: 8 }}>在线 {stats.onlineConsultants}</Text>
           </Card>
         </Col>
       </Row>
@@ -75,7 +91,7 @@ export default function Dashboard() {
                       <Text strong>{stats.totalAssessments}</Text>
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                      <Text>咨询师平均评分</Text>
+                      <Text>公益咨询师平均评分</Text>
                       <Text strong>{stats.avgRating} / 5.0</Text>
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between' }}>
@@ -96,7 +112,7 @@ export default function Dashboard() {
                       { time: '10分钟前', event: '新用户注册' },
                       { time: '30分钟前', event: '完成心理测评 PHQ-9' },
                       { time: '1小时前', event: 'AI咨询对话开始' },
-                      { time: '2小时前', event: '预约咨询师成功' },
+                      { time: '2小时前', event: '预约公益咨询师成功' },
                       { time: '3小时前', event: '疗愈冥想练习完成' },
                     ].map((item, i) => (
                       <div key={i} style={{ display: 'flex', justifyContent: 'space-between' }}>
@@ -325,7 +341,7 @@ export default function Dashboard() {
                     </div>
                     <div>
                       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                        <Text>咨询师接入时间</Text>
+                        <Text>公益咨询师接入时间</Text>
                         <Text strong style={{ color: '#1890ff' }}>3m 12s</Text>
                       </div>
                       <Progress percent={64} showInfo={false} size="small" strokeColor="#1890ff" />
@@ -391,14 +407,14 @@ export default function Dashboard() {
                       { color: 'green', children: (
                         <div>
                           <Text strong style={{ fontSize: 12 }}>用户A 危机解除</Text>
-                          <div><Text type="secondary" style={{ fontSize: 11 }}>咨询师已接入，风险下降</Text></div>
+                          <div><Text type="secondary" style={{ fontSize: 11 }}>公益咨询师已接入，风险下降</Text></div>
                           <div><Text type="secondary" style={{ fontSize: 10 }}>2小时前</Text></div>
                         </div>
                       )},
                       { color: 'orange', children: (
                         <div>
                           <Text strong style={{ fontSize: 12 }}>用户B 危机触发</Text>
-                          <div><Text type="secondary" style={{ fontSize: 11 }}>检测到自伤关键词，已通知咨询师</Text></div>
+                          <div><Text type="secondary" style={{ fontSize: 11 }}>检测到自伤关键词，已通知公益咨询师</Text></div>
                           <div><Text type="secondary" style={{ fontSize: 10 }}>5小时前</Text></div>
                         </div>
                       )},

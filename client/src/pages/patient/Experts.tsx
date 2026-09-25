@@ -61,7 +61,7 @@ function ExpertChatTab({ bookings }: { bookings: any[] }) {
   return (
     <div style={{ display: 'flex', gap: 16, height: 'calc(100vh - 260px)' }}>
       <Card style={{ width: 280, height: '100%', borderRadius: 12 }}
-        title={<Text strong><TeamOutlined /> 我的咨询师</Text>}
+        title={<Text strong><TeamOutlined /> 我的公益咨询师</Text>}
         bodyStyle={{ padding: '8px 0', height: 'calc(100% - 57px)', overflowY: 'auto' }}>
         <List
           dataSource={bookings}
@@ -75,7 +75,7 @@ function ExpertChatTab({ bookings }: { bookings: any[] }) {
               }}
             >
               <div>
-                <Text strong style={{ fontSize: 13 }}>{item.consultant?.user?.nickname || '咨询师'}</Text>
+                <Text strong style={{ fontSize: 13 }}>{item.consultant?.user?.nickname || '公益咨询师'}</Text>
                 <div><Text type="secondary" style={{ fontSize: 11 }}>{new Date(item.scheduledAt).toLocaleString()}</Text></div>
                 <Tag color={item.status === 'CONFIRMED' ? 'green' : item.status === 'IN_PROGRESS' ? 'blue' : 'default'} style={{ fontSize: 10, marginTop: 4 }}>
                   {item.status === 'CONFIRMED' ? '已确认' : item.status === 'IN_PROGRESS' ? '进行中' : item.status}
@@ -90,7 +90,7 @@ function ExpertChatTab({ bookings }: { bookings: any[] }) {
         bodyStyle={{ flex: 1, display: 'flex', flexDirection: 'column', padding: 0, overflow: 'hidden' }}>
         {!selectedBooking ? (
           <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <Empty description="选择一个咨询师开始对话" />
+            <Empty description="选择一个公益咨询师开始对话" />
           </div>
         ) : (
           <>
@@ -120,7 +120,7 @@ function ExpertChatTab({ bookings }: { bookings: any[] }) {
             <div style={{ padding: '16px 24px', borderTop: '1px solid #f0f0f0' }}>
               <Space.Compact style={{ width: '100%' }}>
                 <Input value={input} onChange={(e) => setInput(e.target.value)} onPressEnter={handleSend}
-                  placeholder="给咨询师发消息..." disabled={sending} size="large" style={{ borderRadius: '8px 0 0 8px' }} />
+                  placeholder="给公益咨询师发消息..." disabled={sending} size="large" style={{ borderRadius: '8px 0 0 8px' }} />
                 <Button type="primary" icon={<SendOutlined />} onClick={handleSend} loading={sending} size="large" style={{ borderRadius: '0 8px 8px 0' }}>发送</Button>
               </Space.Compact>
             </div>
@@ -158,16 +158,16 @@ export default function Experts() {
       } else {
         // API 无数据时使用模拟数据
         setConsultants([
-          { id: '1', user: { id: 'mock-1', nickname: '张明华' }, title: '资深心理咨询师', rating: 4.8, specialties: '["焦虑","抑郁","人际关系"]', pricePerSession: 300, introduction: '国家二级心理咨询师，从业10年，擅长认知行为疗法和正念疗法。帮助过500+来访者走出焦虑和抑郁困扰。' },
-          { id: '2', user: { id: 'mock-2', nickname: '李思雨' }, title: '心理治疗师', rating: 4.6, specialties: '["压力管理","睡眠障碍","职场心理"]', pricePerSession: 250, introduction: '临床心理学硕士，专注压力管理和睡眠改善。结合CBT和ACT疗法，帮助来访者建立健康的生活方式。' },
-          { id: '3', user: { id: 'mock-3', nickname: '王建国' }, title: '精神科医师', rating: 4.9, specialties: '["创伤后应激","情绪障碍","青少年心理"]', pricePerSession: 500, introduction: '三甲医院精神科副主任医师，20年临床经验。擅长复杂心理问题的诊断与治疗，注重药物与心理治疗结合。' },
+          { id: '1', user: { id: 'mock-1', nickname: '张明华' }, title: '资深公益心理咨询师', rating: 4.8, specialties: '["焦虑","抑郁","人际关系"]', introduction: '国家二级公益心理咨询师，从业10年，擅长认知行为疗法和正念疗法。帮助过500+来访者走出焦虑和抑郁困扰。' },
+          { id: '2', user: { id: 'mock-2', nickname: '李思雨' }, title: '心理治疗师', rating: 4.6, specialties: '["压力管理","睡眠障碍","职场心理"]', introduction: '临床心理学硕士，专注压力管理和睡眠改善。结合CBT和ACT疗法，帮助来访者建立健康的生活方式。' },
+          { id: '3', user: { id: 'mock-3', nickname: '王建国' }, title: '精神科医师', rating: 4.9, specialties: '["创伤后应激","情绪障碍","青少年心理"]', introduction: '三甲医院精神科副主任医师，20年临床经验。擅长复杂心理问题的诊断与治疗，注重药物与心理治疗结合。' },
         ]);
       }
     } catch {
       setConsultants([
-        { id: '1', user: { id: 'mock-1', nickname: '张明华' }, title: '资深心理咨询师', rating: 4.8, specialties: '["焦虑","抑郁","人际关系"]', pricePerSession: 300, introduction: '国家二级心理咨询师，从业10年，擅长认知行为疗法和正念疗法。' },
-        { id: '2', user: { id: 'mock-2', nickname: '李思雨' }, title: '心理治疗师', rating: 4.6, specialties: '["压力管理","睡眠障碍","职场心理"]', pricePerSession: 250, introduction: '临床心理学硕士，专注压力管理和睡眠改善。' },
-        { id: '3', user: { id: 'mock-3', nickname: '王建国' }, title: '精神科医师', rating: 4.9, specialties: '["创伤后应激","情绪障碍","青少年心理"]', pricePerSession: 500, introduction: '三甲医院精神科副主任医师，20年临床经验。' },
+        { id: '1', user: { id: 'mock-1', nickname: '张明华' }, title: '资深公益心理咨询师', rating: 4.8, specialties: '["焦虑","抑郁","人际关系"]', introduction: '国家二级公益心理咨询师，从业10年，擅长认知行为疗法和正念疗法。' },
+        { id: '2', user: { id: 'mock-2', nickname: '李思雨' }, title: '心理治疗师', rating: 4.6, specialties: '["压力管理","睡眠障碍","职场心理"]', introduction: '临床心理学硕士，专注压力管理和睡眠改善。' },
+        { id: '3', user: { id: 'mock-3', nickname: '王建国' }, title: '精神科医师', rating: 4.9, specialties: '["创伤后应激","情绪障碍","青少年心理"]', introduction: '三甲医院精神科副主任医师，20年临床经验。' },
       ]);
     } finally { setLoading(false); }
   };
@@ -197,7 +197,7 @@ export default function Experts() {
         notes: bookingNotes,
         type: bookingType,
       });
-      message.success('预约成功，等待咨询师确认');
+      message.success('预约成功，等待公益咨询师确认');
       setBookingModal(false);
       setBookingDate(null);
       setBookingNotes('');
@@ -234,7 +234,7 @@ export default function Experts() {
         items={[
           {
             key: 'list',
-            label: <Space><TeamOutlined /> 咨询师列表</Space>,
+            label: <Space><TeamOutlined /> 公益咨询师列表</Space>,
             children: (
               <div>
                 {/* 我的预约 */}
@@ -291,11 +291,11 @@ export default function Experts() {
                 )}
 
                 <Title level={4} style={{ marginBottom: 16 }}>
-                  <TeamOutlined /> 专业咨询师团队
+                  <TeamOutlined /> 公益咨询师团队
                 </Title>
 
                 {consultants.length === 0 ? (
-                  <Empty description="暂无可用咨询师" />
+                  <Empty description="暂无可用公益咨询师" />
                 ) : (
                   <Row gutter={[16, 16]}>
                     {consultants.map((c: any) => (
@@ -322,10 +322,7 @@ export default function Experts() {
                               <Tag key={i} color="purple">{s}</Tag>
                             ))}
                           </div>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <Text strong style={{ color: '#f59e0b' }}>¥{String(c.pricePerSession)}/次</Text>
-                            <Button type="primary" onClick={() => handleBooking(c)}>预约咨询</Button>
-                          </div>
+                          <Button type="primary" block onClick={() => handleBooking(c)} style={{ borderRadius: 20 }}>预约咨询</Button>
                         </Card>
                       </Col>
                     ))}
@@ -343,7 +340,7 @@ export default function Experts() {
       />
 
       <Modal open={bookingModal} onCancel={() => { setBookingModal(false); setBookingDate(null); setBookingNotes(''); setBookingType('TEXT'); }}
-        title={`预约 - ${selectedConsultant?.user?.nickname || '咨询师'}`}
+        title={`预约 - ${selectedConsultant?.user?.nickname || '公益咨询师'}`}
         onOk={confirmBooking} okText="确认预约" cancelText="取消"
         confirmLoading={bookingLoading}>
         <div style={{ padding: '20px 0' }}>

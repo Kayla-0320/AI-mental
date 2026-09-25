@@ -31,31 +31,24 @@ export default function ConsultantProfiles() {
   const loadPatients = async () => {
     setLoading(true);
     try {
-      // 从预约记录中获取来访者列表
-      const res = await api.get('/expert/bookings') as any;
-      const bookings = res.data?.bookings || [];
-      // 去重，按患者分组
-      const patientMap = new Map<string, any>();
-      bookings.forEach((b: any) => {
-        if (b.patient?.id && !patientMap.has(b.patient.id)) {
-          patientMap.set(b.patient.id, {
-            userId: b.patient.id,
-            name: b.patient.nickname || '未知',
-            email: b.patient.email || '',
-          });
-        }
-      });
-      const patientList = Array.from(patientMap.values());
+      // 使用咨询师专用患者列表接口
+      const res = await api.get('/expert/patients') as any;
+      const patientsData = res.data?.patients || [];
+      const patientList = patientsData.map((p: any) => ({
+        userId: p.id,
+        name: p.nickname || '未知',
+        email: p.email || '',
+      }));
       setPatients(patientList);
 
       // 获取每个患者的画像和焦虑数据
-      const profilePromises = patientList.map(p =>
-        api.get(`/profile/profile/consultation-data?patientId=${p.userId}`).catch(() => null)
+      const profilePromises = patientList.map((p: any) =>
+        api.get(`/profile/consultation-data?patientId=${p.userId}`).catch(() => null)
       );
       const results = await Promise.all(profilePromises);
       const profiles: Record<string, any> = {};
       const anxieties: Record<string, any> = {};
-      patientList.forEach((p, i) => {
+      patientList.forEach((p: any, i: number) => {
         if (results[i]?.data) {
           profiles[p.userId] = results[i].data;
           if (results[i].data.anxiety) {

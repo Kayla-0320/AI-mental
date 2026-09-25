@@ -2,30 +2,32 @@ import { useState, useEffect } from 'react';
 import { Card, Typography, Table, Tag, Space, Button, Input, message, Modal, Select, Popconfirm } from 'antd';
 import { UserOutlined, SearchOutlined, LockOutlined, UnlockOutlined } from '@ant-design/icons';
 import api from '../../services/api';
+import { adminApi } from '../../services';
 
 const { Title, Text } = Typography;
 
 const roleColors: Record<string, string> = { PATIENT: 'blue', CONSULTANT: 'green', ADMIN: 'red' };
-const roleLabels: Record<string, string> = { PATIENT: '用户', CONSULTANT: '咨询师', ADMIN: '管理员' };
+const roleLabels: Record<string, string> = { PATIENT: '用户', CONSULTANT: '公益咨询师', ADMIN: '管理员' };
 
 export default function AdminUsers() {
   const [users, setUsers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  const [roleFilter, setRoleFilter] = useState<string | undefined>(undefined);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
 
-  useEffect(() => { loadUsers(); }, [page]);
+  useEffect(() => { loadUsers(); }, [page, roleFilter]);
 
   const loadUsers = async () => {
     setLoading(true);
     try {
-      const res = await api.get(`/auth/users?page=${page}&limit=10&search=${search}`) as any;
+      const res = await adminApi.getUsers({ search, role: roleFilter, page, pageSize: 10 }) as any;
       const list = res.data?.users || [];
-      setUsers(list.map((u: any, i: number) => ({ ...u, key: u.id })));
+      setUsers(list.map((u: any, i: number) => ({ ...u, key: u.id, status: u.isActive ? 'ACTIVE' : 'DISABLED' })));
       setTotal(res.data?.total || list.length);
     } catch {
-      // 模拟数据
+      // fallback 模拟数据
       setUsers([
         { key: '1', id: '1', nickname: '小明', email: 'xm@test.com', role: 'PATIENT', status: 'ACTIVE', createdAt: new Date().toISOString() },
         { key: '2', id: '2', nickname: '小红', email: 'xh@test.com', role: 'PATIENT', status: 'ACTIVE', createdAt: new Date().toISOString() },
@@ -72,16 +74,30 @@ export default function AdminUsers() {
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
-        <Title level={4}><UserOutlined /> 用户管理</Title>
-        <Input.Search
-          placeholder="搜索用户昵称或邮箱"
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-          onSearch={() => { setPage(1); loadUsers(); }}
-          style={{ width: 300 }}
-          allowClear
-        />
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16, gap: 12 }}>
+        <Title level={4} style={{ margin: 0 }}><UserOutlined /> 用户管理</Title>
+        <Space>
+          <Select
+            placeholder="角色筛选"
+            allowClear
+            style={{ width: 120 }}
+            value={roleFilter}
+            onChange={v => { setRoleFilter(v); setPage(1); }}
+            options={[
+              { label: '管理员', value: 'ADMIN' },
+              { label: '公益咨询师', value: 'CONSULTANT' },
+              { label: '用户', value: 'PATIENT' },
+            ]}
+          />
+          <Input.Search
+            placeholder="搜索用户昵称或邮箱"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            onSearch={() => { setPage(1); loadUsers(); }}
+            style={{ width: 300 }}
+            allowClear
+          />
+        </Space>
       </div>
       <Card style={{ borderRadius: 12 }}>
         <Table columns={columns} dataSource={users} loading={loading}

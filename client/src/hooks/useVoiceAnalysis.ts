@@ -20,6 +20,8 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import type { VoiceAnalysis } from '../types/multimodal.types';
 import { defaultVoice } from '../types/multimodal.types';
+import type { AgeGroup } from './ageConfig';
+import { getVoiceConfig } from './ageConfig';
 
 // Web Speech API 类型声明
 interface SpeechRecognitionResult {
@@ -47,7 +49,10 @@ interface SpeechRecognitionInstance {
   onend: (() => void) | null;
 }
 
-export function useVoiceAnalysis() {
+/** 音频能量回调：RMS 能量值（供呼吸模式分析使用） */
+export type AudioEnergyCallback = (rmsEnergy: number) => void;
+
+export function useVoiceAnalysis(ageGroup: AgeGroup | null = null, onAudioEnergy?: AudioEnergyCallback | null) {
   const [metrics, setMetrics] = useState<VoiceAnalysis>({ ...defaultVoice });
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
@@ -64,6 +69,9 @@ export function useVoiceAnalysis() {
   // 语音识别
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
   const speechTextHistoryRef = useRef<string[]>([]);
+
+  // 年龄校准阈值
+  const voiceConfig = getVoiceConfig(ageGroup);
 
   const analyzeFrame = useCallback(() => {
     if (!isActiveRef.current || !analyserRef.current) return;
@@ -83,6 +91,9 @@ export function useVoiceAnalysis() {
     const energyDb = 20 * Math.log10(rms + 1e-10);
     energyHistoryRef.current.push(energyDb);
     frameCountRef.current++;
+
+    // 通知呼吸模式分析 Hook
+    if (onAudioEnergy) onAudioEnergy(rms);
 
     // 检测停顿 (能量 < -50dB = 静音)
     const isSilence = energyDb < -50;
@@ -180,16 +191,16 @@ export function useVoiceAnalysis() {
       // 停顿比
       const pauseRatio = silenceCountRef.current > 0 ? silenceCountRef.current / frameCountRef.current : 0;
 
-      // 映射到情绪概率 [快乐, 悲伤, 焦虑, 愤怒, 中性]
+      // 映射到情绪概率 [快乐, 悲伤, 焦虑, 愤怒, 中性]（使用年龄校准阈值）
       const emotionProbs = [0.2, 0.2, 0.2, 0.2, 0.2];
-      // 低基频 + 低能量 → 悲伤
-      if (pitchEstimate < 150 && energyMean < -35) { emotionProbs[1] += 0.3; }
-      // 高基频 + 高语速 → 焦虑
-      if (pitchEstimate > 280 || speechRate > 5) { emotionProbs[2] += 0.3; }
+      // 低基频 + 低能量 → 悲伤（年龄校准）
+      if (pitchEstimate < voiceConfig.f0DepressionThreshold && energyMean < -35) { emotionProbs[1] += 0.3; }
+      // 高基频 + 高语速 → 焦虑（年龄校准）
+      if (pitchEstimate > voiceConfig.f0AnxietyThreshold || speechRate > voiceConfig.speechRateAnxietyThreshold) { emotionProbs[2] += 0.3; }
       // 高能量 + 高波动 → 愤怒
       if (energyMean > -20 && energyStd > 8) { emotionProbs[3] += 0.3; }
-      // 高停顿 → 悲伤/焦虑
-      if (pauseRatio > 0.3) { emotionProbs[1] += 0.15; emotionProbs[2] += 0.1; }
+      // 高停顿 → 悲伤/焦虑（年龄校准）
+      if (pauseRatio > voiceConfig.pauseDepressionThreshold) { emotionProbs[1] += 0.15; emotionProbs[2] += 0.1; }
       // 正常 → 中性
       if (Math.max(...emotionProbs) < 0.3) { emotionProbs[4] += 0.4; }
       const probSum = emotionProbs.reduce((a, b) => a + b, 0);
@@ -374,5 +385,5 @@ export function useVoiceAnalysis() {
     };
   }, []);
 
-  return { metrics, start, stop, reset };
+  return { metrics, start, stop, reset, audioContextRef, analyserRef };
 }

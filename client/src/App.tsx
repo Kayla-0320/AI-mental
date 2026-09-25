@@ -14,7 +14,7 @@ import Settings from './pages/patient/Settings';
 import Companions from './pages/patient/Companions';
 import MyGrowth from './pages/patient/MyGrowth';
 import Profile from './pages/patient/Profile';
-import SocraticChat from './pages/patient/SocraticChat';
+import MyDigitalTwin from './pages/patient/MyDigitalTwin';
 import ConsultantDashboard from './pages/consultant/ConsultantDashboard';
 import ConsultantAppointments from './pages/consultant/ConsultantAppointments';
 import ConsultantConsultations from './pages/consultant/ConsultantConsultations';
@@ -54,13 +54,14 @@ export default function App() {
         <Route index element={<Home />} />
         <Route path="chat" element={<Chat />} />
         <Route path="chat/:conversationId" element={<Chat />} />
-        <Route path="socratic" element={<SocraticChat />} />
+        <Route path="socratic" element={<Navigate to="/chat" replace />} />
         <Route path="companions" element={<Companions />} />
         <Route path="healing" element={<Healing />} />
         <Route path="assessment" element={<Navigate to="/profile" replace />} />
         <Route path="anxiety" element={<Navigate to="/profile" replace />} />
         <Route path="growth" element={<MyGrowth />} />
         <Route path="profile" element={<Profile />} />
+        <Route path="twin" element={<MyDigitalTwin />} />
         <Route path="experts" element={<Experts />} />
         <Route path="experts/room/:bookingId" element={<PatientRoom />} />
         <Route path="settings" element={<Settings />} />

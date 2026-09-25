@@ -14,6 +14,7 @@ import { RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, Responsi
 import api from '../../services/api';
 import { getSocket } from '../../services/socket';
 import { useWebRTC } from '../../hooks/useWebRTC';
+import { PERCEPTION_API } from '../../config';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -21,6 +22,20 @@ const riskColors: Record<string, string> = { LOW: '#52c41a', MEDIUM: '#faad14', 
 const riskLabels: Record<string, string> = { LOW: '低风险', MEDIUM: '中风险', HIGH: '高风险', CRISIS: '危机' };
 const anxietyLevelColors: Record<string, string> = { low: '#52c41a', medium: '#faad14', high: '#ff4d4f' };
 const anxietyLevelLabels: Record<string, string> = { low: '良好', medium: '轻度', high: '偏高' };
+// 数字孪生模态标签与配色（与后端 PsychoDimension / DIM_LABELS 对齐）
+const twinDimLabels: Record<string, string> = {
+  text_emotion: '文本情绪', voice_acoustic: '语音声学', facial: '面部表情',
+  circadian: '昼夜节律', cognitive: '认知扭曲', behavior: '行为模式',
+  hrv: '心率变异性', breathing: '呼吸模式', behavioral_act: '行为激活',
+  eye: '眼动模式', voice_semantics: '语音语义',
+};
+const twinDimColor = (k: string): string => {
+  const palette = ['#722ed1', '#1890ff', '#13c2c2', '#52c41a', '#fa8c16', '#ff4d4f', '#eb2f96', '#2f54eb', '#a0d911', '#faad14', '#f5222d'];
+  let h = 0;
+  for (let i = 0; i < k.length; i++) h = (h * 31 + k.charCodeAt(i)) >>> 0;
+  return palette[h % palette.length];
+};
+const dimLabel = (k: string): string => twinDimLabels[k] || k;
 
 export default function ConsultantRoom() {
   const { bookingId } = useParams();
@@ -57,6 +72,14 @@ export default function ConsultantRoom() {
   const [auditDrawerOpen, setAuditDrawerOpen] = useState(false);
   // CBT 脚本库
   const [cbtStep, setCbtStep] = useState(0);
+  // 心理数字孪生
+  const [twinPrediction, setTwinPrediction] = useState<any>(null);
+  const [twinLoading, setTwinLoading] = useState(false);
+  // 多维数字孪生（支柱A景观 + 支柱B平行未来/救援）
+  const [twinLandscape, setTwinLandscape] = useState<any>(null);
+  const [twinFutures, setTwinFutures] = useState<any>(null);
+  const [twinRescue, setTwinRescue] = useState<any>(null);
+  const [twinNdLoading, setTwinNdLoading] = useState(false);
   const CBT_SCRIPTS = [
     { title: '① 识别自动思维', prompt: '引导患者描述刚刚脑海中闪过的想法', example: '“当你听到那句话时，脑海里第一个浮现的念头是什么？”' },
     { title: '② 识别认知扭曲', prompt: '帮助患者识别思维中的扭曲模式', example: '“这种想法是不是有点像‘非黑即白’？或者‘灾难化’？”' },
@@ -65,7 +88,6 @@ export default function ConsultantRoom() {
     { title: '⑤ 评估与行动', prompt: '重新评估情绪强度，制定行动计划', example: '"现在再想那件事，你的难受程度从0-10打几分？接下来想做点什么？"' },
   ];
 
-  const PERCEPTION_API = 'http://localhost:8001';
   const emotionLabels = ['快乐', '悲伤', '焦虑', '愤怒', '中性'];
   const emotionColors = ['#52c41a', '#722ed1', '#ff4d4f', '#fa8c16', '#1890ff'];
 
@@ -73,7 +95,22 @@ export default function ConsultantRoom() {
   const socketRef = useRef<ReturnType<typeof getSocket> | null>(null);
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
-  const webrtc = useWebRTC(socketRef.current, bookingId || null);
+  const webrtc = useWebRTC(bookingId || null);
+
+  // 自动同步 WebRTC 流到视频元素（支持自动接听场景）
+  useEffect(() => {
+    if (webrtc.localStream && localVideoRef.current) {
+      localVideoRef.current.srcObject = webrtc.localStream;
+      setCameraOn(true);
+    }
+    if (webrtc.remoteStream && remoteVideoRef.current) {
+      remoteVideoRef.current.srcObject = webrtc.remoteStream;
+    }
+    if (webrtc.isConnected && !callActive) {
+      setCallActive(true);
+      setCallDuration(0);
+    }
+  }, [webrtc.localStream, webrtc.remoteStream, webrtc.isConnected]);
 
   // 加载风险趋势（咨询前查看）
   const loadRiskTrend = useCallback(async () => {
@@ -151,12 +188,67 @@ export default function ConsultantRoom() {
     }
   }, [PERCEPTION_API]);
 
+  // 加载心理数字孪生预测
+  const loadTwinPrediction = useCallback(async () => {
+    try {
+      const bookingRes = await api.get(`/expert/bookings/${bookingId}`) as any;
+      const patientId = bookingRes.data?.patientId;
+      if (!patientId) return;
+      setTwinLoading(true);
+      const res = await fetch(`${PERCEPTION_API}/api/v1/digital-twin/predict`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: patientId, horizon: 12 }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setTwinPrediction(data);
+      }
+    } catch (err) {
+      console.warn('数字孪生预测加载失败:', err);
+    } finally {
+      setTwinLoading(false);
+    }
+  }, [PERCEPTION_API, bookingId]);
+
+  // 加载多维数字孪生：崩溃景观(domino链) + 平行未来 + MPC 救援（较重，仅挂载时+手动重算）
+  const loadTwinAdvanced = useCallback(async () => {
+    try {
+      const bookingRes = await api.get(`/expert/bookings/${bookingId}`) as any;
+      const patientId = bookingRes.data?.patientId;
+      if (!patientId) return;
+      setTwinNdLoading(true);
+      const post = (path: string, body: Record<string, any>) =>
+        fetch(`${PERCEPTION_API}/api/v1/digital-twin/${path}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user_id: patientId, ...body }),
+        }).then(r => (r.ok ? r.json() : null)).catch(() => null);
+      const [land, fut, res] = await Promise.all([
+        post('landscape', { horizon: 12 }),
+        post('futures', { n_particles: 200, horizon: 20, seed: 0 }),
+        post('rescue', { horizon: 15, n_particles: 80, seed: 0 }),
+      ]);
+      if (land) setTwinLandscape(land);
+      if (fut) setTwinFutures(fut);
+      if (res) setTwinRescue(res);
+    } catch (err) {
+      console.warn('多维数字孪生加载失败:', err);
+    } finally {
+      setTwinNdLoading(false);
+    }
+  }, [PERCEPTION_API, bookingId]);
+
   useEffect(() => {
     loadAuditEvents();
+    loadTwinPrediction();
+    loadTwinAdvanced();
     // 每 30 秒自动刷新审计事件
     const auditInterval = setInterval(loadAuditEvents, 30000);
-    return () => clearInterval(auditInterval);
-  }, [loadAuditEvents]);
+    // 每 60 秒自动刷新数字孪生预测
+    const twinInterval = setInterval(loadTwinPrediction, 60000);
+    return () => { clearInterval(auditInterval); clearInterval(twinInterval); };
+  }, [loadAuditEvents, loadTwinPrediction, loadTwinAdvanced]);
   const [emotionResult, setEmotionResult] = useState<{
     text_emotion_probs: number[];
     audio_risk_prob: number | null;
@@ -175,7 +267,7 @@ export default function ConsultantRoom() {
       const patientId = booking?.patientId;
 
       if (patientId) {
-        const res = await api.get(`/profile/profile/consultation-data?patientId=${patientId}`) as any;
+        const res = await api.get(`/profile/consultation-data?patientId=${patientId}`) as any;
         setData(res.data);
         setLastUpdate(new Date().toLocaleTimeString('zh-CN', { hour12: false }));
       }
@@ -790,6 +882,410 @@ export default function ConsultantRoom() {
                           {CBT_SCRIPTS[cbtStep].example}
                         </div>
                       </Card>
+
+                      {/* 该患者干预响应面板 */}
+                      {patientMultimodal?.comprehensiveState?.interventionHistory && patientMultimodal.comprehensiveState.interventionHistory.records?.length > 0 && (() => {
+                        const ih = patientMultimodal.comprehensiveState.interventionHistory;
+                        const typeLabels: Record<string, string> = { breathing: '呼吸练习', cbt: 'CBT认知重构', mindfulness: '正念冥想', reality_task: '现实检验', general: '通用干预' };
+                        return (
+                          <div style={{ marginTop: 16, padding: 12, background: '#fffbe6', borderRadius: 8, border: '1px solid #ffe58f' }}>
+                            <Text strong style={{ fontSize: 12, display: 'block', marginBottom: 8, color: '#d46b08' }}>🎯 该患者干预响应历史 ({ih.records.length}次)</Text>
+                            {Object.entries(ih.effectivenessByType).map(([type, stats]: [string, any]) => (
+                              <div key={type} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6, fontSize: 11 }}>
+                                <span>{typeLabels[type] || type}</span>
+                                <Space size={8}>
+                                  <span style={{ color: stats.avg > 0.1 ? '#52c41a' : stats.avg > 0 ? '#faad14' : '#ff4d4f' }}>
+                                    平均改善 {Math.round(stats.avg * 100)}%
+                                  </span>
+                                  <Tag style={{ fontSize: 9, margin: 0, lineHeight: '14px', padding: '0 4px' }}>{stats.count}次</Tag>
+                                </Space>
+                              </div>
+                            ))}
+                            {ih.recommendedType && (
+                              <div style={{ marginTop: 8, padding: '6px 10px', background: '#f6ffed', borderRadius: 6, fontSize: 11, color: '#389e0d', border: '1px solid #b7eb8f' }}>
+                                ✅ 推荐：该用户对「{typeLabels[ih.recommendedType] || ih.recommendedType}」响应最好（平均降低焦虑 {Math.round((ih.effectivenessByType[ih.recommendedType]?.avg || 0) * 100)}%）
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  ),
+                },
+                {
+                  key: 'twin',
+                  label: <span><RadarChartOutlined /> 数字孪生 <Tag color="cyan" style={{ fontSize: 9, lineHeight: '14px', padding: '0 4px', marginLeft: 4 }}>核心</Tag></span>,
+                  children: twinLoading ? (
+                    <div style={{ textAlign: 'center', padding: 24 }}><Spin tip="加载数字孪生预测..." /></div>
+                  ) : twinPrediction ? (
+                    <div>
+                      {/* 危机风险概览 */}
+                      <Row gutter={[12, 12]} style={{ marginBottom: 12 }}>
+                        <Col xs={12} md={8}>
+                          <Statistic title="最大危机概率" value={Math.round((twinPrediction.trajectory?.max_crisis_risk || 0) * 100)} suffix="%"
+                            valueStyle={{ color: (twinPrediction.trajectory?.max_crisis_risk || 0) > 0.5 ? '#ff4d4f' : (twinPrediction.trajectory?.max_crisis_risk || 0) > 0.3 ? '#faad14' : '#52c41a', fontSize: 22 }} />
+                        </Col>
+                        <Col xs={12} md={8}>
+                          <Statistic title="预计恶化时间" value={twinPrediction.trajectory?.deterioration_time != null ? `${twinPrediction.trajectory.deterioration_time}h` : '—'}
+                            valueStyle={{ fontSize: 22 }} />
+                        </Col>
+                        <Col xs={24} md={8}>
+                          <Statistic title="干预决策" value={twinPrediction.intervention?.should_intervene ? '建议干预' : '继续观察'}
+                            valueStyle={{ fontSize: 18, color: twinPrediction.intervention?.should_intervene ? '#ff4d4f' : '#52c41a' }} />
+                        </Col>
+                      </Row>
+
+                      {/* 轨迹预测图 */}
+                      {twinPrediction.trajectory?.points?.length > 0 && (
+                        <div style={{ marginBottom: 12 }}>
+                          <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>未来 12h 危机概率轨迹预测</Text>
+                          <ResponsiveContainer width="100%" height={120}>
+                            <AreaChart data={twinPrediction.trajectory.points.map((p: any) => ({
+                              hour: `+${p.time_step}h`,
+                              crisis: Math.round(p.crisis_probability * 100),
+                              uncertainty: Math.round(p.uncertainty * 100),
+                            }))}>
+                              <CartesianGrid strokeDasharray="3 3" />
+                              <XAxis dataKey="hour" tick={{ fontSize: 10 }} />
+                              <YAxis domain={[0, 100]} tick={{ fontSize: 10 }} unit="%" />
+                              <RechartsTooltip formatter={(v: number) => `${v}%`} />
+                              <Legend wrapperStyle={{ fontSize: 11 }} />
+                              <Area type="monotone" dataKey="crisis" name="危机概率" stroke="#ff4d4f" fill="#ff4d4f" fillOpacity={0.15} />
+                              <Area type="monotone" dataKey="uncertainty" name="不确定度" stroke="#faad14" fill="#faad14" fillOpacity={0.08} />
+                            </AreaChart>
+                          </ResponsiveContainer>
+                        </div>
+                      )}
+
+                      {/* 干预决策详情 */}
+                      {twinPrediction.intervention?.should_intervene && (
+                        <Card size="small" style={{ borderRadius: 8, borderLeft: '3px solid #ff4d4f', marginBottom: 12, background: '#fff2f0' }}>
+                          <div style={{ fontSize: 13, marginBottom: 6 }}>
+                            <Text strong style={{ color: '#cf1322' }}>🎯 干预建议</Text>
+                          </div>
+                          <div style={{ fontSize: 12, color: '#555', lineHeight: 1.8 }}>
+                            {twinPrediction.intervention.reasoning}
+                          </div>
+                          {twinPrediction.intervention.chain_to_break && (
+                            <div style={{ marginTop: 8, padding: '6px 10px', background: '#fff', borderRadius: 6, fontSize: 12, border: '1px solid #ffccc7' }}>
+                              <Text type="secondary" style={{ fontSize: 11 }}>要阻断的因果链：</Text>
+                              <Text strong style={{ fontSize: 12, color: '#cf1322' }}>{twinPrediction.intervention.chain_to_break}</Text>
+                            </div>
+                          )}
+                          {twinPrediction.intervention.recommended_dimensions?.length > 0 && (
+                            <div style={{ marginTop: 8 }}>
+                              <Text type="secondary" style={{ fontSize: 11 }}>目标维度：</Text>
+                              {twinPrediction.intervention.recommended_dimensions.map((d: string) => (
+                                <Tag key={d} color="volcano" style={{ fontSize: 10, marginBottom: 2 }}>{d}</Tag>
+                              ))}
+                            </div>
+                          )}
+                        </Card>
+                      )}
+
+                      {/* CT-PLEW 精确分析：势能景观 + 临界跃迁 */}
+                      {twinPrediction.precision?.escapes && Object.keys(twinPrediction.precision.escapes).length > 0 && (
+                        <Card size="small" style={{ borderRadius: 8, borderLeft: '3px solid #722ed1', marginBottom: 12, background: '#f9f0ff' }}>
+                          <div style={{ fontSize: 13, marginBottom: 8 }}>
+                            <Text strong style={{ color: '#531dab' }}>⚛ CT-PLEW 精确分析</Text>
+                            <Tag color="purple" style={{ fontSize: 9, marginLeft: 6 }}>势能景观·Kramers</Tag>
+                            {twinPrediction.precision.ews_alert && (
+                              <Tag color="red" style={{ fontSize: 9, marginLeft: 4 }}>临界慢化预警</Tag>
+                            )}
+                            {twinPrediction.precision.multistable && (
+                              <Tag color="geekblue" style={{ fontSize: 9, marginLeft: 4 }}>多稳态</Tag>
+                            )}
+                          </div>
+                          <Row gutter={[8, 8]}>
+                            <Col xs={8}>
+                              <Statistic title="Kramers 跃迁概率" value={Math.round((twinPrediction.precision.crisis_probability || 0) * 100)} suffix="%"
+                                valueStyle={{ fontSize: 18, color: (twinPrediction.precision.crisis_probability || 0) > 0.3 ? '#ff4d4f' : '#52c41a' }} />
+                            </Col>
+                            <Col xs={8}>
+                              <Statistic title="心理韧性 ΔU/D" value={twinPrediction.precision.escapes[twinPrediction.precision.critical_dim]?.resilience ?? 0}
+                                valueStyle={{ fontSize: 18, color: '#722ed1' }} />
+                            </Col>
+                            <Col xs={8}>
+                              <Statistic title="预计跃迁" value={twinPrediction.precision.tipping_eta_steps != null ? `${Math.round(twinPrediction.precision.tipping_eta_steps)}步` : '—'}
+                                valueStyle={{ fontSize: 18 }} />
+                            </Col>
+                          </Row>
+                          {twinPrediction.precision.critical_dim && (
+                            <div style={{ marginTop: 6, fontSize: 11, color: '#888' }}>
+                              最脆弱维度：<Tag style={{ fontSize: 10 }}>{twinPrediction.precision.critical_dim}</Tag>
+                              逃逸机制：{twinPrediction.precision.escapes[twinPrediction.precision.critical_dim]?.method}
+                            </div>
+                          )}
+                          {twinPrediction.precision.counterfactual && (
+                            <div style={{ marginTop: 8, padding: '6px 10px', background: '#fff', borderRadius: 6, fontSize: 11, border: '1px solid #d3adf7', color: '#531dab' }}>
+                              🎯 反事实干预靶点：<Text strong style={{ fontSize: 11, color: '#531dab' }}>{twinPrediction.precision.counterfactual.target_dim}</Text>
+                              （危机概率 {Math.round(twinPrediction.precision.counterfactual.baseline_crisis_prob * 100)}% → {Math.round(twinPrediction.precision.counterfactual.post_crisis_prob * 100)}%）
+                            </div>
+                          )}
+                        </Card>
+                      )}
+
+                      {/* 数字孪生摘要 */}
+                      {twinPrediction.twin_summary && (
+                        <div style={{ fontSize: 11, color: '#888' }}>
+                          <Space split={<span style={{ color: '#ddd' }}>|</span>}>
+                            <span>观测维度: {Object.keys(twinPrediction.twin_summary.current_state || {}).length}</span>
+                            <span>因果边: {twinPrediction.twin_summary.causal_edges || 0}</span>
+                            <span>历史: {twinPrediction.twin_summary.history_length || 0} 步</span>
+                          </Space>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <Empty description="数字孪生尚未积累足够数据" image={Empty.PRESENTED_IMAGE_SIMPLE}>
+                      <Text type="secondary" style={{ fontSize: 12 }}>需要至少 20 次感知更新后才会生成因果图和轨迹预测</Text>
+                    </Empty>
+                  ),
+                },
+                {
+                  key: 'twin-nd',
+                  label: <span><ThunderboltOutlined /> 多维临界 <Tag color="purple" style={{ fontSize: 9, lineHeight: '14px', padding: '0 4px', marginLeft: 4 }}>In-Silico</Tag></span>,
+                  children: (
+                    <div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, gap: 8 }}>
+                        <Text type="secondary" style={{ fontSize: 11, lineHeight: 1.5 }}>
+                          同一个体化随机动力系统 dX=f(X)dt+ΣdW —— 预见崩溃路径 · 排练平行未来 · 优化最小能量救援
+                        </Text>
+                        <Button size="small" icon={<HistoryOutlined />} loading={twinNdLoading} onClick={loadTwinAdvanced} style={{ flexShrink: 0 }}>重算</Button>
+                      </div>
+
+                      {twinNdLoading && !twinLandscape && !twinFutures && !twinRescue ? (
+                        <div style={{ textAlign: 'center', padding: 24 }}><Spin tip="多维景观推演中..." /></div>
+                      ) : (
+                        <>
+                          {/* ===== 1. 崩溃 domino 链（多维临界跃迁景观） ===== */}
+                          <Card size="small" style={{ borderRadius: 8, borderLeft: '3px solid #722ed1', marginBottom: 12, background: '#faf7ff' }}>
+                            <div style={{ fontSize: 13, marginBottom: 8 }}>
+                              <Text strong style={{ color: '#531dab' }}>⛰ 崩溃 domino 链</Text>
+                              <Tag color="purple" style={{ fontSize: 9, marginLeft: 6 }}>instanton·多维Kramers</Tag>
+                              {twinLandscape?.fallback && <Tag color="orange" style={{ fontSize: 9, marginLeft: 4 }}>1D 降级</Tag>}
+                              {twinLandscape?.in_crisis && <Tag color="red" style={{ fontSize: 9, marginLeft: 4 }}>已在危机阱</Tag>}
+                            </div>
+                            {twinLandscape && !twinLandscape.fallback ? (() => {
+                              const L = twinLandscape;
+                              return (
+                                <>
+                                  <Row gutter={[8, 8]}>
+                                    <Col xs={12} md={6}>
+                                      <Statistic title="多维危机概率" value={Math.round((L.crisis_probability || 0) * 100)} suffix="%"
+                                        valueStyle={{ fontSize: 18, color: (L.crisis_probability || 0) > 0.3 ? '#ff4d4f' : (L.crisis_probability || 0) > 0.15 ? '#faad14' : '#52c41a' }} />
+                                    </Col>
+                                    <Col xs={12} md={6}>
+                                      <Statistic title="势垒高度 ΔU" value={L.barrier_height ?? 0} precision={3} valueStyle={{ fontSize: 18, color: '#722ed1' }} />
+                                    </Col>
+                                    <Col xs={12} md={6}>
+                                      <Statistic title="潜空间维度" value={L.n_dim ?? 0}
+                                        suffix={<span style={{ fontSize: 11, color: '#999' }}>解释{Math.round((L.latent_var_explained || 0) * 100)}%</span>}
+                                        valueStyle={{ fontSize: 18 }} />
+                                    </Col>
+                                    <Col xs={12} md={6}>
+                                      <Statistic title="梯度/通量比" value={L.gradient_flux_ratio ?? 0} precision={2} valueStyle={{ fontSize: 18 }} />
+                                    </Col>
+                                  </Row>
+                                  {L.collapse_order?.length > 0 && (
+                                    <div style={{ margin: '10px 0 4px' }}>
+                                      <Text type="secondary" style={{ fontSize: 11, display: 'block', marginBottom: 6 }}>
+                                        最小能量崩溃路径反投影 → 个体化 domino 链（模态崩溃先后顺序）
+                                      </Text>
+                                      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 4 }}>
+                                        {L.collapse_order.map((m: string, i: number) => (
+                                          <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                            {i > 0 && <span style={{ color: '#bbb', fontSize: 12 }}>→</span>}
+                                            <Tag color={i === 0 ? 'red' : i === 1 ? 'volcano' : 'purple'} style={{ margin: 0, fontSize: 11 }}>
+                                              {i + 1}·{dimLabel(m)}
+                                            </Tag>
+                                          </span>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+                                  <div style={{ marginTop: 8, fontSize: 11, color: '#888' }}>
+                                    <Space split={<span style={{ color: '#ddd' }}>|</span>} wrap>
+                                      <span>逃逸率 λ: {L.escape_rate ?? 0}</span>
+                                      {L.particle_prob != null && (
+                                        <span>粒子群交叉验证: {Math.round(L.particle_prob * 100)}%
+                                          {L.particle_ci ? ` [${Math.round(L.particle_ci[0] * 100)}%,${Math.round(L.particle_ci[1] * 100)}%]` : ''}</span>
+                                      )}
+                                      <span>方法: {L.method}</span>
+                                    </Space>
+                                  </div>
+                                </>
+                              );
+                            })() : (
+                              <div style={{ fontSize: 12, color: '#888', lineHeight: 1.7 }}>
+                                {twinLandscape?.fallback
+                                  ? <>维度/历史不足或无清晰双稳态，已降级为 1D CT-PLEW。当前危机概率 <Text strong style={{ color: '#cf1322' }}>{Math.round((twinLandscape.crisis_probability || 0) * 100)}%</Text>{twinLandscape.critical_dim ? <>，最脆弱维度 <Tag style={{ fontSize: 10 }}>{dimLabel(twinLandscape.critical_dim)}</Tag></> : null}。</>
+                                  : '多维景观尚未就绪，待数据积累后自动启用。'}
+                              </div>
+                            )}
+                          </Card>
+
+                          {/* ===== 2. 平行未来扇形轨迹 ===== */}
+                          <Card size="small" style={{ borderRadius: 8, borderLeft: '3px solid #1890ff', marginBottom: 12, background: '#f5faff' }}>
+                            <div style={{ fontSize: 13, marginBottom: 8 }}>
+                              <Text strong style={{ color: '#0958d9' }}>🌀 平行未来推演</Text>
+                              <Tag color="blue" style={{ fontSize: 9, marginLeft: 6 }}>In-Silico·K条轨迹</Tag>
+                              {twinFutures?.fallback && <Tag color="orange" style={{ fontSize: 9, marginLeft: 4 }}>1D 降级</Tag>}
+                            </div>
+                            {twinFutures && !twinFutures.fallback ? (() => {
+                              const F = twinFutures;
+                              const fdf = F.first_domino_freq || {};
+                              const sortedModes = Object.keys(fdf).sort((a, b) => fdf[b] - fdf[a]);
+                              const primary = sortedModes[0] || F.mode_names?.[0];
+                              const q = primary ? F.quantile_mode_traj?.[primary] : null;
+                              const H = q?.q50?.length || 0;
+                              const chartData = Array.from({ length: H }, (_, t) => ({
+                                t: `+${t}`,
+                                band: [(q?.q10?.[t] ?? 0), (q?.q90?.[t] ?? 0)],
+                                median: q?.q50?.[t] ?? 0,
+                              }));
+                              const color = primary ? twinDimColor(primary) : '#1890ff';
+                              return (
+                                <>
+                                  <Row gutter={[8, 8]} style={{ marginBottom: 8 }}>
+                                    <Col xs={8}>
+                                      <Statistic title="平行未来数" value={F.n_particles || 0} valueStyle={{ fontSize: 18 }} />
+                                    </Col>
+                                    <Col xs={8}>
+                                      <Statistic title="危机率" value={Math.round((F.crisis_rate || 0) * 100)} suffix="%"
+                                        valueStyle={{ fontSize: 18, color: (F.crisis_rate || 0) > 0.3 ? '#ff4d4f' : '#faad14' }} />
+                                      <div style={{ fontSize: 10, color: '#999' }}>CI [{Math.round((F.crisis_ci?.[0] || 0) * 100)}%,{Math.round((F.crisis_ci?.[1] || 0) * 100)}%]</div>
+                                    </Col>
+                                    <Col xs={8}>
+                                      <Statistic title="平均首崩时间" value={F.time_to_crisis_mean != null ? F.time_to_crisis_mean : '—'}
+                                        suffix={F.time_to_crisis_mean != null ? '步' : ''} valueStyle={{ fontSize: 18 }} />
+                                    </Col>
+                                  </Row>
+                                  {primary && q && H > 0 && (
+                                    <div style={{ marginBottom: 8 }}>
+                                      <Text type="secondary" style={{ fontSize: 11, display: 'block', marginBottom: 4 }}>
+                                        首要崩溃模态「{dimLabel(primary)}」的 {H - 1} 步分位扇形带（q10–q90 + 中位轨迹）
+                                      </Text>
+                                      <ResponsiveContainer width="100%" height={140}>
+                                        <AreaChart data={chartData} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
+                                          <CartesianGrid strokeDasharray="3 3" />
+                                          <XAxis dataKey="t" tick={{ fontSize: 10 }} />
+                                          <YAxis domain={[0, 1]} tick={{ fontSize: 10 }} />
+                                          <RechartsTooltip formatter={(v: any) => (Array.isArray(v) ? `${(v[0] * 100).toFixed(0)}%~${(v[1] * 100).toFixed(0)}%` : `${(Number(v) * 100).toFixed(0)}%`)} />
+                                          <Area dataKey="band" stroke="none" fill={color} fillOpacity={0.2} isAnimationActive={false} />
+                                          <Area dataKey="median" stroke={color} strokeWidth={2} fill={color} fillOpacity={0} isAnimationActive={false} />
+                                        </AreaChart>
+                                      </ResponsiveContainer>
+                                    </div>
+                                  )}
+                                  {sortedModes.length > 0 && (
+                                    <div>
+                                      <Text type="secondary" style={{ fontSize: 11, display: 'block', marginBottom: 6 }}>首崩模态频率（K 条平行未来中谁先崩）</Text>
+                                      {sortedModes.slice(0, 6).map((m) => (
+                                        <div key={m} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4, fontSize: 11 }}>
+                                          <span style={{ width: 62, color: '#666', flexShrink: 0 }}>{dimLabel(m)}</span>
+                                          <div style={{ flex: 1, background: '#e6e6e6', borderRadius: 4, height: 10, overflow: 'hidden' }}>
+                                            <div style={{ width: `${Math.round(fdf[m] * 100)}%`, background: twinDimColor(m), height: 10, borderRadius: 4 }} />
+                                          </div>
+                                          <span style={{ width: 34, textAlign: 'right', color: '#888', flexShrink: 0 }}>{Math.round(fdf[m] * 100)}%</span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </>
+                              );
+                            })() : (
+                              <div style={{ fontSize: 12, color: '#888', lineHeight: 1.7 }}>
+                                {twinFutures?.fallback
+                                  ? <>数据不足，已降级为 1D 危机概率 <Text strong style={{ color: '#cf1322' }}>{Math.round((twinFutures.crisis_probability || 0) * 100)}%</Text>。</>
+                                  : '平行未来推演尚未就绪。'}
+                              </div>
+                            )}
+                          </Card>
+
+                          {/* ===== 3. MPC 最优救援卡 ===== */}
+                          <Card size="small" style={{ borderRadius: 8, borderLeft: '3px solid #52c41a', background: '#f6ffed' }}>
+                            <div style={{ fontSize: 13, marginBottom: 8 }}>
+                              <Text strong style={{ color: '#389e0d' }}>🛟 MPC 最优救援</Text>
+                              <Tag color="green" style={{ fontSize: 9, marginLeft: 6 }}>CEM·逆向instanton</Tag>
+                              {twinRescue?.fallback && <Tag color="orange" style={{ fontSize: 9, marginLeft: 4 }}>时机降级</Tag>}
+                            </div>
+                            {twinRescue && !twinRescue.fallback ? (() => {
+                              const R = twinRescue;
+                              const mpc = R.mpc_plan || {};
+                              const rp = R.rescue_path;
+                              const base = mpc.baseline_crisis_rate || 0;
+                              const ctrl = mpc.controlled_crisis_rate || 0;
+                              const relDrop = base > 0 ? (base - ctrl) / base : 0;
+                              const doseEntries = Object.entries(mpc.mode_dose || {})
+                                .filter(([, v]) => Math.abs(v as number) > 1e-4)
+                                .sort((a, b) => Math.abs(b[1] as number) - Math.abs(a[1] as number));
+                              return (
+                                <>
+                                  <Row gutter={[8, 8]}>
+                                    <Col xs={8}>
+                                      <Statistic title="基线危机率" value={Math.round(base * 100)} suffix="%" valueStyle={{ fontSize: 18, color: '#ff4d4f' }} />
+                                    </Col>
+                                    <Col xs={8}>
+                                      <Statistic title="干预后危机率" value={Math.round(ctrl * 100)} suffix="%" valueStyle={{ fontSize: 18, color: '#52c41a' }} />
+                                    </Col>
+                                    <Col xs={8}>
+                                      <Statistic title="相对下降" value={Math.round(relDrop * 100)} suffix="%" valueStyle={{ fontSize: 18, color: '#722ed1' }} />
+                                    </Col>
+                                  </Row>
+                                  <div style={{ marginTop: 8, fontSize: 11, color: '#888' }}>
+                                    <Space split={<span style={{ color: '#ddd' }}>|</span>} wrap>
+                                      <span>干预能量: {mpc.energy_cost ?? 0}</span>
+                                      {mpc.target_dim && <span>主靶点: {dimLabel(mpc.target_dim)}</span>}
+                                      <span>优化时域: {mpc.horizon ?? '—'}步</span>
+                                      <span>{mpc.converged ? '✅ 已收敛' : '未完全收敛'}</span>
+                                    </Space>
+                                  </div>
+                                  {doseEntries.length > 0 && (
+                                    <div style={{ marginTop: 8 }}>
+                                      <Text type="secondary" style={{ fontSize: 11 }}>救援剂量（模态空间，带符号）：</Text>
+                                      <div style={{ marginTop: 4 }}>
+                                        {doseEntries.map(([m, v]) => (
+                                          <Tag key={m} color={(v as number) < 0 ? 'green' : 'volcano'} style={{ fontSize: 10, marginBottom: 2 }}>
+                                            {dimLabel(m)} {(v as number) > 0 ? '+' : ''}{(v as number).toFixed(2)}
+                                          </Tag>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+                                  {mpc.narrative && (
+                                    <div style={{ marginTop: 8, padding: '6px 10px', background: '#fff', borderRadius: 6, fontSize: 11.5, color: '#389e0d', border: '1px solid #b7eb8f', lineHeight: 1.6 }}>
+                                      {mpc.narrative}
+                                    </div>
+                                  )}
+                                  {rp && (
+                                    <div style={{ marginTop: 10, padding: '8px 10px', background: '#fff', borderRadius: 6, border: '1px dashed #95de64' }}>
+                                      <Text strong style={{ fontSize: 11.5, color: '#389e0d' }}>最小能量救援轨迹（逆向 instanton）</Text>
+                                      <div style={{ marginTop: 4, fontSize: 11, color: '#888' }}>
+                                        <Space split={<span style={{ color: '#ddd' }}>|</span>} wrap>
+                                          <span>救援后壁垒: {rp.barrier_restored ?? 0}</span>
+                                          <span>救援能量: {rp.energy ?? 0}</span>
+                                          <span>{rp.n_steps ?? 0} 步</span>
+                                          {rp.target_dim && <span>靶点: {dimLabel(rp.target_dim)}</span>}
+                                        </Space>
+                                      </div>
+                                      {rp.narrative && <div style={{ marginTop: 4, fontSize: 11.5, color: '#555', lineHeight: 1.6 }}>{rp.narrative}</div>}
+                                    </div>
+                                  )}
+                                </>
+                              );
+                            })() : (
+                              <div style={{ fontSize: 12, color: '#888', lineHeight: 1.7 }}>
+                                {twinRescue?.fallback
+                                  ? (twinRescue.intervention_decision
+                                    ? <>多维模拟器不可用，已降级为干预时机优化：{twinRescue.intervention_decision.reasoning || '—'}{twinRescue.intervention_decision.recommended_dimensions?.length ? <>，目标维度 {twinRescue.intervention_decision.recommended_dimensions.map((d: string) => <Tag key={d} style={{ fontSize: 10 }}>{dimLabel(d)}</Tag>)}</> : null}</>
+                                    : '多维模拟器不可用，暂无救援方案。')
+                                  : 'MPC 救援尚未就绪。'}
+                              </div>
+                            )}
+                          </Card>
+                        </>
+                      )}
                     </div>
                   ),
                 },
@@ -974,6 +1470,281 @@ export default function ConsultantRoom() {
                       </Paragraph>
                     </div>
                   )}
+
+                  {/* ===== 近期趋势 ===== */}
+                  {patientMultimodal.comprehensiveState.trajectorySummary && (
+                    <div style={{ marginTop: 12, padding: 12, background: 'linear-gradient(135deg, #f0f5ff 0%, #f9f0ff 100%)', borderRadius: 8 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                        <Space size={4}>
+                          <LineChartOutlined style={{ color: '#722ed1', fontSize: 13 }} />
+                          <Text strong style={{ fontSize: 12, color: '#5b4a8a' }}>近期趋势</Text>
+                        </Space>
+                        <Tag color={patientMultimodal.comprehensiveState.trajectorySummary.trend === 'improving' ? 'green' : patientMultimodal.comprehensiveState.trajectorySummary.trend === 'declining' ? 'red' : 'blue'} style={{ fontSize: 10 }}>
+                          {patientMultimodal.comprehensiveState.trajectorySummary.trend === 'improving' ? '↑ 改善' : patientMultimodal.comprehensiveState.trajectorySummary.trend === 'declining' ? '↓ 需关注' : '→ 平稳'}
+                        </Tag>
+                      </div>
+                      {/* 迷你趋势图 */}
+                      <div style={{ height: 80, marginBottom: 6 }}>
+                        <ResponsiveContainer width="100%" height="100%">
+                          <AreaChart data={patientMultimodal.comprehensiveState.trajectorySummary.recentPoints.map((p: any) => ({
+                            time: new Date(p.t).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' }),
+                            焦虑: p.a,
+                          }))}>
+                            <XAxis dataKey="time" tick={{ fontSize: 9 }} axisLine={false} />
+                            <YAxis tick={{ fontSize: 9 }} domain={[0, 100]} width={25} />
+                            <RechartsTooltip />
+                            <Area type="monotone" dataKey="焦虑" stroke="#ff4d4f" fill="#fff1f0" strokeWidth={1.5} dot={{ r: 1.5 }} />
+                          </AreaChart>
+                        </ResponsiveContainer>
+                      </div>
+                      {patientMultimodal.comprehensiveState.trajectorySummary.weeklyChange !== 0 && (
+                        <Text type="secondary" style={{ fontSize: 10 }}>
+                          本周焦虑水平比上周{patientMultimodal.comprehensiveState.trajectorySummary.weeklyChange > 0 ? '上升' : '下降'} {Math.abs(patientMultimodal.comprehensiveState.trajectorySummary.weeklyChange)}%
+                        </Text>
+                      )}
+                    </div>
+                  )}
+
+                  {/* ===== 11 模态三层详细面板 ===== */}
+                  <div style={{ marginTop: 12 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
+                      <ExperimentOutlined style={{ color: '#722ed1', fontSize: 13 }} />
+                      <Text strong style={{ fontSize: 12, color: '#5b4a8a', marginLeft: 4 }}>11 模态感知详情</Text>
+                      <Tag color="purple" style={{ marginLeft: 6, fontSize: 10, lineHeight: '16px', padding: '0 6px' }}>年龄差异化校准</Tag>
+                      {patientMultimodal.comprehensiveState.baseline?.calibrated && (
+                        <Tag color="cyan" style={{ marginLeft: 4, fontSize: 10, lineHeight: '16px', padding: '0 6px' }}>个人基线已校准 ({patientMultimodal.comprehensiveState.baseline.sampleCount}样本)</Tag>
+                      )}
+                    </div>
+
+                    {/* 融合权重分布 */}
+                    {patientMultimodal.comprehensiveState.fusionWeights && (
+                      <div style={{ padding: 10, background: '#fff', borderRadius: 8, marginBottom: 8 }}>
+                        <Text strong style={{ fontSize: 11, display: 'block', marginBottom: 6, color: '#722ed1' }}>融合权重分布</Text>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                          {Object.entries(patientMultimodal.comprehensiveState.fusionWeights).map(([k, v]) => {
+                            const labelMap: Record<string, string> = { text: '文字', voice: '语音', facial: '面部', keyboard: '键盘', circadian: '昼夜', cognitive: '认知', hrv: '心率', breathing: '呼吸', behavioralAct: '行为', eye: '眼动', voiceSemantics: '语义' };
+                            const colorMap: Record<string, string> = { text: '#1890ff', voice: '#52c41a', facial: '#fa8c16', keyboard: '#722ed1', circadian: '#13c2c2', cognitive: '#eb2f9a', hrv: '#ff4d4f', breathing: '#36cfc9', behavioralAct: '#597ef7', eye: '#9254de', voiceSemantics: '#faad14' };
+                            const pct = Math.round((v as number) * 100);
+                            return (
+                              <div key={k} style={{ flex: '0 0 auto', width: 72, textAlign: 'center' }}>
+                                <div style={{ fontSize: 10, color: '#888', marginBottom: 2 }}>{labelMap[k] || k}</div>
+                                <div style={{ height: 4, background: '#f0f0f0', borderRadius: 2, overflow: 'hidden' }}>
+                                  <div style={{ height: '100%', width: `${pct}%`, background: colorMap[k] || '#999', borderRadius: 2, transition: 'width 0.5s' }} />
+                                </div>
+                                <div style={{ fontSize: 10, color: colorMap[k] || '#999', fontWeight: 500 }}>{pct}%</div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    <Row gutter={[8, 8]}>
+                      {/* ── 基础感知层 ── */}
+                      <Col xs={24}>
+                        <div style={{ fontSize: 10, color: '#999', fontWeight: 500, marginBottom: 4 }}>🔍 基础感知层</div>
+                      </Col>
+
+                      {/* 文字语义 */}
+                      {patientMultimodal.comprehensiveState.text?.timestamp > 0 && (
+                        <Col xs={12} md={6}>
+                          <div style={{ padding: 8, background: '#fafbff', borderRadius: 6, height: '100%' }}>
+                            <div style={{ fontSize: 11, fontWeight: 600, color: '#1890ff', marginBottom: 4 }}>📝 文字语义</div>
+                            <div style={{ fontSize: 10, lineHeight: 1.7, color: '#555' }}>
+                              <div>情绪：<Text strong style={{ fontSize: 10 }}>{patientMultimodal.comprehensiveState.text.dominantEmotion}</Text></div>
+                              <div>效价：<span style={{ color: patientMultimodal.comprehensiveState.text.sentiment > 0 ? '#52c41a' : '#ff4d4f' }}>{patientMultimodal.comprehensiveState.text.sentiment > 0 ? '积极' : patientMultimodal.comprehensiveState.text.sentiment < 0 ? '消极' : '中性'}</span></div>
+                              <div>强度：<Progress percent={Math.round(patientMultimodal.comprehensiveState.text.emotionalIntensity * 100)} showInfo={false} size="small" strokeColor="#1890ff" style={{ width: 50, display: 'inline-block', verticalAlign: 'middle' }} /></div>
+                              <div>字数：{patientMultimodal.comprehensiveState.text.totalCharsAnalyzed}</div>
+                            </div>
+                          </div>
+                        </Col>
+                      )}
+
+                      {/* 语音声学 */}
+                      {patientMultimodal.comprehensiveState.voice?.isRecording && (
+                        <Col xs={12} md={6}>
+                          <div style={{ padding: 8, background: '#f6ffed', borderRadius: 6, height: '100%' }}>
+                            <div style={{ fontSize: 11, fontWeight: 600, color: '#52c41a', marginBottom: 4 }}>🔊 语音声学</div>
+                            <div style={{ fontSize: 10, lineHeight: 1.7, color: '#555' }}>
+                              <div>情绪：<Text strong style={{ fontSize: 10 }}>{patientMultimodal.comprehensiveState.voice.detectedEmotion}</Text></div>
+                              <div>F0：{patientMultimodal.comprehensiveState.voice.pitch.mean}Hz</div>
+                              <div>语速：{patientMultimodal.comprehensiveState.voice.rate.speechRate} 音节/s</div>
+                              <div>停顿：{Math.round(patientMultimodal.comprehensiveState.voice.pauses.ratio * 100)}%</div>
+                            </div>
+                          </div>
+                        </Col>
+                      )}
+
+                      {/* 面部微表情 */}
+                      {patientMultimodal.comprehensiveState.facial?.isDetecting && (
+                        <Col xs={12} md={6}>
+                          <div style={{ padding: 8, background: '#fffbf0', borderRadius: 6, height: '100%' }}>
+                            <div style={{ fontSize: 11, fontWeight: 600, color: '#fa8c16', marginBottom: 4 }}>😊 面部微表情</div>
+                            <div style={{ fontSize: 10, lineHeight: 1.7, color: '#555' }}>
+                              <div>表情：<Text strong style={{ fontSize: 10 }}>{patientMultimodal.comprehensiveState.facial.dominantExpression}</Text></div>
+                              <div>强度：<Progress percent={Math.round(patientMultimodal.comprehensiveState.facial.expressionIntensity * 100)} showInfo={false} size="small" strokeColor="#fa8c16" style={{ width: 50, display: 'inline-block', verticalAlign: 'middle' }} /></div>
+                              <div>微表情：{patientMultimodal.comprehensiveState.facial.microExpressions?.count || 0}次</div>
+                            </div>
+                          </div>
+                        </Col>
+                      )}
+
+                      {/* 键盘动力学 */}
+                      {patientMultimodal.comprehensiveState.keyboard?.isCollecting && (
+                        <Col xs={12} md={6}>
+                          <div style={{ padding: 8, background: '#f9f0ff', borderRadius: 6, height: '100%' }}>
+                            <div style={{ fontSize: 11, fontWeight: 600, color: '#722ed1', marginBottom: 4 }}>⌨️ 键盘动力学</div>
+                            <div style={{ fontSize: 10, lineHeight: 1.7, color: '#555' }}>
+                              <div>速度：{patientMultimodal.comprehensiveState.keyboard.typingSpeed} 字/分
+                                {patientMultimodal.comprehensiveState.baseline?.typingSpeed?.n >= 2 && (() => {
+                                  const bl = patientMultimodal.comprehensiveState.baseline.typingSpeed;
+                                  const diff = Math.round(patientMultimodal.comprehensiveState.keyboard.typingSpeed - bl.mean);
+                                  const z = bl.std > 0.001 ? Math.abs((patientMultimodal.comprehensiveState.keyboard.typingSpeed - bl.mean) / bl.std) : 0;
+                                  return <span style={{ color: z > 2 ? '#ff4d4f' : '#999' }}> (基线 {Math.round(bl.mean)}{diff > 0 ? ` +${diff}` : diff < 0 ? ` ${diff}` : ''})</span>;
+                                })()}
+                              </div>
+                              <div>焦虑指数：<Text strong style={{ fontSize: 10, color: patientMultimodal.comprehensiveState.keyboard.anxietyIndex > 60 ? '#ff4d4f' : '#faad14' }}>{patientMultimodal.comprehensiveState.keyboard.anxietyIndex}</Text></div>
+                              <div>删除率：{Math.round(patientMultimodal.comprehensiveState.keyboard.deletionRate * 100)}%</div>
+                            </div>
+                          </div>
+                        </Col>
+                      )}
+
+                      {/* ── 认知分析层 ── */}
+                      <Col xs={24}>
+                        <div style={{ fontSize: 10, color: '#999', fontWeight: 500, marginBottom: 4, marginTop: 4 }}>🧠 认知分析层</div>
+                      </Col>
+
+                      {/* 昼夜节律 */}
+                      {patientMultimodal.comprehensiveState.circadian?.isActive && (
+                        <Col xs={8} md={8}>
+                          <div style={{ padding: 8, background: '#e6fffb', borderRadius: 6, height: '100%' }}>
+                            <div style={{ fontSize: 11, fontWeight: 600, color: '#13c2c2', marginBottom: 4 }}>🕐 昼夜节律</div>
+                            <div style={{ fontSize: 10, lineHeight: 1.7, color: '#555' }}>
+                              <div>风险：<Tag color={(patientMultimodal.comprehensiveState.circadian.riskScore || 0) > 0.5 ? 'red' : 'green'} style={{ fontSize: 9, lineHeight: '14px', padding: '0 4px' }}>{Math.round((patientMultimodal.comprehensiveState.circadian.riskScore || 0) * 100)}%</Tag></div>
+                              <div>规律性：<Progress percent={Math.round((patientMultimodal.comprehensiveState.circadian.regularityScore || 0) * 100)} showInfo={false} size="small" strokeColor="#13c2c2" style={{ width: 44, display: 'inline-block', verticalAlign: 'middle' }} /></div>
+                              <div>深夜风险：{Math.round((patientMultimodal.comprehensiveState.circadian.lateNightRisk || 0) * 100)}%</div>
+                            </div>
+                          </div>
+                        </Col>
+                      )}
+
+                      {/* 认知扭曲 */}
+                      {(patientMultimodal.comprehensiveState.cognitiveDistortion?.riskScore || 0) > 0 && (
+                        <Col xs={8} md={8}>
+                          <div style={{ padding: 8, background: '#fff0f6', borderRadius: 6, height: '100%' }}>
+                            <div style={{ fontSize: 11, fontWeight: 600, color: '#eb2f9a', marginBottom: 4 }}>💭 认知扭曲</div>
+                            <div style={{ fontSize: 10, lineHeight: 1.7, color: '#555' }}>
+                              <div>总风险：<Tag color="magenta" style={{ fontSize: 9, lineHeight: '14px', padding: '0 4px' }}>{Math.round(patientMultimodal.comprehensiveState.cognitiveDistortion.riskScore * 100)}%</Tag></div>
+                              <div>类型：{patientMultimodal.comprehensiveState.cognitiveDistortion.totalDistortionCount || 0} 类</div>
+                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 2, marginTop: 2 }}>
+                                {Object.entries(patientMultimodal.comprehensiveState.cognitiveDistortion.categories || {}).filter(([, v]) => (v as number) > 0).slice(0, 3).map(([k, v]) => {
+                                  const lm: Record<string, string> = { catastrophizing: '灾难化', blackAndWhite: '非黑即白', overgeneralization: '过度概括', selfBlame: '自我归咎', hopelessness: '无望感' };
+                                  return <Tag key={k} color="pink" style={{ fontSize: 9, margin: 0, lineHeight: '14px', padding: '0 3px' }}>{lm[k] || k}</Tag>;
+                                })}
+                              </div>
+                            </div>
+                          </div>
+                        </Col>
+                      )}
+
+                      {/* 语音语义 */}
+                      {(patientMultimodal.comprehensiveState.voiceSemantics?.timestamp || 0) > 0 && (
+                        <Col xs={8} md={8}>
+                          <div style={{ padding: 8, background: '#fffbe6', borderRadius: 6, height: '100%' }}>
+                            <div style={{ fontSize: 11, fontWeight: 600, color: '#faad14', marginBottom: 4 }}>🗣️ 语音语义</div>
+                            <div style={{ fontSize: 10, lineHeight: 1.7, color: '#555' }}>
+                              <div>语义风险：<Tag color={(patientMultimodal.comprehensiveState.voiceSemantics.riskScore || 0) > 0.3 ? 'orange' : 'green'} style={{ fontSize: 9, lineHeight: '14px', padding: '0 4px' }}>{Math.round((patientMultimodal.comprehensiveState.voiceSemantics.riskScore || 0) * 100)}%</Tag></div>
+                              <div>"我"占比：{Math.round((patientMultimodal.comprehensiveState.voiceSemantics.firstPersonSingularRatio || 0) * 100)}%</div>
+                              <div>消极词：{Math.round((patientMultimodal.comprehensiveState.voiceSemantics.negativeAffectRatio || 0) * 100)}%</div>
+                            </div>
+                          </div>
+                        </Col>
+                      )}
+
+                      {/* ── 生理行为层 ── */}
+                      <Col xs={24}>
+                        <div style={{ fontSize: 10, color: '#999', fontWeight: 500, marginBottom: 4, marginTop: 4 }}>💓 生理行为层</div>
+                      </Col>
+
+                      {/* rPPG 心率 */}
+                      {patientMultimodal.comprehensiveState.hrv?.isMeasuring && (
+                        <Col xs={8} md={6}>
+                          <div style={{ padding: 8, background: '#fff1f0', borderRadius: 6, height: '100%' }}>
+                            <div style={{ fontSize: 11, fontWeight: 600, color: '#ff4d4f', marginBottom: 4 }}>❤️ rPPG 心率</div>
+                            <div style={{ fontSize: 10, lineHeight: 1.7, color: '#555' }}>
+                              <div>心率：<Text strong style={{ fontSize: 12, color: '#ff4d4f' }}>{patientMultimodal.comprehensiveState.hrv.heartRate}</Text> bpm
+                                {patientMultimodal.comprehensiveState.baseline?.heartRate?.n >= 2 && (() => {
+                                  const bl = patientMultimodal.comprehensiveState.baseline.heartRate;
+                                  const diff = Math.round(patientMultimodal.comprehensiveState.hrv.heartRate - bl.mean);
+                                  const z = bl.std > 0.001 ? Math.abs((patientMultimodal.comprehensiveState.hrv.heartRate - bl.mean) / bl.std) : 0;
+                                  return <span style={{ color: z > 2 ? '#ff4d4f' : '#999', fontWeight: z > 2 ? 600 : 400 }}> (基线 {Math.round(bl.mean)}{diff > 0 ? ` +${diff}` : diff < 0 ? ` ${diff}` : ''})</span>;
+                                })()}
+                              </div>
+                              <div>HRV：{patientMultimodal.comprehensiveState.hrv.hrvRmssd} ms</div>
+                              <div>风险：{Math.round((patientMultimodal.comprehensiveState.hrv.riskScore || 0) * 100)}%</div>
+                            </div>
+                          </div>
+                        </Col>
+                      )}
+
+                      {/* 呼吸模式 */}
+                      {patientMultimodal.comprehensiveState.breathing?.isMeasuring && (
+                        <Col xs={8} md={6}>
+                          <div style={{ padding: 8, background: '#e6fffb', borderRadius: 6, height: '100%' }}>
+                            <div style={{ fontSize: 11, fontWeight: 600, color: '#36cfc9', marginBottom: 4 }}>🌬️ 呼吸模式</div>
+                            <div style={{ fontSize: 10, lineHeight: 1.7, color: '#555' }}>
+                              <div>频率：<Text strong style={{ fontSize: 10 }}>{patientMultimodal.comprehensiveState.breathing.breathingRate}</Text> 次/分
+                                {patientMultimodal.comprehensiveState.baseline?.breathingRate?.n >= 2 && (() => {
+                                  const bl = patientMultimodal.comprehensiveState.baseline.breathingRate;
+                                  const diff = Math.round(patientMultimodal.comprehensiveState.breathing.breathingRate - bl.mean);
+                                  const z = bl.std > 0.001 ? Math.abs((patientMultimodal.comprehensiveState.breathing.breathingRate - bl.mean) / bl.std) : 0;
+                                  return <span style={{ color: z > 2 ? '#ff4d4f' : '#999' }}> (基线 {Math.round(bl.mean)}{diff > 0 ? ` +${diff}` : diff < 0 ? ` ${diff}` : ''})</span>;
+                                })()}
+                              </div>
+                              <div>叹气：{patientMultimodal.comprehensiveState.breathing.sighCount} 次</div>
+                              <div>规律CV：{patientMultimodal.comprehensiveState.breathing.regularityCV}</div>
+                            </div>
+                          </div>
+                        </Col>
+                      )}
+
+                      {/* 行为激活 */}
+                      {patientMultimodal.comprehensiveState.behavioralActivation?.isActive && (
+                        <Col xs={8} md={6}>
+                          <div style={{ padding: 8, background: '#f0f5ff', borderRadius: 6, height: '100%' }}>
+                            <div style={{ fontSize: 11, fontWeight: 600, color: '#597ef7', marginBottom: 4 }}>🏃 行为激活</div>
+                            <div style={{ fontSize: 10, lineHeight: 1.7, color: '#555' }}>
+                              <div>互动：{patientMultimodal.comprehensiveState.behavioralActivation.dailyInteractionCount} 次</div>
+                              <div>探索率：{Math.round((patientMultimodal.comprehensiveState.behavioralActivation.explorationRate || 0) * 100)}%</div>
+                              <div>趋势：<Tag color={patientMultimodal.comprehensiveState.behavioralActivation.trendDirection === 'improving' ? 'green' : patientMultimodal.comprehensiveState.behavioralActivation.trendDirection === 'declining' ? 'red' : 'blue'} style={{ fontSize: 9, lineHeight: '14px', padding: '0 4px' }}>{patientMultimodal.comprehensiveState.behavioralActivation.trendDirection === 'improving' ? '↑改善' : patientMultimodal.comprehensiveState.behavioralActivation.trendDirection === 'declining' ? '↓下降' : '→稳定'}</Tag></div>
+                            </div>
+                          </div>
+                        </Col>
+                      )}
+
+                      {/* 眼动模式 */}
+                      {patientMultimodal.comprehensiveState.eyeMovement?.isMeasuring && (
+                        <Col xs={8} md={6}>
+                          <div style={{ padding: 8, background: '#f9f0ff', borderRadius: 6, height: '100%' }}>
+                            <div style={{ fontSize: 11, fontWeight: 600, color: '#9254de', marginBottom: 4 }}>👁️ 眼动模式</div>
+                            <div style={{ fontSize: 10, lineHeight: 1.7, color: '#555' }}>
+                              <div>眨眼：{patientMultimodal.comprehensiveState.eyeMovement.blinkRate} 次/分
+                                {patientMultimodal.comprehensiveState.baseline?.blinkRate?.n >= 2 && (() => {
+                                  const bl = patientMultimodal.comprehensiveState.baseline.blinkRate;
+                                  const diff = Math.round(patientMultimodal.comprehensiveState.eyeMovement.blinkRate - bl.mean);
+                                  const z = bl.std > 0.001 ? Math.abs((patientMultimodal.comprehensiveState.eyeMovement.blinkRate - bl.mean) / bl.std) : 0;
+                                  return <span style={{ color: z > 2 ? '#ff4d4f' : '#999' }}> (基线 {Math.round(bl.mean)}{diff > 0 ? ` +${diff}` : diff < 0 ? ` ${diff}` : ''})</span>;
+                                })()}
+                              </div>
+                              <div>向下注视：{Math.round((patientMultimodal.comprehensiveState.eyeMovement.downwardGazeRatio || 0) * 100)}%</div>
+                              <div>注意力分散：{Math.round((patientMultimodal.comprehensiveState.eyeMovement.attentionScatter || 0) * 100)}%</div>
+                            </div>
+                          </div>
+                        </Col>
+                      )}
+                    </Row>
+                  </div>
                 </div>
               )}
 
@@ -1087,7 +1858,7 @@ export default function ConsultantRoom() {
         >
           <div style={{ marginBottom: 12 }}>
             <Text type="secondary" style={{ fontSize: 12 }}>
-              笔记仅咨询师可见，用于记录咨询过程中的关键观察和干预思路
+              笔记仅公益咨询师可见，用于记录咨询过程中的关键观察和干预思路
             </Text>
           </div>
           <Input.TextArea

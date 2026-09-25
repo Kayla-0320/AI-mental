@@ -10,6 +10,11 @@ export default defineConfig({
         target: 'http://localhost:3000',
         changeOrigin: true,
       },
+      '/algorithm': {
+        target: 'http://localhost:8001',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/algorithm/, ''),
+      },
       '/socket.io': {
         target: 'http://localhost:3000',
         ws: true,

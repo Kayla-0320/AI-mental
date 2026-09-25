@@ -235,7 +235,7 @@ export default function Home() {
               <div>
                 <Text strong style={{ color: '#5a4a6a' }}>有时候，聊一聊就能好很多</Text>
                 <Text type="secondary" style={{ fontSize: 12, display: 'block' }}>
-                  24小时有人在线陪你 · AI 或专业咨询师
+                  24小时有人在线陪你 · AI 或公益咨询师
                 </Text>
               </div>
             </Space>
@@ -264,10 +264,9 @@ export default function Home() {
       <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
         {[
           { icon: '💬', title: 'AI 倾诉', desc: '随时陪你说话', color: '#6366f1', path: '/chat' },
-          { icon: '💡', title: '话痨树洞', desc: '不给建议只引导', color: '#722ed1', path: '/socratic' },
           { icon: '🫂', title: '同伴社区', desc: '和懂你的人在一起', color: '#ec4899', path: '/companions' },
           { icon: '🌿', title: '疗愈空间', desc: '冥想、呼吸、放松', color: '#52c41a', path: '/healing' },
-          { icon: '☕', title: '预约咨询', desc: '专业咨询师', color: '#f59e0b', path: '/experts' },
+          { icon: '☕', title: '预约咨询', desc: '公益咨询师', color: '#f59e0b', path: '/experts' }
         ].map(({ icon, title, desc, color, path }) => (
           <Col xs={12} sm={8} md={8} lg={4} key={title}>
             <Card

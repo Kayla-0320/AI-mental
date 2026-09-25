@@ -71,7 +71,7 @@ export default function ConsultantLayout() {
           borderBottom: '1px solid rgba(255,182,193,0.15)',
         }}>
           <div style={{ fontSize: 36, marginBottom: 4 }}>🌸</div>
-          <Text strong style={{ fontSize: 16, color: '#ff8fab' }}>咨询师工作台</Text>
+          <Text strong style={{ fontSize: 16, color: '#ff8fab' }}>公益咨询师工作台</Text>
           <div style={{ marginTop: 4 }}>
             <Tag color="pink" style={{ fontSize: 11, borderRadius: 20 }}>PRO</Tag>
           </div>
@@ -160,7 +160,7 @@ export default function ConsultantLayout() {
               <Space style={{ cursor: 'pointer' }}>
                 <Avatar style={{ backgroundColor: '#ffb6c1', boxShadow: '0 2px 8px rgba(255,182,193,0.3)' }} icon={<UserOutlined />} />
                 <Text style={{ color: '#5a4a6a' }}>{user?.nickname}</Text>
-                <Tag color="pink" style={{ fontSize: 11, margin: 0, borderRadius: 20 }}>咨询师</Tag>
+                <Tag color="pink" style={{ fontSize: 11, margin: 0, borderRadius: 20 }}>公益咨询师</Tag>
               </Space>
             </Dropdown>
           </Space>

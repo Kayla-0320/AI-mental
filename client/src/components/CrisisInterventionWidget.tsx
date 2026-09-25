@@ -35,24 +35,21 @@ export default function CrisisInterventionWidget() {
       <Button
         onClick={() => setVisible(true)}
         style={{
-          position: 'fixed',
-          bottom: 140,
-          right: 20,
           width: 48,
           height: 48,
           borderRadius: '50%',
           background: 'linear-gradient(135deg, #ff4d4f, #ff7875)',
           border: 'none',
           boxShadow: '0 4px 20px rgba(255,77,79,0.4)',
-          zIndex: 1000,
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          fontSize: 20,
+          padding: 0,
+          flexShrink: 0,
         }}
         title="紧急求助"
       >
-        <HeartFilled style={{ color: '#fff', fontSize: 20 }} />
+        <HeartFilled style={{ color: '#fff', fontSize: 22 }} />
       </Button>
 
       <Modal

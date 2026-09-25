@@ -21,6 +21,8 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import type { FacialAnalysis } from '../types/multimodal.types';
 import { defaultFacial } from '../types/multimodal.types';
+import type { AgeGroup } from './ageConfig';
+import { getFaceConfig } from './ageConfig';
 
 // MediaPipe Face Mesh 关键点索引
 const LANDMARKS = {
@@ -66,7 +68,10 @@ function angle(
   return Math.acos(Math.max(-1, Math.min(1, cosAngle))) * (180 / Math.PI);
 }
 
-export function useFacialAnalysis() {
+/** 每帧信号回调：绿色通道均值(用于rPPG)、眼睛纵横比+头部俯仰(用于眼动) */
+export type FrameSignalCallback = (greenMean: number, eyeAspect: number, headPitch: number) => void;
+
+export function useFacialAnalysis(ageGroup: AgeGroup | null = null, onFrameSignal?: FrameSignalCallback | null) {
   const [metrics, setMetrics] = useState<FacialAnalysis>({ ...defaultFacial });
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -80,6 +85,9 @@ export function useFacialAnalysis() {
   const frameCountRef = useRef(0);
   const prevExprRef = useRef('平静');
   const prevExprTimeRef = useRef(0);
+
+  // 年龄校准配置
+  const faceConfig = getFaceConfig(ageGroup);
 
   // 初始化 MediaPipe FaceLandmarker
   const initMediaPipe = useCallback(async () => {
@@ -232,10 +240,11 @@ export function useFacialAnalysis() {
       const dominantExpression = dominantExpr[1] > 0.15 ? dominantExpr[0] : '平静';
       const expressionIntensity = Math.min(1, Object.values(emotionMapping).reduce((s, v) => s + v, 0) / 2);
 
-      // 微表情检测（表情快速切换）
+      // 微表情检测（表情快速切换，阈值按年龄校准）
+      const microThreshold = faceConfig.microExpressionThreshold * 1000; // 转换为 ms
       const now = Date.now();
       if (dominantExpression !== prevExprRef.current && dominantExpression !== '平静') {
-        if (prevExprTimeRef.current > 0 && now - prevExprTimeRef.current < 500) {
+        if (prevExprTimeRef.current > 0 && now - prevExprTimeRef.current < microThreshold) {
           microExprCountRef.current++;
         }
       }
@@ -246,6 +255,23 @@ export function useFacialAnalysis() {
 
       // 置信度：基于 blendshapes 的质量
       const confidence = useMediaPipeRef.current ? Math.min(0.95, 0.7 + frameCountRef.current * 0.005) : 0.5;
+
+      // 提取绿色通道均值（供 rPPG 使用）+ 通知眼动回调
+      if (onFrameSignal) {
+        const tmpCanvas = document.createElement('canvas');
+        tmpCanvas.width = 32; tmpCanvas.height = 32;
+        const tmpCtx = tmpCanvas.getContext('2d', { willReadFrequently: true });
+        if (tmpCtx) {
+          tmpCtx.drawImage(video, 0, 0, 32, 32);
+          const faceRegion = tmpCtx.getImageData(8, 4, 16, 12);
+          let gSum = 0, gCount = 0;
+          for (let i = 0; i < faceRegion.data.length; i += 4) {
+            gSum += faceRegion.data[i + 1]; gCount++;
+          }
+          const greenMean = gCount > 0 ? gSum / gCount : 0;
+          onFrameSignal(greenMean, eyeAspect, headPitch);
+        }
+      }
 
       setMetrics(prev => ({
         ...prev,
@@ -489,5 +515,5 @@ export function useFacialAnalysis() {
     };
   }, []);
 
-  return { metrics, start, stop, reset };
+  return { metrics, start, stop, reset, videoRef, streamRef };
 }

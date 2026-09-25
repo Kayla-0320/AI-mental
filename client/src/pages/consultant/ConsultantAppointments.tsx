@@ -196,7 +196,7 @@ export default function ConsultantAppointments() {
             当患者通过专家连线页面预约您的咨询后，预约信息将显示在这里
           </Text>
           <Text type="secondary" style={{ fontSize: 12 }}>
-            💡 提示：请确保您的咨询师资料已完善，以便患者能够找到并预约您
+            💡 提示：请确保您的公益咨询师资料已完善，以便患者能够找到并预约您
           </Text>
         </Card>
       ) : (

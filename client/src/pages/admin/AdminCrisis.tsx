@@ -21,59 +21,41 @@ export default function AdminCrisis() {
   const [selectedCase, setSelectedCase] = useState<any>(null);
   const [hotlines, setHotlines] = useState<any[]>([]);
 
+  const [crisisStats, setCrisisStats] = useState({ open: 0, critical: 0, thisWeek: 0, resolved: 0 });
+
   useEffect(() => {
     loadCrisisCases();
+    loadCrisisStats();
     loadHotlines();
   }, []);
+
+  const loadCrisisStats = async () => {
+    try {
+      const res = await crisisApi.getStats() as any;
+      if (res.data) setCrisisStats(res.data);
+    } catch { /* ignore */ }
+  };
 
   const loadCrisisCases = async () => {
     setLoading(true);
     try {
-      // TODO: 实际API接入
-      setCrisisCases([
-        {
-          id: '1', key: '1',
-          user: { nickname: '小明', id: 'u1' },
-          severity: 'HIGH',
-          status: 'IN_PROGRESS',
-          trigger: 'PHQ-9第9题自杀意念评分 > 0',
-          detectedAt: new Date(Date.now() - 7200000).toISOString(),
-          description: '用户在进行心理测评时，PHQ-9第9题（自杀意念）选择了非零值。系统已自动触发关怀弹窗。',
-          actions: [
-            { type: 'system', content: '系统自动触发关怀弹窗，显示24小时热线', time: new Date(Date.now() - 7200000).toISOString() },
-            { type: 'ai', content: 'AI聊天检测到危机关键词"不想活"，已推送安全提示', time: new Date(Date.now() - 5400000).toISOString() },
-            { type: 'admin', content: '管理员已查看，正在联系用户', time: new Date(Date.now() - 3600000).toISOString() },
-          ],
-        },
-        {
-          id: '2', key: '2',
-          user: { nickname: '小红', id: 'u2' },
-          severity: 'CRITICAL',
-          status: 'OPEN',
-          trigger: '聊天关键词检测：自残相关',
-          detectedAt: new Date(Date.now() - 1800000).toISOString(),
-          description: '用户在AI聊天中发送包含自伤关键词的消息，系统检测到后立即触发危机协议。',
-          actions: [
-            { type: 'system', content: 'AI聊天检测到危机关键词，推送安全提示', time: new Date(Date.now() - 1800000).toISOString() },
-            { type: 'system', content: '已自动通知管理员', time: new Date(Date.now() - 1700000).toISOString() },
-          ],
-        },
-        {
-          id: '3', key: '3',
-          user: { nickname: '小刚', id: 'u3' },
-          severity: 'MEDIUM',
-          status: 'RESOLVED',
-          trigger: '社区帖子包含危机内容',
-          detectedAt: new Date(Date.now() - 86400000).toISOString(),
-          description: '用户在社区发布包含消极内容的帖子，已进行人工审核和干预。',
-          actions: [
-            { type: 'system', content: '社区审核系统标记帖子为高风险', time: new Date(Date.now() - 86400000).toISOString() },
-            { type: 'admin', content: '管理员审核帖子，移除危机内容', time: new Date(Date.now() - 82800000).toISOString() },
-            { type: 'admin', content: '已私信联系用户，确认安全', time: new Date(Date.now() - 79200000).toISOString() },
-            { type: 'admin', content: '用户回复安全，已转介专业咨询师', time: new Date(Date.now() - 72000000).toISOString() },
-          ],
-        },
-      ]);
+      const res = await crisisApi.getRecords({ pageSize: 50 }) as any;
+      const records = res.data?.records || [];
+      // 转换为前端格式
+      const cases = records.map((r: any) => ({
+        id: r.id, key: r.id,
+        user: { nickname: r.userName || '未知', id: r.userId },
+        severity: r.severity,
+        status: r.status,
+        trigger: r.trigger,
+        detectedAt: r.detectedAt,
+        description: r.description,
+        sourceText: r.sourceText,
+        actions: [],
+      }));
+      setCrisisCases(cases);
+    } catch {
+      message.error('加载危机记录失败');
     } finally {
       setLoading(false);
     }
@@ -94,6 +76,11 @@ export default function AdminCrisis() {
 
   const openCases = crisisCases.filter(c => c.status === 'OPEN' || c.status === 'IN_PROGRESS');
   const criticalCount = crisisCases.filter(c => c.severity === 'CRITICAL' && c.status !== 'RESOLVED' && c.status !== 'CLOSED').length;
+  // 使用 API 真实数据，fallback 到前端计算
+  const statsOpen = crisisStats.open || openCases.length;
+  const statsCritical = crisisStats.critical || criticalCount;
+  const statsWeek = crisisStats.thisWeek || crisisCases.length;
+  const statsResolved = crisisStats.resolved || 0;
 
   const columns = [
     {
@@ -143,19 +130,19 @@ export default function AdminCrisis() {
       <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
         <Col xs={12} sm={6}>
           <Card style={{ borderRadius: 12 }}>
-            <Statistic title="待处理" value={openCases.length} prefix={<AlertOutlined />}
-              valueStyle={{ color: openCases.length > 0 ? '#ff4d4f' : '#52c41a' }} />
+            <Statistic title="待处理" value={statsOpen} prefix={<AlertOutlined />}
+              valueStyle={{ color: statsOpen > 0 ? '#ff4d4f' : '#52c41a' }} />
           </Card>
         </Col>
         <Col xs={12} sm={6}>
           <Card style={{ borderRadius: 12 }}>
-            <Statistic title="危急案例" value={criticalCount} prefix={<WarningOutlined />}
-              valueStyle={{ color: criticalCount > 0 ? '#cf1322' : '#52c41a' }} />
+            <Statistic title="危急案例" value={statsCritical} prefix={<WarningOutlined />}
+              valueStyle={{ color: statsCritical > 0 ? '#cf1322' : '#52c41a' }} />
           </Card>
         </Col>
         <Col xs={12} sm={6}>
           <Card style={{ borderRadius: 12 }}>
-            <Statistic title="本周新增" value={crisisCases.length} prefix={<ClockCircleOutlined />}
+            <Statistic title="本周新增" value={statsWeek} prefix={<ClockCircleOutlined />}
               valueStyle={{ color: '#faad14' }} />
           </Card>
         </Col>

@@ -72,7 +72,7 @@ export const expertApi = {
   getMessages: (bookingId: string, page = 1) =>
     api.get(`/expert/bookings/${bookingId}/messages?page=${page}`),
   getMyProfile: () => api.get('/expert/my-profile'),
-  updateMyProfile: (data: { title?: string; specialties?: string; introduction?: string; pricePerSession?: number }) =>
+  updateMyProfile: (data: { title?: string; specialties?: string; introduction?: string }) =>
     api.put('/expert/my-profile', data),
 };
 
@@ -113,6 +113,12 @@ export const crisisApi = {
     api.post('/crisis/contacts', data),
   updateContact: (id: string, data: any) => api.put(`/crisis/contacts/${id}`, data),
   deleteContact: (id: string) => api.delete(`/crisis/contacts/${id}`),
+  // 管理员 API
+  getRecords: (params?: { status?: string; severity?: string; page?: number; pageSize?: number }) =>
+    api.get('/crisis/records', { params }),
+  getStats: () => api.get('/crisis/stats'),
+  updateRecord: (id: string, data: { status: string; resolution?: string }) =>
+    api.put(`/crisis/records/${id}`, data),
 };
 
 // 心情打卡 & 情绪趋势
@@ -166,4 +172,28 @@ export const extraApi = {
   getFeedbacks: () => api.get('/extra/feedback'),
   getAllFeedbacks: (status?: string) => api.get(`/extra/feedback/all?status=${status || ''}`),
   replyFeedback: (id: string, reply: string) => api.put(`/extra/feedback/${id}/reply`, { reply }),
+};
+
+// 个人基线同步（算法后端）
+export const baselineApi = {
+  /**
+   * 同步个人基线到后端
+   * @param baselineData 增量观测值 { heartRate?, breathingRate?, ... }
+   */
+  syncBaseline: (baselineData: Record<string, number | number[]>) =>
+    api.post('/algorithm/baseline/sync', { baseline_data: baselineData }),
+
+  /**
+   * 获取个人基线数据
+   * @param userId 用户 ID
+   */
+  getBaseline: (userId: string) =>
+    api.get(`/algorithm/baseline/${userId}`),
+};
+
+// 管理员 API
+export const adminApi = {
+  getStats: () => api.get('/extra/admin/stats'),
+  getUsers: (params?: { search?: string; role?: string; page?: number; pageSize?: number }) =>
+    api.get('/extra/admin/users', { params }),
 };

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Card, Typography, Form, Input, Button, Avatar, message, Divider, Space, Tag, Switch, TimePicker, Select, InputNumber } from 'antd';
-import { UserOutlined, LockOutlined, MailOutlined, BellOutlined, ClockCircleOutlined, EditOutlined, DollarOutlined, StarOutlined } from '@ant-design/icons';
+import { UserOutlined, LockOutlined, MailOutlined, BellOutlined, ClockCircleOutlined, EditOutlined, StarOutlined } from '@ant-design/icons';
 import { useAuthStore } from '../../store/authStore';
 import { expertApi } from '../../services';
 import api from '../../services/api';
@@ -37,7 +37,6 @@ export default function ConsultantSettings() {
           title: data.title,
           specialties: specialties.join('、'),
           introduction: data.introduction,
-          pricePerSession: Number(data.pricePerSession),
         });
       }
     } catch {
@@ -53,7 +52,6 @@ export default function ConsultantSettings() {
         title: values.title,
         specialties: JSON.stringify(specialtiesArr),
         introduction: values.introduction,
-        pricePerSession: values.pricePerSession,
       });
       message.success('职业档案已更新');
     } catch {
@@ -85,7 +83,7 @@ export default function ConsultantSettings() {
 
   return (
     <div style={{ maxWidth: 700, margin: '0 auto' }}>
-      <Title level={4} style={{ marginBottom: 24 }}>咨询师设置</Title>
+      <Title level={4} style={{ marginBottom: 24 }}>公益咨询师设置</Title>
 
       <Card style={{ borderRadius: 12, marginBottom: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 20 }}>
@@ -95,7 +93,7 @@ export default function ConsultantSettings() {
           <div>
             <Title level={5} style={{ marginBottom: 4 }}>{user?.nickname}</Title>
             <Text type="secondary">{user?.email}</Text>
-            <div style={{ marginTop: 8 }}><Tag color="green">咨询师</Tag></div>
+            <div style={{ marginTop: 8 }}><Tag color="green">公益咨询师</Tag></div>
           </div>
         </div>
       </Card>
@@ -120,10 +118,10 @@ export default function ConsultantSettings() {
       >
         <Form form={profileForm} layout="vertical" onFinish={handleSaveConsultantProfile}>
           <Form.Item name="title" label="职称" rules={[{ required: true, message: '请填写职称' }]}>
-            <Select placeholder="如：资深心理咨询师" style={{ borderRadius: 12 }} options={[
-              { value: '初级心理咨询师', label: '初级心理咨询师' },
-              { value: '中级心理咨询师', label: '中级心理咨询师' },
-              { value: '资深心理咨询师', label: '资深心理咨询师' },
+            <Select placeholder="如：资深公益心理咨询师" style={{ borderRadius: 12 }} options={[
+              { value: '初级公益心理咨询师', label: '初级公益心理咨询师' },
+              { value: '中级公益心理咨询师', label: '中级公益心理咨询师' },
+              { value: '资深公益心理咨询师', label: '资深公益心理咨询师' },
               { value: '心理治疗师', label: '心理治疗师' },
               { value: '精神科医师', label: '精神科医师' },
             ]} />
@@ -133,9 +131,6 @@ export default function ConsultantSettings() {
           </Form.Item>
           <Form.Item name="introduction" label="个人介绍" rules={[{ required: true, message: '请填写个人介绍' }]}>
             <Input.TextArea rows={4} placeholder="介绍你的从业经历、擅长疗法、帮助过的人群等..." maxLength={500} showCount style={{ borderRadius: 12 }} />
-          </Form.Item>
-          <Form.Item name="pricePerSession" label="每次咨询价格（元）" rules={[{ required: true, message: '请填写价格' }]}>
-            <InputNumber min={0} max={9999} prefix={<DollarOutlined />} style={{ width: '100%', borderRadius: 12 }} />
           </Form.Item>
           <Form.Item>
             <Button type="primary" htmlType="submit" loading={profileLoading} style={{ borderRadius: 24, background: '#1890ff', borderColor: '#1890ff' }}>保存职业档案</Button>

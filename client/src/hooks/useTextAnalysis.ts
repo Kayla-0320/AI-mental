@@ -19,6 +19,8 @@
 import { useState, useCallback, useRef } from 'react';
 import type { TextAnalysis } from '../types/multimodal.types';
 import { defaultText } from '../types/multimodal.types';
+import type { AgeGroup } from './ageConfig';
+import { getTextConfig } from './ageConfig';
 
 // ===== 情绪词典 (基于 NRC Emotion Lexicon 中文适配) =====
 const EMOTION_LEXICON: Record<string, number[]> = {
@@ -39,10 +41,10 @@ const EMOTION_LEXICON: Record<string, number[]> = {
   '意外': [0,0,0,0,0,0,1,0], '没想到': [0,0,0,0,0,0,1,0],
 };
 
-// ===== 危机关键词 (C-SSRS  adapted) =====
-const CRISIS_HIGH = ['自杀', '自残', '自伤', '不想活', '想死', '去死', '跳楼', '割腕', '结束生命', '活着没意义', '不如死了'];
-const CRISIS_MEDIUM = ['活着没意思', '没有意义', '没有人会在意', '消失了也好', '世界没有我', '拖累', '负担'];
-const CRISIS_LOW = ['好累', '好烦', '受不了', '撑不下去', '快崩溃', '要疯了'];
+// ===== 危机关键词 (C-SSRS adapted) —— 默认通用词库（向后兼容） =====
+const CRISIS_HIGH_DEFAULT = ['自杀', '自残', '自伤', '不想活', '想死', '去死', '跳楼', '割腕', '结束生命', '活着没意义', '不如死了'];
+const CRISIS_MEDIUM_DEFAULT = ['活着没意思', '没有意义', '没有人会在意', '消失了也好', '世界没有我', '拖累', '负担'];
+const CRISIS_LOW_DEFAULT = ['好累', '好烦', '受不了', '撑不下去', '快崩溃', '要疯了'];
 
 // ===== 认知扭曲标记 (CBT) =====
 const COGNITIVE_PATTERNS = {
@@ -58,10 +60,13 @@ const NEGATION_WORDS = ['不', '没', '别', '无', '非', '未', '莫', '勿', 
 const ABSOLUTE_WORDS = ['总是', '从不', '永远', '绝对', '一定', '所有', '全部', '完全', '根本', '每次', '所有'];
 const FIRST_PERSON = ['我', '我的', '自己', '本人', '俺', '咱'];
 
-export function useTextAnalysis() {
+export function useTextAnalysis(ageGroup: AgeGroup | null = null) {
   const [metrics, setMetrics] = useState<TextAnalysis>({ ...defaultText });
   const allTextsRef = useRef<string[]>([]);
   const messageLengthsRef = useRef<number[]>([]);
+
+  // 年龄差异化配置
+  const textConfig = getTextConfig(ageGroup);
 
   const analyzeText = useCallback((text: string) => {
     if (!text.trim()) return;
@@ -88,22 +93,29 @@ export function useTextAnalysis() {
     const dominantEmotion = emotionLabels[dominantIdx];
     const dominantConfidence = emotionDistribution[dominantIdx];
 
-    // === 2. 危机信号检测 ===
+    // === 2. 危机信号检测（使用年龄专属词库） ===
     const crisisMarkers: string[] = [];
     let crisisLevel: 'none' | 'low' | 'medium' | 'high' = 'none';
-    for (const kw of CRISIS_HIGH) {
+    const crisisHigh = textConfig.crisisHigh;
+    const crisisMedium = textConfig.crisisMedium;
+    const crisisLow = textConfig.crisisLow;
+    for (const kw of crisisHigh) {
       if (textLower.includes(kw)) { crisisMarkers.push(kw); crisisLevel = 'high'; }
     }
     if (crisisLevel !== 'high') {
-      for (const kw of CRISIS_MEDIUM) {
+      for (const kw of crisisMedium) {
         if (textLower.includes(kw)) { crisisMarkers.push(kw); crisisLevel = 'medium'; }
       }
     }
     if (crisisLevel === 'none') {
-      for (const kw of CRISIS_LOW) {
+      for (const kw of crisisLow) {
         if (textLower.includes(kw)) { crisisMarkers.push(kw); crisisLevel = 'low'; }
       }
     }
+
+    // 俚语情绪信号（年龄专属俚语词库）
+    const slangMatches = textConfig.slangKeywords.filter(w => textLower.includes(w));
+    const slangSignal = Math.min(0.15, slangMatches.length * 0.03);
 
     // === 3. 认知扭曲标记 ===
     const countMatches = (patterns: string[]) => {
@@ -127,8 +139,8 @@ export function useTextAnalysis() {
     const negativeScore = emotionScores[1] + emotionScores[2] + emotionScores[3] + emotionScores[4]; // 悲+焦+怒+恐
     const sentiment = Math.max(-1, Math.min(1, (positiveScore - negativeScore) / (total || 1)));
 
-    // 情绪强度
-    const emotionalIntensity = Math.min(1, matchCount / Math.max(text.length / 10, 1));
+    // 情绪强度（含俚语信号加成）
+    const emotionalIntensity = Math.min(1, matchCount / Math.max(text.length / 10, 1) + slangSignal);
 
     // 第一人称密度
     const firstPersonCount = FIRST_PERSON.filter(w => textLower.includes(w)).length;

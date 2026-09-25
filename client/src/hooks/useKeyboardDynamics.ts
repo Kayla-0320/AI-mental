@@ -15,10 +15,15 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import type { KeyboardDynamics } from '../types/multimodal.types';
 import { defaultKeyboard } from '../types/multimodal.types';
+import type { AgeGroup } from './ageConfig';
+import { getKeyboardConfig } from './ageConfig';
 
-export function useKeyboardDynamics() {
+export function useKeyboardDynamics(ageGroup: AgeGroup | null = null) {
   const [metrics, setMetrics] = useState<KeyboardDynamics>({ ...defaultKeyboard });
   const isActiveRef = useRef(false);
+
+  // 年龄校准配置
+  const kbConfig = getKeyboardConfig(ageGroup);
 
   // 按键时间序列
   const keyTimesRef = useRef<number[]>([]);
@@ -69,12 +74,13 @@ export function useKeyboardDynamics() {
     const correctionRate = total > 0 ? Math.min(1, deletions / (total * 0.3)) : 0;
     const backspaceBurst = backspaceBurstRef.current;
 
-    // 错误率估计 (基于删除率 + 速度变化的综合指标)
-    const speedFactor = typingSpeed > 80 ? 0.3 : typingSpeed < 15 && typingSpeed > 0 ? 0.2 : 0;
+    // 错误率估计 (基于删除率 + 速度变化的综合指标，速度阈值按年龄校准)
+    const speedBaseline = kbConfig.typingSpeedBaseline;
+    const speedFactor = typingSpeed > speedBaseline * 2 ? 0.3 : typingSpeed < 15 && typingSpeed > 0 ? 0.2 : 0;
     const errorRate = Math.min(1, deletionRate * 0.6 + intervalVariance * 0.3 + speedFactor);
 
-    // 按键压力指数 (速度↑ + 删除↓ + 节奏乱 → 高压力)
-    const speedPressure = typingSpeed > 60 ? (typingSpeed - 60) / 60 : 0;
+    // 按键压力指数 (速度↑ + 删除↓ + 节奏乱 → 高压力，阈值按年龄校准)
+    const speedPressure = typingSpeed > speedBaseline * 1.3 ? (typingSpeed - speedBaseline * 1.3) / speedBaseline : 0;
     const deletionPressure = deletionRate < 0.05 && total > 20 ? 0.3 : 0; // 几乎不删除=紧张
     const rhythmPressure = 1 - rhythmScore;
     const pressureIndex = Math.min(1, speedPressure * 0.4 + deletionPressure + rhythmPressure * 0.3 + intervalVariance * 0.3);

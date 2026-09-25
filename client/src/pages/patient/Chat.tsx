@@ -1,11 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Input, Button, List, Avatar, Typography, Spin, Empty, Card, Space, Tag, Tooltip, Popconfirm, Modal } from 'antd';
-import { SendOutlined, PlusOutlined, RobotOutlined, UserOutlined, ThunderboltOutlined, DeleteOutlined, HeartOutlined, PhoneOutlined, SmileOutlined } from '@ant-design/icons';
+import { SendOutlined, PlusOutlined, RobotOutlined, UserOutlined, ThunderboltOutlined, DeleteOutlined, HeartOutlined, PhoneOutlined, SmileOutlined, VideoCameraOutlined, SoundOutlined } from '@ant-design/icons';
 import { consultationApi } from '../../services';
 import { useAnxiety } from '../../context/AnxietyContext';
-
-const PERCEPTION_API = 'http://localhost:8001';
+import { PERCEPTION_API } from '../../config';
 
 const { Text } = Typography;
 
@@ -17,20 +16,9 @@ interface Message {
   sentiment?: string;
 }
 
-// 危机关键词检测
-const crisisKeywords = [
-  '自杀', '自残', '自伤', '不想活', '想死', '去死', '活着没意思',
-  '活着没有意义', '不如死了', '伤害自己', '结束生命', '跳楼',
-  '割腕', '没有活下去的理由', '世界没有我会更好',
-];
-
-function detectCrisis(text: string): boolean {
-  return crisisKeywords.some(kw => text.includes(kw));
-}
-
 // AI 聊天子组件
 function AIChatTab() {
-  const { reportToServer } = useAnxiety();
+  const { reportToServer, toggleCamera, cameraEnabled } = useAnxiety();
   const { conversationId } = useParams();
   const navigate = useNavigate();
   const [messages, setMessages] = useState<Message[]>([]);
@@ -119,11 +107,6 @@ function AIChatTab() {
     const content = input.trim();
     setInput('');
 
-    // 危机信号检测
-    if (detectCrisis(content)) {
-      setCrisisModalOpen(true);
-    }
-
     // 实时情绪分析（无感调用，不阻塞对话）
     analyzeEmotion(content);
 
@@ -138,6 +121,12 @@ function AIChatTab() {
           const filtered = prev.filter(m => m.id !== 'temp');
           return [...filtered, res.data.userMessage, res.data.aiMessage];
         });
+
+        // 危机信号：由后端 Python 算法层统一判断（62+ 关键词库）
+        const isCrisis = res.data.isCrisis === true || res.data.riskLevel === 'crisis';
+        if (isCrisis) {
+          setCrisisModalOpen(true);
+        }
       }
     } catch {
       setMessages(prev => [...prev, { id: 'error', role: 'assistant', content: '网络异常，请稍后重试', createdAt: new Date().toISOString() }]);
@@ -199,7 +188,7 @@ function AIChatTab() {
       <Card style={{ flex: 1, height: '100%', borderRadius: 12, display: 'flex', flexDirection: 'column' }}
         bodyStyle={{ flex: 1, display: 'flex', flexDirection: 'column', padding: 0, overflow: 'hidden' }}>
         {!conversationId ? (
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 40 }}>
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-start', padding: 40, overflow: 'auto' }}>
             <div style={{ fontSize: 64, marginBottom: 16 }}>💬</div>
             <Empty description={
               <span style={{ color: '#8a7a9a', fontSize: 15 }}>
@@ -277,8 +266,17 @@ function AIChatTab() {
                 </div>
               )}
               <Space.Compact style={{ width: '100%' }}>
+                <Tooltip title={cameraEnabled ? '关闭摄像头/麦克风' : '开启摄像头/麦克风（面部+语音分析）'}>
+                  <Button
+                    icon={cameraEnabled ? <VideoCameraOutlined /> : <VideoCameraOutlined />}
+                    onClick={toggleCamera}
+                    type={cameraEnabled ? 'primary' : 'default'}
+                    size="large"
+                    style={{ borderRadius: '8px 0 0 8px', background: cameraEnabled ? '#52c41a' : undefined }}
+                  />
+                </Tooltip>
                 <Input value={input} onChange={(e) => setInput(e.target.value)} onPressEnter={handleSend}
-                  placeholder="说说你的想法..." disabled={sending} size="large" style={{ borderRadius: '8px 0 0 8px' }} />
+                  placeholder="说说你的想法..." disabled={sending} size="large" style={{ borderRadius: 0 }} />
                 <Button type="primary" icon={<SendOutlined />} onClick={handleSend} loading={sending} size="large" style={{ borderRadius: '0 8px 8px 0' }}>发送</Button>
               </Space.Compact>
             </div>

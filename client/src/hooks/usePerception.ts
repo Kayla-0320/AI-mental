@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback } from 'react';
-
-const PERCEPTION_API = 'http://localhost:8001';
+import type { AgeGroup } from './ageConfig';
+import { PERCEPTION_API } from '../config';
 
 export interface PerceptionResult {
   text_emotion_probs: number[];   // [快乐, 悲伤, 焦虑, 愤怒, 中性]
@@ -19,7 +19,7 @@ export interface VoiceMetrics {
 
 const emotionLabels = ['快乐', '悲伤', '焦虑', '愤怒', '中性'];
 
-export function usePerception() {
+export function usePerception(ageGroup: AgeGroup | null = null) {
   const [result, setResult] = useState<PerceptionResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -46,6 +46,7 @@ export function usePerception() {
     try {
       const body: Record<string, unknown> = { text };
       if (behaviorFeatures) body.behavior_features = behaviorFeatures;
+      if (ageGroup) body.age_group = ageGroup;
       const res = await fetch(`${PERCEPTION_API}/api/v1/perception/analyze`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -189,6 +190,7 @@ export function usePerception() {
       const body: Record<string, unknown> = { text };
       if (options?.facialFeatures) body.facial_features = options.facialFeatures;
       if (options?.behaviorFeatures) body.behavior_features = options.behaviorFeatures;
+      if (ageGroup) body.age_group = ageGroup;
 
       const res = await fetch(`${PERCEPTION_API}/api/v1/perception/analyze`, {
         method: 'POST',

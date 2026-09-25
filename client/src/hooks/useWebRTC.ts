@@ -14,7 +14,7 @@
  * - 生产环境应部署自有 TURN 服务器（如 coturn）
  */
 import { useEffect, useRef, useState, useCallback } from 'react';
-import type { Socket } from 'socket.io-client';
+import { getSocket } from '../services/socket';
 
 // TURN 服务器配置（环境变量优先，回退到免费公共 TURN）
 const TURN_USERNAME = import.meta.env.VITE_TURN_USERNAME || 'openrelay';
@@ -37,7 +37,7 @@ const ICE_SERVERS: RTCConfiguration = {
   iceCandidatePoolSize: 10,
 };
 
-export function useWebRTC(socket: Socket | null, bookingId: string | null) {
+export function useWebRTC(bookingId: string | null) {
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [isConnected, setIsConnected] = useState(false);
@@ -71,7 +71,7 @@ export function useWebRTC(socket: Socket | null, bookingId: string | null) {
     // ICE Candidate 生成 → 通过信令发送给对方
     pc.onicecandidate = (event: RTCPeerConnectionIceEvent) => {
       if (event.candidate && bookingId) {
-        socket?.emit('webrtc:ice-candidate', {
+        getSocket()?.emit('webrtc:ice-candidate', {
           bookingId,
           candidate: event.candidate.toJSON(),
         });
@@ -90,7 +90,7 @@ export function useWebRTC(socket: Socket | null, bookingId: string | null) {
 
     peerConnectionRef.current = pc;
     return pc;
-  }, [socket, bookingId]);
+  }, [bookingId]);
 
   // 获取本地媒体流
   const startLocalStream = useCallback(async (video = true, audio = true) => {
@@ -111,6 +111,7 @@ export function useWebRTC(socket: Socket | null, bookingId: string | null) {
 
   // 发起通话（创建 Offer）
   const call = useCallback(async () => {
+    const socket = getSocket();
     if (!socket || !bookingId) return;
 
     setIsInitiator(true);
@@ -125,14 +126,15 @@ export function useWebRTC(socket: Socket | null, bookingId: string | null) {
     });
 
     console.log('[WebRTC] 已发送 Offer');
-  }, [socket, bookingId, createPeerConnection]);
+  }, [bookingId, createPeerConnection]);
 
   // 接听通话（处理 Offer，创建 Answer）
   const answerCall = useCallback(async () => {
+    const socket = getSocket();
     if (!socket || !bookingId) return;
     const pc = createPeerConnection();
     return pc;
-  }, [socket, bookingId, createPeerConnection]);
+  }, [bookingId, createPeerConnection]);
 
   // 挂断
   const hangUp = useCallback(() => {
@@ -147,9 +149,9 @@ export function useWebRTC(socket: Socket | null, bookingId: string | null) {
     setError(null);
 
     if (bookingId) {
-      socket?.emit('webrtc:leave', bookingId);
+      getSocket()?.emit('webrtc:leave', bookingId);
     }
-  }, [socket, bookingId]);
+  }, [bookingId]);
 
   // 切换摄像头
   const toggleCamera = useCallback(async (enabled: boolean) => {
@@ -169,6 +171,7 @@ export function useWebRTC(socket: Socket | null, bookingId: string | null) {
 
   // 监听信令事件
   useEffect(() => {
+    const socket = getSocket();
     if (!socket || !bookingId) return;
 
     // 收到对方加入通知
@@ -182,15 +185,30 @@ export function useWebRTC(socket: Socket | null, bookingId: string | null) {
       }
     };
 
-    // 收到 Offer
+    // 收到 Offer（自动接听：获取本地流 → 创建 Answer）
     const handleOffer = async (data: { userId: string; offer: RTCSessionDescriptionInit }) => {
-      console.log('[WebRTC] 收到 Offer');
-      const pc = peerConnectionRef.current || createPeerConnection();
-      await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      socket.emit('webrtc:answer', { bookingId, answer: pc.localDescription });
-      console.log('[WebRTC] 已发送 Answer');
+      console.log('[WebRTC] 收到 Offer，自动接听');
+      try {
+        // 如果没有本地流，自动获取（咨询师被呼叫时自动开摄像头）
+        if (!localStreamRef.current) {
+          const stream = await navigator.mediaDevices.getUserMedia({
+            video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
+            audio: { echoCancellation: true, noiseSuppression: true },
+          });
+          localStreamRef.current = stream;
+          setLocalStream(stream);
+          console.log('[WebRTC] 自动获取本地流成功');
+        }
+        const pc = peerConnectionRef.current || createPeerConnection();
+        await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        socket.emit('webrtc:answer', { bookingId, answer: pc.localDescription });
+        console.log('[WebRTC] 已发送 Answer');
+      } catch (err) {
+        console.error('[WebRTC] 自动接听失败:', err);
+        setError('无法自动接听，请手动点击通话按钮');
+      }
     };
 
     // 收到 Answer
@@ -234,7 +252,7 @@ export function useWebRTC(socket: Socket | null, bookingId: string | null) {
       socket.off('webrtc:ice-candidate', handleIceCandidate);
       socket.off('webrtc:user-left', handleUserLeft);
     };
-  }, [socket, bookingId, isInitiator, createPeerConnection]);
+  }, [bookingId, isInitiator, createPeerConnection]);
 
   // 清理
   useEffect(() => {
