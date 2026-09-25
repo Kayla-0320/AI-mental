@@ -258,6 +258,18 @@ export default function UnifiedAssessment() {
                   <Alert type="error" message={blink.metrics.error} />
                 ) : blink.metrics.isDetecting ? (
                   <>
+                    {/* 如实标注本次使用的检测方式：blendshape=MediaPipe 眼睑闭合度模型；
+                        brightness=模型不可用时的亮度降级法（不做人脸检测，精度低）。
+                        避免降级结果被当成模型输出使用。 */}
+                    <div style={{ marginBottom: 10 }}>
+                      {blink.metrics.method === 'blendshape' ? (
+                        <Tag color="green">检测方式：MediaPipe 眼睑闭合度模型</Tag>
+                      ) : blink.metrics.method === 'brightness' ? (
+                        <Tag color="orange">检测方式：亮度降级（模型不可用，精度较低）</Tag>
+                      ) : (
+                        <Tag>检测方式：未知</Tag>
+                      )}
+                    </div>
                     <Row gutter={[12, 12]}>
                       {[
                         { label: '眨眼频率', value: `${blink.metrics.blinkRate} 次/分`, desc: '正常 15-20' },
