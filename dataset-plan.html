@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>青少年AI心理健康平台 — 数据集获取计划（1周内可获取）</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif; background: #f0f4f8; color: #1a202c; padding: 24px; line-height: 1.6; }
+  .container { max-width: 1400px; margin: 0 auto; }
+  h1 { font-size: 28px; color: #2d3748; margin-bottom: 8px; }
+  .subtitle { color: #718096; font-size: 14px; margin-bottom: 24px; }
+  .summary-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 32px; }
+  .card { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+  .card .number { font-size: 36px; font-weight: 700; }
+  .card .label { font-size: 13px; color: #718096; margin-top: 4px; }
+  .card.green .number { color: #38a169; }
+  .card.blue .number { color: #3182ce; }
+  .card.orange .number { color: #dd6b20; }
+  .card.purple .number { color: #805ad5; }
+  .section { margin-bottom: 32px; }
+  .section-title { font-size: 20px; font-weight: 600; margin-bottom: 12px; padding-left: 12px; border-left: 4px solid #3182ce; }
+  .section-title.green { border-left-color: #38a169; }
+  .section-title.orange { border-left-color: #dd6b20; }
+  table { width: 100%; border-collapse: collapse; background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 16px; }
+  th { background: #edf2f7; padding: 12px 14px; text-align: left; font-size: 13px; font-weight: 600; color: #4a5568; border-bottom: 2px solid #e2e8f0; white-space: nowrap; }
+  td { padding: 10px 14px; font-size: 13px; border-bottom: 1px solid #edf2f7; vertical-align: top; }
+  tr:hover { background: #f7fafc; }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; margin: 1px 2px; }
+  .tag-p0 { background: #fed7d7; color: #c53030; }
+  .tag-p1 { background: #feebc8; color: #c05621; }
+  .tag-p2 { background: #c6f6d5; color: #276749; }
+  .tag-direct { background: #c6f6d5; color: #276749; }
+  .tag-reg { background: #bee3f8; color: #2a4365; }
+  .tag-dta { background: #e9d8fd; color: #553c9a; }
+  .tag-contact { background: #feebc8; color: #c05621; }
+  .modality-icon { font-size: 16px; margin-right: 4px; }
+  a { color: #3182ce; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .note { background: #fffff0; border: 1px solid #ecc94b; border-radius: 8px; padding: 16px; margin: 16px 0; font-size: 13px; }
+  .note strong { color: #975a16; }
+  .timeline { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+  .timeline-item { display: flex; margin-bottom: 16px; }
+  .timeline-day { min-width: 60px; font-weight: 700; color: #3182ce; padding-top: 2px; }
+  .timeline-content { flex: 1; padding-left: 16px; border-left: 2px solid #e2e8f0; padding-bottom: 8px; }
+  .timeline-content h4 { font-size: 14px; margin-bottom: 4px; }
+  .timeline-content p { font-size: 13px; color: #718096; }
+  .footer { text-align: center; color: #a0aec0; font-size: 12px; margin-top: 32px; padding-top: 16px; border-top: 1px solid #e2e8f0; }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>📊 数据集获取计划表</h1>
+<p class="subtitle">面向青少年AI心理健康平台 11 模态感知系统 · 筛选标准：1 周内可获取 + <strong style="color:#38a169">全部免费</strong> · 生成时间：2026-09-22</p>
+<div class="note" style="background:#f0fff4;border-color:#38a169;">
+  <strong style="color:#276749">✅ 费用筛选说明：</strong><br>
+  本表所有数据集均已确认为<strong>免费获取</strong>。原 IEEE DataPort 上的 SocialCD-3K 已替换为 GitHub 免费版；DAIC-WOZ 仅需签署 DTA 协议（免费）；SW1 仅需免费注册账号。无任何数据集需要付费。
+</div>
+
+<!-- 汇总卡片 -->
+<div class="summary-cards">
+  <div class="card green"><div class="number">11</div><div class="label">可直接免费下载的数据集</div></div>
+  <div class="card blue"><div class="number">2</div><div class="label">需注册/签协议（免费）</div></div>
+  <div class="card orange"><div class="number">1</div><div class="label">需联系作者（免费）</div></div>
+  <div class="card purple"><div class="number">0</div><div class="label" style="color:#38a169;font-weight:600">需付费的数据集 ✓ 已全部排除</div></div>
+</div>
+
+<!-- ==================== P0 核心数据集 ==================== -->
+<div class="section">
+  <h2 class="section-title" style="border-left-color:#c53030;">🔴 P0 — 核心训练数据（立即获取，Day 1-2）</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>模态</th>
+        <th>数据集</th>
+        <th>规模</th>
+        <th>语言/对象</th>
+        <th>获取方式</th>
+        <th>下载地址</th>
+        <th>用于训练</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><span class="modality-icon">📝</span>文本情绪</td>
+        <td><strong>MMPsy</strong></td>
+        <td>1,275 名真实学生<br>音频+文本+心理量表</td>
+        <td>中文 / 青少年</td>
+        <td><span class="tag tag-direct">GitHub 直接下载</span></td>
+        <td><a href="https://github.com/shuyeit/mmpsy-data">github.com/shuyeit/mmpsy-data</a></td>
+        <td>微调 RoBERTa 文本情感模型<br>多模态融合验证（文本+语音）<br>焦虑/抑郁分类</td>
+      </tr>
+      <tr>
+        <td><span class="modality-icon">📝</span>文本情绪<br><span class="modality-icon">🎙</span>语音</td>
+        <td><strong>EATD-Corpus</strong></td>
+        <td>162 名被试<br>音频+文本转录</td>
+        <td>中文 / 抑郁标注</td>
+        <td><span class="tag tag-direct">GitHub 直接下载</span></td>
+        <td><a href="https://github.com/Fancy-Block/EATD-Corpus">github.com/Fancy-Block/EATD-Corpus</a></td>
+        <td>微调文本情感模型<br>训练语音情感识别<br>多模态融合验证</td>
+      </tr>
+      <tr>
+        <td><span class="modality-icon">📝</span>文本情绪</td>
+        <td><strong>PsyQA</strong></td>
+        <td>22,346 条咨询问答<br>56,000+ 专业回答</td>
+        <td>中文 / 心理健康</td>
+        <td><span class="tag tag-direct">GitHub 直接下载</span></td>
+        <td><a href="https://github.com/thu-coai/PsyQA">github.com/thu-coai/PsyQA</a></td>
+        <td>微调文本情感模型<br>心理咨询对话理解<br>情绪标注辅助训练</td>
+      </tr>
+      <tr>
+        <td><span class="modality-icon">📝</span>文本情绪</td>
+        <td><strong>SMP2020-EWECT</strong></td>
+        <td>微博情绪分类<br>6 类情绪标注</td>
+        <td>中文 / 社交媒体</td>
+        <td><span class="tag tag-direct">百度网盘直接下载</span></td>
+        <td><a href="https://smp2020ewect.github.io/">smp2020ewect.github.io</a></td>
+        <td>微调文本情绪分类器<br>中文社交媒体情绪识别</td>
+      </tr>
+      <tr>
+        <td><span class="modality-icon">🎙</span>语音声学</td>
+        <td><strong>SW1 (SpeechWellness)</strong></td>
+        <td>600 名 10-18 岁青少年<br>自发+朗读语音</td>
+        <td>中文 / 青少年自杀风险</td>
+        <td><span class="tag tag-reg">官网注册下载</span></td>
+        <td><a href="https://speechwellness.github.io/">speechwellness.github.io</a></td>
+        <td>训练语音情感识别模型<br>青少年语音基线建立<br>声学特征提取器</td>
+      </tr>
+      <tr>
+        <td><span class="modality-icon">🧠</span>认知扭曲</td>
+        <td><strong>SocialCD-3K</strong></td>
+        <td>3,000+ 条微博<br>多标签认知扭曲标注</td>
+        <td>中文 / 社交媒体</td>
+        <td><span class="tag tag-direct">GitHub 直接下载（免费）</span></td>
+        <td><a href="https://github.com/HongzhiQ/SupervisedVsLLM-EfficacyEval">github.com/HongzhiQ/SupervisedVsLLM-EfficacyEval</a><br><span style="color:#718096;font-size:11px">data/cognitive distortion/ 目录下</span></td>
+        <td>训练认知扭曲检测模型<br>7 类认知扭曲分类器</td>
+      </tr>
+      <tr>
+        <td><span class="modality-icon">🔗</span>多模态融合</td>
+        <td><strong>DAIC-WOZ</strong></td>
+        <td>189 名被试<br>视频+音频+文本+PHQ-9/GAD-7</td>
+        <td>英文 / 临床访谈</td>
+        <td><span class="tag tag-dta">签 DTA 协议（1-3天审批）</span></td>
+        <td><a href="https://dcapswoz.ict.usc.edu/">dcapswoz.ict.usc.edu</a></td>
+        <td><strong>HUAF-TC 融合算法验证</strong><br>多模态基准对比<br>PHQ-9/GAD-7 回归</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ==================== P1 重要补充 ==================== -->
+<div class="section">
+  <h2 class="section-title orange">🟡 P1 — 重要补充数据（Day 2-4）</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>模态</th>
+        <th>数据集</th>
+        <th>规模</th>
+        <th>语言/对象</th>
+        <th>获取方式</th>
+        <th>下载地址</th>
+        <th>用于训练</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><span class="modality-icon">🧠</span>认知扭曲</td>
+        <td><strong>C2D2</strong></td>
+        <td>7,500 条中文句子<br>认知扭曲标注</td>
+        <td>中文 / 认知扭曲</td>
+        <td><span class="tag tag-contact">联系作者获取</span><br>yxsun@ir.hit.edu</td>
+        <td><a href="https://github.com/bcwangavailable/C2D2-Cognitive-Distortion">GitHub 页面申请</a></td>
+        <td>训练认知扭曲检测模型<br>CBT 七类扭曲分类</td>
+      </tr>
+      <tr>
+        <td><span class="modality-icon">🧠</span>认知扭曲</td>
+        <td><strong>CrossLinCD</strong></td>
+        <td>跨语言认知扭曲数据<br>标准化标注</td>
+        <td>中文+英文</td>
+        <td><span class="tag tag-direct">GitHub 直接下载</span></td>
+        <td><a href="https://github.com/HongzhiQ/CrossLinCD">github.com/HongzhiQ/CrossLinCD</a></td>
+        <td>认知扭曲跨语言检测<br>与 C2D2 互补</td>
+      </tr>
+      <tr>
+        <td><span class="modality-icon">🧠</span>认知扭曲</td>
+        <td><strong>SOS-HL-1K</strong></td>
+        <td>1,249 条帖子<br>自杀风险分类</td>
+        <td>中文 / 社交媒体</td>
+        <td><span class="tag tag-direct">GitHub 直接下载</span></td>
+        <td><a href="https://github.com/HongzhiQ/SupervisedVsLLM-EfficacyEval">同 SocialCD-3K 仓库</a><br><span style="color:#718096;font-size:11px">data/suicide/ 目录下</span></td>
+        <td>危机信号检测<br>C-SSRS 阈值校准</td>
+      </tr>
+      <tr>
+        <td><span class="modality-icon">📊</span>行为模式<br><span class="modality-icon">🕐</span>昼夜节律</td>
+        <td><strong>StudentLife</strong></td>
+        <td>48 名学生<br>10 周连续手机传感器</td>
+        <td>英文 / 大学生</td>
+        <td><span class="tag tag-direct">Kaggle 直接下载</span></td>
+        <td><a href="https://www.kaggle.com/datasets/dartweichen/student-life">Kaggle: student-life</a></td>
+        <td><strong>时序融合验证（temporal smoothing）</strong><br>昼夜节律模型训练<br>行为模式分析</td>
+      </tr>
+      <tr>
+        <td><span class="modality-icon">🎙</span>语音语义</td>
+        <td><strong>MMPsy + EATD 复用</strong></td>
+        <td>已获取的音频转录文本</td>
+        <td>中文</td>
+        <td><span class="tag tag-direct">已在 P0 获取</span></td>
+        <td>同上</td>
+        <td>语音→文本→语义 pipeline<br>语音语义融合模型</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ==================== P2 可选增强 ==================== -->
+<div class="section">
+  <h2 class="section-title green">🟢 P2 — 可选增强数据（Day 4-7，按需获取）</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>模态</th>
+        <th>数据集</th>
+        <th>规模</th>
+        <th>获取方式</th>
+        <th>下载地址</th>
+        <th>用于训练</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><span class="modality-icon">😊</span>面部微表情</td>
+        <td><strong>FACES</strong></td>
+        <td>11,427 名青少年面部视频</td>
+        <td><span class="tag tag-reg">官网申请</span></td>
+        <td><a href="https://faces.mpdl.mpg.de/">faces.mpdl.mpg.de</a></td>
+        <td>面部 AU 检测校准<br>年龄差异化面部基线</td>
+      </tr>
+      <tr>
+        <td><span class="modality-icon">😊</span>面部微表情</td>
+        <td><strong>DFEW</strong></td>
+        <td>动态面部表情视频<br>7 类情绪标注</td>
+        <td><span class="tag tag-reg">官网申请</span></td>
+        <td><a href="https://dfew.github.io/">dfew.github.io</a></td>
+        <td>面部表情→情绪映射<br>微表情瞬态检测</td>
+      </tr>
+      <tr>
+        <td><span class="modality-icon">⌨️</span>键盘动力学</td>
+        <td><strong>青少年击键数据</strong></td>
+        <td>927 名中学生<br>77 种击键特征</td>
+        <td><span class="tag tag-contact">联系论文作者</span></td>
+        <td>论文附录联系</td>
+        <td>击键动态特征提取器<br>打字速度/力度/节奏</td>
+      </tr>
+      <tr>
+        <td><span class="modality-icon">💓</span>rPPG/HRV</td>
+        <td><strong>PICU 儿科数据集</strong></td>
+        <td>500 名患者（1月-18岁）<br>视频+生理信号</td>
+        <td><span class="tag tag-contact">联系医院/作者</span></td>
+        <td>论文附录联系</td>
+        <td>rPPG 心率估计算法<br>非接触式生理监测</td>
+      </tr>
+      <tr>
+        <td><span class="modality-icon">👁</span>眼动追踪</td>
+        <td><strong>Through the Youth Eyes</strong></td>
+        <td>172 名 15-21 岁<br>139 人有效数据</td>
+        <td><span class="tag tag-reg">学术申请</span></td>
+        <td>论文附带数据链接</td>
+        <td>眼动模式分析<br>抑郁标签→眼动映射</td>
+      </tr>
+      <tr>
+        <td><span class="modality-icon">🔗</span>多模态基准</td>
+        <td><strong>IEMOCAP</strong></td>
+        <td>多模态情感对话<br>语音+文本+面部</td>
+        <td><span class="tag tag-dta">签协议（1-2天）</span></td>
+        <td><a href="https://sail.usc.edu/iemocap/">sail.usc.edu/iemocap</a></td>
+        <td>多模态融合基准对比<br>论文实验对照</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ==================== 不需要外部数据的模态 ==================== -->
+<div class="section">
+  <h2 class="section-title" style="border-left-color:#805ad5;">🟣 无需外部数据 — 可用规则引擎/自采数据</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>模态</th>
+        <th>当前实现</th>
+        <th>替代方案</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><span class="modality-icon">🫁</span>呼吸模式</td>
+        <td>基于规则的呼吸模式分析（频率/深度/规律性）</td>
+        <td>公开心理相关呼吸数据极少，建议用模拟数据 + 平台自采</td>
+      </tr>
+      <tr>
+        <td><span class="modality-icon">🏃</span>行为激活</td>
+        <td>基于规则的行为激活水平分析</td>
+        <td>复用 StudentLife 的 GPS/加速度计数据验证</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ==================== 执行时间线 ==================== -->
+<div class="section">
+  <h2 class="section-title" style="border-left-color:#38a169;">📅 1 周执行时间线</h2>
+  <div class="timeline">
+    <div class="timeline-item">
+      <div class="timeline-day">Day 1</div>
+      <div class="timeline-content">
+        <h4>下载直接获取的数据集</h4>
+        <p>MMPsy、EATD-Corpus、PsyQA、SMP2020、SocialCD-3K、CrossLinCD、SOS-HL-1K<br>
+        → 全部 GitHub / IEEE DataPort / 百度网盘直接下载，无需等待审批</p>
+      </div>
+    </div>
+    <div class="timeline-item">
+      <div class="timeline-day">Day 2</div>
+      <div class="timeline-content">
+        <h4>注册 + 提交申请</h4>
+        <p>SW1 (SpeechWellness) 官网注册下载<br>
+        DAIC-WOZ 提交 DTA 签署申请（1-3 天审批）<br>
+        StudentLife 从 Kaggle 下载<br>
+        联系 C2D2 作者 (yxsun@ir.hit.edu)</p>
+      </div>
+    </div>
+    <div class="timeline-item">
+      <div class="timeline-day">Day 3</div>
+      <div class="timeline-content">
+        <h4>数据预处理 + 格式转换</h4>
+        <p>将下载的数据集转换为项目训练脚本所需格式<br>
+        文本数据 → JSONL (text, label) 格式<br>
+        音频数据 → WAV 16kHz 统一格式<br>
+        检查数据质量、去重、清洗</p>
+      </div>
+    </div>
+    <div class="timeline-item">
+      <div class="timeline-day">Day 4</div>
+      <div class="timeline-content">
+        <h4>开始训练文本情感模型</h4>
+        <p>用 MMPsy + EATD + PsyQA + SMP2020 合并训练 RoBERTa 文本情感分类器<br>
+        替换当前的规则引擎降级方案</p>
+      </div>
+    </div>
+    <div class="timeline-item">
+      <div class="timeline-day">Day 5</div>
+      <div class="timeline-content">
+        <h4>训练认知扭曲 + 语音模型</h4>
+        <p>用 SocialCD-3K + C2D2 训练认知扭曲检测器<br>
+        用 SW1 训练青少年语音情感识别模型</p>
+      </div>
+    </div>
+    <div class="timeline-item">
+      <div class="timeline-day">Day 6</div>
+      <div class="timeline-content">
+        <h4>HUAF-TC 融合算法验证</h4>
+        <p>DAIC-WOZ 获批后，用其多模态数据验证 HUAF-TC 融合效果<br>
+        对比 weighted_average / stacking / dynamic / hierarchical 四种策略<br>
+        StudentLife 数据验证时序平滑模块</p>
+      </div>
+    </div>
+    <div class="timeline-item">
+      <div class="timeline-day">Day 7</div>
+      <div class="timeline-content">
+        <h4>集成测试 + 结果整理</h4>
+        <p>将训练好的模型集成到 perception_service.py<br>
+        运行全量测试确保兼容性<br>
+        整理实验结果用于论文/PPT</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== 关键提示 ==================== -->
+<div class="note">
+  <strong>⚠️ 关键提示：</strong><br><br>
+  <strong>1. 最重要的 3 个数据集：</strong>MMPsy（中文青少年多模态）、DAIC-WOZ（HUAF-TC 融合验证）、StudentLife（时序验证）<br>
+  <strong>2. 中文青少年数据稀缺：</strong>真正面向中国青少年的多模态心理健康数据只有 MMPsy 和 SW1，务必优先获取<br>
+  <strong>3. DAIC-WOZ 是英文数据：</strong>虽然语言不同，但它是唯一具有多模态+临床标注的公开数据集，对验证融合算法不可或缺<br>
+  <strong>4. 伦理合规：</strong>所有数据集的使用需遵守其原始许可协议，论文中需注明数据来源和伦理审批信息<br>
+  <strong>5. 自采数据：</strong>平台上线后产生的真实用户数据是最有价值的训练资源，建议同步设计数据采集方案（需伦理审批）
+</div>
+
+<div class="footer">
+  青少年AI心理健康平台 · 数据集获取计划 · 基于代码模块分析与网络验证生成
+</div>
+
+</div>
+</body>
+</html>

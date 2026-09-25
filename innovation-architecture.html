@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>项目创新体系 — 全局优化</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif; background: #0a0e17; color: #e2e8f0; padding: 30px 20px; }
+  .container { max-width: 1000px; margin: 0 auto; }
+  h1 { font-size: 28px; text-align: center; margin-bottom: 30px; background: linear-gradient(90deg, #63b3ed, #68d391); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  h2 { font-size: 18px; color: #63b3ed; margin-bottom: 12px; }
+  .card { background: #1a1f35; border: 1px solid rgba(99,179,237,0.15); border-radius: 14px; padding: 24px; margin-bottom: 20px; }
+  .tier { margin-bottom: 30px; }
+  .tier-label { display: inline-block; padding: 4px 14px; border-radius: 20px; font-size: 13px; font-weight: 700; margin-bottom: 12px; }
+  .tier-1 { background: linear-gradient(135deg, #68d391, #38a169); color: white; }
+  .tier-2 { background: linear-gradient(135deg, #63b3ed, #3182ce); color: white; }
+  .tier-3 { background: rgba(99,179,237,0.15); color: #63b3ed; border: 1px solid rgba(99,179,237,0.3); }
+  .tier-4 { background: rgba(236,201,75,0.15); color: #ecc94b; border: 1px solid rgba(236,201,75,0.3); }
+  .module { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 16px; margin-bottom: 12px; }
+  .module-name { font-weight: 700; font-size: 15px; margin-bottom: 6px; }
+  .module-desc { font-size: 13px; color: #a0aec0; line-height: 1.7; }
+  .module-tag { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 10px; margin-right: 6px; margin-top: 6px; }
+  .tag-core { background: rgba(104,211,145,0.2); color: #68d391; }
+  .tag-support { background: rgba(99,179,237,0.2); color: #63b3ed; }
+  .tag-trust { background: rgba(236,201,75,0.2); color: #ecc94b; }
+  .tag-care { background: rgba(237,100,166,0.2); color: #ed64a6; }
+  .arrow { text-align: center; color: #4a5568; font-size: 24px; margin: 8px 0; }
+  .narrative { background: rgba(104,211,145,0.06); border: 1px solid rgba(104,211,145,0.2); border-radius: 12px; padding: 20px; margin-top: 20px; }
+  .narrative p { line-height: 2; font-size: 14px; }
+  .before-after { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .before { border-left: 3px solid #fc8181; padding-left: 14px; }
+  .after { border-left: 3px solid #68d391; padding-left: 14px; }
+  .before .label { color: #fc8181; font-weight: 700; font-size: 13px; }
+  .after .label { color: #68d391; font-weight: 700; font-size: 13px; }
+  .item { font-size: 13px; color: #a0aec0; margin: 4px 0; }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>项目创新体系 — 全局优化方案</h1>
+
+<!-- 问题诊断 -->
+<div class="card">
+  <h2>🔍 当前问题：创新点平铺，没有层次</h2>
+  <div class="before-after">
+    <div class="before">
+      <div class="label">❌ 之前的叙事</div>
+      <div class="item">• HUAF-TC 是创新</div>
+      <div class="item">• 五轴审计是创新</div>
+      <div class="item">• 年龄分层是创新</div>
+      <div class="item">• 苏格拉底是创新</div>
+      <div class="item">• 主动关怀是创新</div>
+      <div class="item">• 联邦学习是创新</div>
+      <div class="item" style="color: #fc8181; margin-top: 8px;">→ 评委感受：什么都说是创新 = 什么都不是创新</div>
+    </div>
+    <div class="after">
+      <div class="label">✅ 优化后的叙事</div>
+      <div class="item">• 2 个核心算法创新（真正的原创）</div>
+      <div class="item">• 1 个架构创新（系统设计）</div>
+      <div class="item">• 1 层信任基础设施（安全保障）</div>
+      <div class="item">• 1 条人文关怀主线（情感共鸣）</div>
+      <div class="item" style="color: #68d391; margin-top: 8px;">→ 评委感受：层次清晰，重点突出，有温度</div>
+    </div>
+  </div>
+</div>
+
+<!-- 四层创新体系 -->
+<div class="tier">
+  <span class="tier-label tier-1">🧬 第一层：核心算法创新（原创，别人没有的）</span>
+  <div class="card" style="border-color: rgba(104,211,145,0.3);">
+    <div class="module">
+      <div class="module-name" style="color: #68d391;">① 心理数字孪生（Psychological Digital Twin）</div>
+      <div class="module-desc">
+        <strong>首创</strong>将 Digital Twin 引入青少年心理健康。<br>
+        三个子算法：个人因果图发现（Granger Causality）→ 因果感知状态预测 → JITAI 干预时机优化。<br>
+        <strong>别人做不到</strong>：每个人独有的因果链，不是群体统计规律，是个体级别的精准预测。
+      </div>
+      <span class="module-tag tag-core">原创算法</span>
+      <span class="module-tag tag-core">首次应用于青少年心理</span>
+    </div>
+    <div class="module">
+      <div class="module-name" style="color: #68d391;">② HUAF-TC 层级融合算法</div>
+      <div class="module-desc">
+        11 模态三层架构的熵驱动不确定性融合 + 年龄自适应门控 + 时序一致性平滑。<br>
+        <strong>与传统的区别</strong>：传统加权平均只能融合 2 模态；HUAF-TC 是唯一支持 11 模态层级融合并量化每个模态不确定度的算法。
+      </div>
+      <span class="module-tag tag-core">原创算法</span>
+      <span class="module-tag tag-core">时序波动降低 85.9%</span>
+    </div>
+  </div>
+</div>
+
+<div class="arrow">↓ 核心算法的输出，为架构层提供基础 ↓</div>
+
+<div class="tier">
+  <span class="tier-label tier-2">🏗️ 第二层：架构创新（系统设计层面的创新）</span>
+  <div class="card" style="border-color: rgba(99,179,237,0.3);">
+    <div class="module">
+      <div class="module-name" style="color: #63b3ed;">③ 感知-融合-预测-干预 四层闭环架构</div>
+      <div class="module-desc">
+        不是简单的"检测→响应"，而是完整的认知闭环：<br>
+        <strong>感知</strong>（11 模态年龄自适应采集）→ <strong>融合</strong>（HUAF-TC 不确定性融合）→
+        <strong>预测</strong>（数字孪生因果轨迹预测）→ <strong>干预</strong>（精准时机 + 苏格拉底引导）<br>
+        <strong>关键</strong>：预测层是别人没有的。所有现有系统都是"检测到现在→响应"，只有我们能"预测到未来→提前干预"。
+      </div>
+      <span class="module-tag tag-support">系统架构</span>
+      <span class="module-tag tag-support">闭环设计</span>
+    </div>
+  </div>
+</div>
+
+<div class="arrow">↓ 架构为安全与关怀提供框架 ↓</div>
+
+<div class="tier">
+  <span class="tier-label tier-3">🛡️ 第三层：信任基础设施（不是创新，但不可或缺）</span>
+  <div class="card">
+    <div class="module">
+      <div class="module-name" style="color: #ecc94b;">④ 五轴安全审计 + SafetyLoop 闭环</div>
+      <div class="module-desc">
+        <strong>定位</strong>：不是创新，是"临床安全保证"。<br>
+        但包含青少年专属设计：谄媚阈值下调至 0.75、青少年特有污名化词库、反刍思维检测。<br>
+        <strong>叙事</strong>："我们不仅创新，更负责。每一个创新输出都经过五轴安全审计的检验。"
+      </div>
+      <span class="module-tag tag-trust">安全保障</span>
+      <span class="module-tag tag-trust">青少年专属校准</span>
+    </div>
+    <div class="module">
+      <div class="module-name" style="color: #ecc94b;">⑤ 隐私保护（联邦学习 + 端侧推理 + 数据加密）</div>
+      <div class="module-desc">
+        <strong>定位</strong>：不是创新，是"隐私设计原则"（Privacy by Design）。<br>
+        <strong>叙事</strong>："你的秘密永远不离开你的手机。"
+      </div>
+      <span class="module-tag tag-trust">隐私保障</span>
+    </div>
+  </div>
+</div>
+
+<div class="arrow">↓ 一切技术都服务于人 ↓</div>
+
+<div class="tier">
+  <span class="tier-label tier-4">💗 第四层：人文关怀主线（打动评委的关键）</span>
+  <div class="card" style="border-color: rgba(237,100,166,0.3);">
+    <div class="module">
+      <div class="module-name" style="color: #ed64a6;">贯穿始终的人文关怀设计</div>
+      <div class="module-desc" style="line-height: 2.2;">
+        <strong>1. "主动伸出手" —— 主动关怀机制</strong><br>
+        &nbsp;&nbsp;&nbsp; 真正需要帮助的青少年往往不会主动求助。系统在他们沉默时主动发出温和问候。<br>
+        &nbsp;&nbsp;&nbsp; 引用用户之前说过的话，不是空洞的"你还好吗"，而是"你上次提到考试压力很大，最近好些了吗？"<br><br>
+        <strong>2. "说你的语言" —— 年龄自适应</strong><br>
+        &nbsp;&nbsp;&nbsp; 12 岁说"emo了"和 18 岁说"焦虑"，系统理解的是同一个情绪，但用不同的方式回应。<br>
+        &nbsp;&nbsp;&nbsp; 不是居高临下的"专家"，而是"懂你的朋友"。<br><br>
+        <strong>3. "不贴标签" —— 去污名化设计</strong><br>
+        &nbsp;&nbsp;&nbsp; 永远不说"你患有抑郁症"，而是"你最近的情绪波动比较大"。<br>
+        &nbsp;&nbsp;&nbsp; 五轴审计器自动拦截所有诊断性语言和污名化表达。<br><br>
+        <strong>4. "你的秘密安全" —— 隐私优先</strong><br>
+        &nbsp;&nbsp;&nbsp; 所有分析在手机本地完成，对话内容不上云。<br>
+        &nbsp;&nbsp;&nbsp; 对青少年来说，"不会被父母看到"是信任的前提。<br><br>
+        <strong>5. "免费" —— 公益属性</strong><br>
+        &nbsp;&nbsp;&nbsp; 心理健康不应因经济条件而不可及。这是一个公益项目。
+      </div>
+      <span class="module-tag tag-care">人文关怀</span>
+      <span class="module-tag tag-care">青少年友好</span>
+      <span class="module-tag tag-care">公益免费</span>
+    </div>
+  </div>
+</div>
+
+<!-- 答辩叙事 -->
+<div class="narrative">
+  <h2 style="color: #68d391; margin-bottom: 12px;">🎤 答辩叙事结构（建议 8 分钟版本）</h2>
+  <p>
+    <strong style="color: #68d391;">[开场 1min - 问题]</strong><br>
+    "中国有 3000 万青少年存在心理健康问题，但只有 8% 寻求过专业帮助。<br>
+    不是他们不想求助——是求助太贵、太远、太晚、太可怕。<br>
+    我们做了<strong>一个免费的、随时可用的、懂青少年语言的 AI 心理伙伴</strong>。"<br><br>
+
+    <strong style="color: #68d391;">[核心创新 3min - 算法]</strong><br>
+    "我们的系统有两个其他作品都没有的原创算法：<br>
+    第一，<strong>HUAF-TC</strong>——它能同时理解一个孩子的文字、语音、表情、心率、睡眠、行为等 11 种信号，并用不确定性量化来判断'我该更相信哪个信号'。<br>
+    第二，<strong>心理数字孪生</strong>——它为每个孩子建立一个活的因果模型。不是告诉他'你现在焦虑'，而是发现'你的恶化链条是：失眠→认知扭曲→社交退缩→危机'，然后在链条的源头精准阻断。<br>
+    <strong>Digital Twin 在心脏外科已经拯救了无数生命。我们把它引入了青少年心理健康。</strong>"<br><br>
+
+    <strong style="color: #68d391;">[人文关怀 2min - 温度]</strong><br>
+    "但技术不是目的。<br>
+    我们的系统会在深夜主动问候一个很久没说话的孩子——不是用模板，而是引用他之前提过的那场考试。<br>
+    它永远不会说'你有抑郁症'——它说'你最近的情绪波动比较大，想聊聊吗'。<br>
+    它用 12 岁孩子听得懂的话说话，不用医学术语吓唬人。<br>
+    所有分析在手机本地完成——因为对青少年来说，'不会被爸妈看到'是信任的前提。<br>
+    <strong>而且完全免费。因为心理健康不应该因经济条件而不可及。</strong>"<br><br>
+
+    <strong style="color: #68d391;">[收尾 1min - 数据]</strong><br>
+    "844 个测试全部通过。11 模态 × 3 年龄段 × 五轴安全审计。全栈实现，患者端 + 咨询师端实时联动。<br>
+    我们不只是做了一个技术项目——我们在尝试<strong>让每一个青少年都有一个懂他的心理伙伴</strong>。"
+  </p>
+</div>
+
+</div>
+</body>
+</html>
