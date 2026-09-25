@@ -40,7 +40,7 @@ class ExpertController {
   async getBookings(req: AuthRequest, res: Response) {
     try {
       const result = await expertService.getBookings(req.userId!, req.userRole!);
-      res.json({ code: 0, data: result });
+      res.json({ code: 0, data: { bookings: result } });
     } catch (error: any) {
       res.status(error.statusCode || 500).json({ code: error.code || 500, message: error.message });
     }
@@ -110,8 +110,18 @@ class ExpertController {
 
   async updateMyProfile(req: AuthRequest, res: Response) {
     try {
-      const { title, specialties, introduction, pricePerSession } = req.body;
-      const result = await expertService.updateMyProfile(req.userId!, { title, specialties, introduction, pricePerSession });
+      const { title, specialties, introduction } = req.body;
+      const result = await expertService.updateMyProfile(req.userId!, { title, specialties, introduction });
+      res.json({ code: 0, data: result });
+    } catch (error: any) {
+      res.status(error.statusCode || 500).json({ code: error.code || 500, message: error.message });
+    }
+  }
+
+  // 咨询师获取其来访者列表（从预约 + AI对话中提取）
+  async getPatients(req: AuthRequest, res: Response) {
+    try {
+      const result = await expertService.getPatients(req.userId!, req.userRole!);
       res.json({ code: 0, data: result });
     } catch (error: any) {
       res.status(error.statusCode || 500).json({ code: error.code || 500, message: error.message });

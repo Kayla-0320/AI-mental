@@ -57,6 +57,7 @@ export interface SmartChatRequest {
 export interface SmartChatResponse {
   reply: string;
   dialog_state: string;
+  dialogue_mode?: string;  // 对话模式：EMPATHY（共情）/ SOCRATIC（引导）
   action_type: string;
   risk_level: string;
   audit_passed: boolean;
@@ -70,7 +71,9 @@ export interface SmartChatResponse {
 // 配置
 // ============================================================
 
-const ALGORITHM_API_BASE = process.env.ALGORITHM_API_URL || 'http://localhost:8000';
+function getAlgorithmBase(): string {
+  return process.env.ALGORITHM_API_URL || 'http://127.0.0.1:8001';
+}
 const REQUEST_TIMEOUT = 15000; // 15 秒超时（算法服务应快速响应）
 
 // ============================================================
@@ -80,7 +83,7 @@ const REQUEST_TIMEOUT = 15000; // 15 秒超时（算法服务应快速响应）
 class AlgorithmBridgeService {
   private available = false;
   private lastCheckTime = 0;
-  private checkInterval = 30000; // 30 秒检查一次
+  private checkInterval = 10000; // 10 秒检查一次
 
   /**
    * 检查 Python 算法服务是否可用
@@ -94,13 +97,17 @@ class AlgorithmBridgeService {
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 5000);
-      const response = await fetch(`${ALGORITHM_API_BASE}/health`, {
+      const response = await fetch(`${getAlgorithmBase()}/health`, {
         signal: controller.signal,
       });
       clearTimeout(timeoutId);
       this.available = response.ok;
     } catch {
-      this.available = false;
+      // 健康检查失败，但保留上次已知状态（避免闪断）
+      // 只在从未成功过时才标记为不可用
+      if (!this.available) {
+        this.available = false;
+      }
     }
 
     this.lastCheckTime = now;
@@ -143,7 +150,7 @@ class AlgorithmBridgeService {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
 
-      const response = await fetch(`${ALGORITHM_API_BASE}/api/smart-chat`, {
+      const response = await fetch(`${getAlgorithmBase()}/api/v1/intervention/smart-chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(request),
@@ -194,7 +201,7 @@ class AlgorithmBridgeService {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
 
-      const response = await fetch(`${ALGORITHM_API_BASE}/api/assessment/predict`, {
+      const response = await fetch(`${getAlgorithmBase()}/api/v1/assessment/predict`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ user_id, text }),
@@ -221,8 +228,12 @@ class AlgorithmBridgeService {
       const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
 
       const response = await fetch(
-        `${ALGORITHM_API_BASE}/api/phenotype/${user_id}?time_window_days=${time_window_days}`,
-        { signal: controller.signal }
+        `${getAlgorithmBase()}/api/v1/profile/phenotype?user_id=${user_id}&time_window_days=${time_window_days}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
+        }
       );
 
       clearTimeout(timeoutId);
@@ -245,7 +256,7 @@ class AlgorithmBridgeService {
       const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
 
       const response = await fetch(
-        `${ALGORITHM_API_BASE}/api/phenotype/${user_id}/baseline-deviation`,
+        `${getAlgorithmBase()}/api/v1/profile/phenotype/${user_id}/deviation`,
         { signal: controller.signal }
       );
 
@@ -273,7 +284,7 @@ class AlgorithmBridgeService {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
 
-      const response = await fetch(`${ALGORITHM_API_BASE}/api/comorbidity/analyze`, {
+      const response = await fetch(`${getAlgorithmBase()}/api/v1/assessment/comorbidity/analyze`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -308,7 +319,7 @@ class AlgorithmBridgeService {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
 
-      const response = await fetch(`${ALGORITHM_API_BASE}/emergency/escalate`, {
+      const response = await fetch(`${getAlgorithmBase()}/api/v1/emergency/escalate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(alert),
@@ -338,7 +349,7 @@ class AlgorithmBridgeService {
       if (facialFeatures) body.facial_features = facialFeatures;
       if (behaviorFeatures) body.behavior_features = behaviorFeatures;
 
-      const response = await fetch(`${ALGORITHM_API_BASE}/api/v1/perception/analyze`, {
+      const response = await fetch(`${getAlgorithmBase()}/api/v1/perception/analyze`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -405,7 +416,7 @@ class AlgorithmBridgeService {
       if (wavPath) body.wav_path = wavPath;
       if (facialFeatures) body.facial_features = facialFeatures;
 
-      const response = await fetch(`${ALGORITHM_API_BASE}/api/v1/perception/analyze`, {
+      const response = await fetch(`${getAlgorithmBase()}/api/v1/perception/analyze`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -425,6 +436,68 @@ class AlgorithmBridgeService {
       if (wavPath && fs.existsSync(wavPath)) {
         try { fs.unlinkSync(wavPath); } catch {}
       }
+      return null;
+    }
+  }
+
+  // ============================================================
+  // 个人基线同步
+  // ============================================================
+
+  /**
+   * 同步个人基线到算法后端
+   *
+   * @param user_id 用户 ID
+   * @param baseline_data 基线数据（增量观测值）
+   * @returns 同步后的完整基线，失败返回 null
+   */
+  async syncBaseline(user_id: string, baseline_data: Record<string, unknown>): Promise<Record<string, unknown> | null> {
+    if (!(await this.isAvailable())) return null;
+
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
+
+      const response = await fetch(`${getAlgorithmBase()}/api/v1/assessment/baseline/sync`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id, baseline_data }),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) return null;
+      return (await response.json()) as Record<string, unknown>;
+    } catch (error) {
+      console.error('[AlgorithmBridge] syncBaseline 失败:', error);
+      return null;
+    }
+  }
+
+  /**
+   * 获取个人基线偏离度
+   *
+   * @param user_id 用户 ID
+   * @returns 基线数据，失败返回 null
+   */
+  async getBaseline(user_id: string): Promise<Record<string, unknown> | null> {
+    if (!(await this.isAvailable())) return null;
+
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
+
+      const response = await fetch(`${getAlgorithmBase()}/api/v1/assessment/baseline/${user_id}`, {
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) return null;
+      return (await response.json()) as Record<string, unknown>;
+    } catch (error) {
+      console.error('[AlgorithmBridge] getBaseline 失败:', error);
       return null;
     }
   }

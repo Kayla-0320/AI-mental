@@ -12,6 +12,7 @@ router.get('/my-profile', expertController.getMyProfile);
 router.put('/my-profile', expertController.updateMyProfile);
 router.post('/bookings', expertController.createBooking);
 router.get('/bookings', expertController.getBookings);
+router.get('/patients', expertController.getPatients);
 router.get('/bookings/:bookingId', expertController.getBookingById);
 router.put('/bookings/:bookingId/status', expertController.updateBookingStatus);
 router.post('/bookings/:bookingId/feedback', expertController.submitFeedback);

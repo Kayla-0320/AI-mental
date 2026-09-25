@@ -78,31 +78,6 @@ class ConsultationService {
       },
     });
 
-    // 危机检测
-    const crisisResult = await aiService.detectCrisis(content);
-    if (crisisResult.isCrisis) {
-      const crisisMessage = await prisma.message.create({
-        data: {
-          conversationId,
-          role: 'assistant',
-          content: crisisResult.suggestion + '\n\n请记住，你并不孤单。如果你正在经历困难时刻，请拨打24小时心理援助热线：\n- 全国：400-161-9995\n- 北京：010-82951332\n- 生命热线：400-821-1215',
-          sentiment: 'crisis',
-        },
-      });
-
-      // 更新用户风险等级
-      await prisma.patientProfile.updateMany({
-        where: { userId },
-        data: { riskLevel: 'CRISIS' },
-      });
-
-      return {
-        userMessage,
-        aiMessage: crisisMessage,
-        isCrisis: true,
-      };
-    }
-
     // 获取历史对话用于上下文
     const historyMessages = await prisma.message.findMany({
       where: { conversationId },
@@ -130,6 +105,10 @@ class ConsultationService {
         session_id: conversationId,
       });
 
+      // 从 Python 算法层获取危机判断结果（唯一权威源）
+      const isCrisis = smartResult.risk_level === 'crisis';
+      const requiresEscalation = smartResult.requires_escalation === true;
+
       let aiContent: string;
       if (smartResult.fallback || !smartResult.reply) {
         // 降级：算法服务不可用，使用原有 LLM 直调
@@ -141,6 +120,24 @@ class ConsultationService {
         aiContent = smartResult.reply;
       }
 
+      // 危机场景：追加热线信息到回复
+      if (isCrisis) {
+        aiContent += '\n\n请记住，你并不孤单。如果你正在经历困难时刻，请拨打24小时心理援助热线：\n- 全国：400-161-9995\n- 北京：010-82951332\n- 生命热线：400-821-1215';
+
+        // 更新用户风险等级
+        await prisma.patientProfile.updateMany({
+          where: { userId },
+          data: { riskLevel: 'CRISIS' },
+        });
+
+        // 持久化危机记录到管理端
+        await this.createCrisisRecord(userId, content, {
+          isCrisis: true,
+          matchedKeywords: [],
+          suggestion: smartResult.reply,
+        });
+      }
+
       const aiMessage = await prisma.message.create({
         data: {
           conversationId,
@@ -149,6 +146,7 @@ class ConsultationService {
           tokenUsage: 0,
           sentiment: JSON.stringify({
             dialog_state: smartResult.dialog_state,
+            dialogue_mode: smartResult.dialogue_mode || 'EMPATHY',
             action_type: smartResult.action_type,
             risk_level: smartResult.risk_level,
             audit_passed: smartResult.audit_passed,
@@ -171,7 +169,15 @@ class ConsultationService {
       // 异步进行深度情绪分析 + 动态画像更新
       this.analyzeAndUpdateProfile(userId, content, aiMessage.id);
 
-      return { userMessage, aiMessage, isCrisis: false };
+      return {
+        userMessage,
+        aiMessage,
+        isCrisis,
+        riskLevel: smartResult.risk_level || 'low',
+        requiresEscalation,
+        dialogueMode: smartResult.dialogue_mode || 'EMPATHY',
+        dialogState: smartResult.dialog_state || 'INIT',
+      };
     } catch (error) {
       // AI 服务失败时返回友好提示
       const fallbackMessage = await prisma.message.create({
@@ -257,6 +263,22 @@ class ConsultationService {
       where: { id: conversationId },
       data: { isActive: false },
     });
+  }
+
+  //  创建危机记录（使用 raw SQL，因 CrisisRecord 模型刚添加）
+  private async createCrisisRecord(userId: string, sourceText: string, crisisResult: any) {
+    try {
+      const keywords = crisisResult.matchedKeywords || [];
+      const severity = keywords.length >= 2 ? 'CRITICAL' : 'HIGH';
+      const trigger = `聊天关键词检测：${keywords.join('、')}`;
+
+      await prisma.$executeRawUnsafe(`
+        INSERT INTO crisis_records (id, "userId", severity, status, trigger, "triggerType", "sourceText", description, "detectedAt", "createdAt", "updatedAt")
+        VALUES (gen_random_uuid()::text, $1, $2, 'OPEN', $3, 'chat_keyword', $4, $5, NOW(), NOW(), NOW())
+      `, userId, severity, trigger, sourceText, `用户在AI聊天中发送包含危机关键词的消息：${keywords.join('、')}`);
+    } catch (err) {
+      console.error('[CrisisRecord] 创建失败:', err);
+    }
   }
 
   // 异步深度情绪分析 + 动态画像更新

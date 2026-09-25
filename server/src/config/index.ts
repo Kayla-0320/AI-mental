@@ -16,7 +16,7 @@ export const config = {
   dashscope: {
     apiKey: process.env.DASHSCOPE_API_KEY || '',
     baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-    model: 'qwen-plus',
+    model: 'qwen-turbo',
   },
   redis: {
     url: process.env.REDIS_URL || 'redis://localhost:6379',

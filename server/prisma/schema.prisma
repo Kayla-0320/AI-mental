@@ -55,6 +55,7 @@ model User {
   payments          Payment[]
   feedbacks         UserFeedback[]
   healthReports     HealthReport[]
+  crisisRecords     CrisisRecord[]
 
   refreshToken      RefreshToken?
 
@@ -117,7 +118,6 @@ model ConsultantProfile {
   license       String          // 执业证书编号
   specialties   String          // 擅长领域 JSON array
   introduction  String          // 个人简介
-  pricePerSession Decimal       @db.Decimal(10, 2)
   rating        Decimal  @default(0) @db.Decimal(3, 2)
   totalSessions Int      @default(0)
   isAvailable   Boolean  @default(true)
@@ -650,4 +650,29 @@ model UserFeedback {
 
   @@index([userId])
   @@map("user_feedbacks")
+}
+
+// ==================== 危机记录 ====================
+
+model CrisisRecord {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  severity    String   // LOW, MEDIUM, HIGH, CRITICAL
+  status      String   @default("OPEN") // OPEN, IN_PROGRESS, RESOLVED, CLOSED
+  trigger     String   // 触发原因描述
+  triggerType String   // chat_keyword, assessment, community, manual
+  sourceText  String?  // 触发危机的原始文本
+  description String?
+  detectedAt  DateTime @default(now())
+  resolvedAt  DateTime?
+  resolvedBy  String?  // 解决人 ID
+  resolution  String?  // 处理结果
+  metadata    String?  // JSON: 额外信息
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([userId, status])
+  @@index([severity])
+  @@map("crisis_records")
 }

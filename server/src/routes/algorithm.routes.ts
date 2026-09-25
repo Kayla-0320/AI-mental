@@ -75,6 +75,33 @@ router.get('/phenotype/:userId/baseline', async (req: AuthRequest, res) => {
   }
 });
 
+// 同龄对比（别名路由，兼容 /deviation 路径）
+router.get('/phenotype/:userId/deviation', async (req: AuthRequest, res) => {
+  try {
+    const result = await algorithmBridge.getBaselineDeviation(req.params.userId as string);
+    if (!result) {
+      return res.json({ code: 0, data: null, message: '算法服务不可用' });
+    }
+    res.json({ code: 0, data: result });
+  } catch (error: any) {
+    res.status(error.statusCode || 500).json({ code: error.code || 500, message: error.message });
+  }
+});
+
+// 多任务风险评估（别名路由，兼容 /assessment/predict 路径）
+router.post('/assessment/predict', async (req: AuthRequest, res) => {
+  try {
+    const { text } = req.body;
+    const result = await algorithmBridge.assessRisk(req.userId!, text);
+    if (!result) {
+      return res.json({ code: 0, data: null, message: '算法服务不可用' });
+    }
+    res.json({ code: 0, data: result });
+  } catch (error: any) {
+    res.status(error.statusCode || 500).json({ code: error.code || 500, message: error.message });
+  }
+});
+
 // 共病分析
 router.post('/comorbidity', async (req: AuthRequest, res) => {
   try {
@@ -168,6 +195,52 @@ router.post('/perception/upload', async (req: AuthRequest, res) => {
         });
       }
     } catch {}
+    res.json({ code: 0, data: result });
+  } catch (error: any) {
+    res.status(error.statusCode || 500).json({ code: error.code || 500, message: error.message });
+  }
+});
+
+// ============================================================
+// 个人基线同步
+// ============================================================
+
+/**
+ * POST /api/algorithm/baseline/sync
+ * 同步个人基线到算法后端
+ *
+ * Body: { baseline_data: { heartRate?, breathingRate?, ... } }
+ */
+router.post('/baseline/sync', async (req: AuthRequest, res) => {
+  try {
+    const { baseline_data } = req.body;
+    if (!baseline_data || typeof baseline_data !== 'object') {
+      return res.status(400).json({ code: 400, message: '缺少 baseline_data' });
+    }
+    const result = await algorithmBridge.syncBaseline(req.userId!, baseline_data);
+    if (!result) {
+      return res.json({ code: 0, data: null, message: '算法服务不可用' });
+    }
+    res.json({ code: 0, data: result });
+  } catch (error: any) {
+    res.status(error.statusCode || 500).json({ code: error.code || 500, message: error.message });
+  }
+});
+
+/**
+ * GET /api/algorithm/baseline/:userId
+ * 获取个人基线数据
+ */
+router.get('/baseline/:userId', async (req: AuthRequest, res) => {
+  try {
+    const available = await algorithmBridge.isAvailable();
+    if (!available) {
+      return res.json({ code: 0, data: null, message: '算法服务不可用' });
+    }
+    const result = await algorithmBridge.getBaseline(req.params.userId as string);
+    if (!result) {
+      return res.json({ code: 0, data: null, message: '该用户暂无基线数据' });
+    }
     res.json({ code: 0, data: result });
   } catch (error: any) {
     res.status(error.statusCode || 500).json({ code: error.code || 500, message: error.message });

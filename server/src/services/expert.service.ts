@@ -206,7 +206,7 @@ class ExpertService {
   }
 
   // 更新咨询师自己的档案
-  async updateMyProfile(userId: string, data: { title?: string; specialties?: string; introduction?: string; pricePerSession?: number }) {
+  async updateMyProfile(userId: string, data: { title?: string; specialties?: string; introduction?: string }) {
     const profile = await prisma.consultantProfile.findUnique({ where: { userId } });
     if (!profile) throw new AppError('咨询师档案不存在', 404);
 
@@ -216,7 +216,6 @@ class ExpertService {
         ...(data.title !== undefined && { title: data.title }),
         ...(data.specialties !== undefined && { specialties: data.specialties }),
         ...(data.introduction !== undefined && { introduction: data.introduction }),
-        ...(data.pricePerSession !== undefined && { pricePerSession: data.pricePerSession }),
       },
     });
   }
@@ -251,6 +250,38 @@ class ExpertService {
     });
 
     return messages;
+  }
+
+  // 咨询师获取其来访者列表（从预约 + AI对话中提取）
+  async getPatients(userId: string, role: string) {
+    const patientMap = new Map<string, any>();
+
+    // 1. 从预约记录中提取
+    if (role === 'CONSULTANT') {
+      const bookings = await prisma.expertBooking.findMany({
+        where: { consultantId: userId },
+        select: { patient: { select: { id: true, nickname: true, email: true, avatar: true } } },
+      });
+      bookings.forEach(b => {
+        if (b.patient && !patientMap.has(b.patient.id)) {
+          patientMap.set(b.patient.id, { ...b.patient, source: 'booking' });
+        }
+      });
+    }
+
+    // 2. 从 AI 对话中提取所有有对话的患者
+    const conversations = await prisma.conversation.findMany({
+      select: { user: { select: { id: true, nickname: true, email: true, avatar: true } } },
+      distinct: ['userId'],
+      take: 100,
+    });
+    conversations.forEach(c => {
+      if (c.user && !patientMap.has(c.user.id)) {
+        patientMap.set(c.user.id, { ...c.user, source: 'conversation' });
+      }
+    });
+
+    return { patients: Array.from(patientMap.values()), total: patientMap.size };
   }
 }
 

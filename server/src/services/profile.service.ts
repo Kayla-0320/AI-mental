@@ -421,14 +421,27 @@ class ProfileService {
 
   // 获取患者咨询室完整数据（咨询师用）
   async getPatientConsultationData(patientUserId: string) {
-    // 获取患者基本信息
-    const patientProfile = await prisma.patientProfile.findUnique({
+    // 获取患者基本信息，没有档案则自动创建
+    let patientProfile = await prisma.patientProfile.findUnique({
       where: { userId: patientUserId },
       include: { user: { select: { id: true, nickname: true, email: true } } },
     });
 
     if (!patientProfile) {
-      throw new AppError('患者档案不存在', 404);
+      // 尝试从 User 表获取基本信息
+      const user = await prisma.user.findUnique({
+        where: { id: patientUserId },
+        select: { id: true, nickname: true, email: true },
+      });
+      if (!user) throw new AppError('患者不存在', 404);
+      // 返回基础数据（不强制要求 patientProfile）
+      return {
+        patient: { id: null, userId: user.id, nickname: user.nickname, email: user.email, riskLevel: 'LOW' },
+        profile: null,
+        anxiety: { anxietyIndex: 0, level: 'low', keyboardAnxiety: 0, blinkAnxiety: 0, context: '', recordedAt: null },
+        recentMoods: [],
+        recentConversations: [],
+      };
     }
 
     // 获取最新心理画像
