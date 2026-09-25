@@ -65,6 +65,8 @@ export default function ConsultantRoom() {
   const [patientMultimodalTime, setPatientMultimodalTime] = useState<string>('');
   // 智能工作台
   const [riskTrend, setRiskTrend] = useState<any>(null);
+  // 风险趋势接口失败标记：失败时必须显式提示，不得用随机数伪造趋势曲线
+  const [riskTrendError, setRiskTrendError] = useState(false);
   const [scaleEstimate, setScaleEstimate] = useState<any>(null);
   const [workbenchTab, setWorkbenchTab] = useState<string>('overview');
   // 安全审计事件
@@ -123,19 +125,17 @@ export default function ConsultantRoom() {
       if (res.ok) {
         const data = await res.json();
         setRiskTrend(data);
+        setRiskTrendError(false);
+      } else {
+        setRiskTrend(null);
+        setRiskTrendError(true);
       }
     } catch (err) {
       console.warn('风险趋势加载失败:', err);
-      // 模拟数据
-      const labels = ['快乐', '悲伤', '焦虑', '愤怒', '中性'];
-      const mockTrend = Array.from({ length: 7 }, (_, i) => ({
-        timestamp: Date.now() / 1000 - (6 - i) * 86400,
-        risk_score: 0.3 + Math.random() * 0.3,
-        risk_level: ['low', 'medium', 'low'][Math.floor(Math.random() * 3)],
-        dominant_emotion: labels[Math.floor(Math.random() * 5)],
-        evidence: ['模拟数据'],
-      }));
-      setRiskTrend({ trend: mockTrend, current_risk: 'medium', trend_direction: 'stable' });
+      // 原实现在这里用 Math.random() 造了一条 7 天随机风险曲线，
+      // 咨询师会把它当成真实趋势判读。改为显式不可用。
+      setRiskTrend(null);
+      setRiskTrendError(true);
     }
   }, [bookingId]);
 
@@ -450,15 +450,19 @@ export default function ConsultantRoom() {
   }, [bookingId]);
 
   // 危机干预操作
+  // ⚠️ 比赛 Demo 为模拟实现，生产环境需接入真实危机干预流程。
+  // 原实现提示「系统已通知督导」但实际未调用任何接口（见下方 TODO），
+  // 会让咨询师误以为督导已获知，属高危误导，故改为如实告知未接入。
   const handleCrisisProtocol = () => {
     setCrisisModalOpen(false);
-    message.warning('已启动危机干预协议，系统已通知督导');
-    // TODO: 实际调用危机干预API
+    message.warning('危机干预协议尚未接入后端：本次操作未通知督导，请立即按线下流程人工联系督导与紧急联系人。');
+    // TODO: 接入 POST /api/v1/escalation/crisis —— 创建 CrisisRecord 并通知督导
   };
 
   const handleContactSupervisor = () => {
     message.info('正在联系督导...');
     setCrisisModalOpen(false);
+    // TODO: 接入真实督导呼叫通道；当前仅前端提示，未发起呼叫
   };
 
   const formatDuration = (s: number) => {
@@ -599,9 +603,25 @@ export default function ConsultantRoom() {
           </Space>
           <Space>
             <Tag color={riskColors[riskTrend.current_risk?.toUpperCase()] || '#1890ff'} style={{ fontSize: 11 }}>
-              当前风险: {riskLabels[riskTrend.current_risk?.toUpperCase()] || '低风险'}
+              当前风险: {riskLabels[riskTrend.current_risk?.toUpperCase()] || '未知'}
             </Tag>
           </Space>
+        </div>
+      )}
+
+      {/* 风险趋势不可用：显式提示，避免咨询师把「无数据」误读为「低风险」 */}
+      {riskTrendError && !riskTrend && (
+        <div style={{
+          padding: '8px 20px',
+          background: 'linear-gradient(90deg, #fffbe6 0%, #fff1f0 100%)',
+          borderBottom: '1px solid #f0f0f0',
+          display: 'flex', alignItems: 'center', gap: 8,
+        }}>
+          <WarningOutlined style={{ color: '#faad14' }} />
+          <Text strong style={{ fontSize: 13 }}>风险趋势数据不可用</Text>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            未能从评估层取得近 7 天风险趋势，本页不显示风险等级与趋势；请勿据此判断为低风险。
+          </Text>
         </div>
       )}
 
@@ -786,12 +806,21 @@ export default function ConsultantRoom() {
                     <div>
                       <Row gutter={[12, 12]}>
                         <Col xs={12} md={6}>
-                          <Statistic title="当前风险" value={riskTrend?.current_risk === 'high' ? '高' : riskTrend?.current_risk === 'medium' ? '中' : '低'} 
-                            valueStyle={{ color: riskTrend?.current_risk === 'high' ? '#ff4d4f' : riskTrend?.current_risk === 'medium' ? '#faad14' : '#52c41a', fontSize: 20 }} />
+                          {/* 无数据时必须显示「—」，不能默认成「低」——否则会把数据缺失
+                              误呈现为低风险，直接影响咨询师的安全判断 */}
+                          <Statistic title="当前风险"
+                            value={riskTrend?.current_risk == null ? '—'
+                              : riskTrend.current_risk === 'high' ? '高'
+                              : riskTrend.current_risk === 'medium' ? '中'
+                              : riskTrend.current_risk === 'crisis' ? '危机' : '低'}
+                            valueStyle={{ color: riskTrend?.current_risk == null ? '#8c8c8c' : riskTrend?.current_risk === 'high' || riskTrend?.current_risk === 'crisis' ? '#ff4d4f' : riskTrend?.current_risk === 'medium' ? '#faad14' : '#52c41a', fontSize: 20 }} />
                         </Col>
                         <Col xs={12} md={6}>
-                          <Statistic title="趋势方向" value={riskTrend?.trend_direction === 'worsening' ? '恶化' : riskTrend?.trend_direction === 'improving' ? '改善' : '稳定'} 
-                            valueStyle={{ fontSize: 20 }} />
+                          <Statistic title="趋势方向"
+                            value={riskTrend?.trend_direction == null ? '—'
+                              : riskTrend.trend_direction === 'worsening' ? '恶化'
+                              : riskTrend.trend_direction === 'improving' ? '改善' : '稳定'}
+                            valueStyle={{ fontSize: 20, color: riskTrend?.trend_direction == null ? '#8c8c8c' : undefined }} />
                         </Col>
                         <Col xs={12} md={6}>
                           <Statistic title="活跃模态" value={patientMultimodal?.comprehensiveState?.activeModalities?.length || 0} suffix="个" valueStyle={{ fontSize: 20 }} />

@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import logging
 import os
 import time
 import random
@@ -31,6 +32,8 @@ from assessment.user_memory import get_memory_store
 from assessment.memory_extractor import MemoryExtractor, build_memory_context
 
 router = APIRouter(prefix="/intervention", tags=["干预层"])
+
+logger = logging.getLogger(__name__)
 
 
 # ============================================================
@@ -556,11 +559,14 @@ def _generate_empathy_reply(
 
 # 危机关键词快速检测（独立于 perception 服务，覆盖直接/间接/隐晦表达）
 _CRISIS_KEYWORDS = [
+    # ⚠️ 本表与 perception/perception_service.py 的 _DEFAULT_CRISIS_KEYWORDS 必须保持一致。
+    # 两处各自独立筛查（本处是 /smart-chat 生产路径的权威前哨），任一处漏词都等于
+    # 该词在对应入口上不被识别。新增词条请同时更新两处。
     # ── 直接自杀/自伤意图 ──
     '自杀', '自残', '自伤', '不想活', '想死', '去死',
     '跳楼', '割腕', '划手', '划手臂', '服毒', '上吊',
     '活不下去', '死了算了', '不想活了', '不想醒来',
-    '伤害自己', '吃药自杀', '结束生命',
+    '伤害自己', '吃药自杀', '结束生命', 'overdose',
     '烧自己', '刺自己', '掐自己',
     # ── 间接危机表达（绝望/无价值/告别）──
     '活着没意思', '活着没什么意义', '没有活下去的理由',
@@ -629,7 +635,11 @@ async def smart_chat(request: SmartChatRequest) -> SmartChatResponse:
                 risk_level = "medium"
 
         # 步骤 2.5：独立危机关键词检测（覆盖 perception 情绪分析的盲区）
-        crisis_detected = _detect_crisis(request.message)
+        # 双通道：本层快表 + 感知层结构化危机标记（EmotionResult.crisis_keywords）。
+        # 任一命中即视为危机，避免因两侧词表细微差异而漏判。
+        crisis_detected = _detect_crisis(request.message) or bool(
+            getattr(emotion_result, "crisis_keywords", None)
+        )
         if crisis_detected:
             risk_level = "crisis"
             # 在 evidence 中追加危机检测记录
@@ -725,8 +735,50 @@ async def smart_chat(request: SmartChatRequest) -> SmartChatResponse:
             context=context,
         )
 
+        # 步骤 4.5：高风险强制升级
+        # ⚠️ 比赛 Demo 为模拟实现，生产环境需接入真实危机干预流程
+        #
+        # AGENTS.md 安全红线：risk_level 为 high 或 crisis 时必须触发升级流程。
+        # SafetyLoop 仅在「审计不通过且严重度为 SEVERE」时才调用 escalate()；
+        # 若 LLM 回复恰好通过审计，高风险会被静默降级为普通回复 —— 这里补强制路径。
+        escalation_status = ""
+        escalation_alert_id = ""
+        if risk_level in ("high", "crisis"):
+            handled = safety_result.action_taken in (
+                "crisis_escalate", "crisis_escalate_fallback",
+            )
+            if handled:
+                escalation_status = "handled_by_safety_loop"
+                escalation_alert_id = safety_result.escalation_alert_id
+            else:
+                try:
+                    from escalation.crisis import escalate as crisis_escalate
+                    from shared.dataclasses import CrisisAlert
+
+                    alert = CrisisAlert(
+                        user_id=request.user_id,
+                        risk_score=1.0 if risk_level == "crisis" else 0.8,
+                        trigger_evidence=list(emotion_result.evidence),
+                        timestamp=time.time(),
+                        recommended_action="立即人工介入与安全确认",
+                    )
+                    esc = crisis_escalate(alert)
+                    escalation_status = esc.status.value
+                    escalation_alert_id = esc.alert_id
+                except Exception as e:  # noqa: BLE001
+                    escalation_status = "failed"
+                    logger.error("高风险强制升级失败: %s", e)
+                emotion_result.evidence.append(
+                    f"[强制升级] risk_level={risk_level}，已触发升级流程"
+                    f"（status={escalation_status}）"
+                )
+
         # 步骤 5：构建响应
-        requires_escalation = safety_result.severity == "severe" or crisis_detected
+        requires_escalation = (
+            safety_result.severity == "severe"
+            or risk_level in ("high", "crisis")
+            or crisis_detected
+        )
         audit_passed = safety_result.severity == "none" and not crisis_detected
         dialogue_mode = loop.dialog_engine.current_mode.value
 

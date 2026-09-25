@@ -72,7 +72,11 @@ def _emotion_result_to_response(result: EmotionResult) -> AnalyzeResponse:
 async def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
     """统一情感分析接口（支持文本/语音/面部/行为四模态融合 + 年龄差异化校准）
 
-    - 仅传 text → 文本单模态分析（使用真实 RoBERTa 模型）
+    - 仅传 text → 文本单模态分析。引擎按优先级自动选择：
+      RoBERTa 微调模型（需 outputs/ 下存在权重）→ jieba + 情感词典降级 → 关键词规则兜底。
+      可通过返回 evidence 中标注的引擎名确认本次实际使用了哪一个。
+      无论使用哪个引擎，都会独立执行一次危机关键词筛查，
+      命中结果见 evidence 的 [危机筛查] 条目。
     - 同时传 text + wav_path → 文本+语音融合
     - 同时传 text + facial_features → 文本+面部融合
     - 同时传 text + behavior_features → 文本+行为融合

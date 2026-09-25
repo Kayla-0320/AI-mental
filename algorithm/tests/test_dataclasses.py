@@ -109,8 +109,40 @@ class TestEmotionResult(unittest.TestCase):
             self.assertIsInstance(e, str)
 
     def test_field_count(self):
-        """字段数量必须为 5"""
-        self.assertEqual(len(fields(EmotionResult)), 5)
+        """字段数量必须为 6（含安全字段 crisis_keywords）"""
+        self.assertEqual(len(fields(EmotionResult)), 6)
+
+    # ---- crisis_keywords：安全相关字段 ----
+
+    def test_crisis_keywords_defaults_to_empty_list(self):
+        """crisis_keywords 可省略，默认为空列表（向后兼容）"""
+        result = EmotionResult(
+            text_emotion_probs=[0.2, 0.2, 0.2, 0.2, 0.2],
+            audio_risk_prob=None,
+            confidence=0.5,
+            timestamp=time.time(),
+            evidence=[],
+        )
+        self.assertEqual(result.crisis_keywords, [])
+
+    def test_crisis_keywords_not_shared_between_instances(self):
+        """默认值必须是每个实例独立的列表，不能共享同一个可变对象"""
+        a = EmotionResult([0.2] * 5, None, 0.5, time.time(), [])
+        b = EmotionResult([0.2] * 5, None, 0.5, time.time(), [])
+        a.crisis_keywords.append("自杀")
+        self.assertEqual(b.crisis_keywords, [])
+
+    def test_crisis_keywords_accepts_hits(self):
+        """命中危机词时可结构化携带，供 escalation 层触发人工复核"""
+        result = EmotionResult(
+            text_emotion_probs=[0.1, 0.4, 0.3, 0.1, 0.1],
+            audio_risk_prob=None,
+            confidence=0.9,
+            timestamp=time.time(),
+            evidence=["[危机筛查] 命中 1 个危机关键词"],
+            crisis_keywords=["自杀"],
+        )
+        self.assertEqual(result.crisis_keywords, ["自杀"])
 
 
 class TestRiskAssessment(unittest.TestCase):

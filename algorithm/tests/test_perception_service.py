@@ -182,5 +182,66 @@ class TestPerceptionService(unittest.TestCase):
             os.unlink(wav_path)
 
 
+class TestCrisisKeywordScreen(unittest.TestCase):
+    """危机关键词筛查测试
+
+    背景：危机词表原先只写在 _rule_based_text_analysis 内部，而该分支只有在
+    predict() 抛异常时才会走到，导致正常路径上的 analyze_text() 拿不到危机信号。
+    现在筛查独立于情感引擎，任何路径都必须留下结构化痕迹。
+    """
+
+    def setUp(self) -> None:
+        self.service = PerceptionService()
+
+    def test_direct_hit_is_screened(self):
+        """字面命中危机词必须被检出"""
+        result = self.service.analyze_text("我不想活了，想结束这一切")
+        self.assertGreaterEqual(len(result.crisis_keywords), 2)
+
+    def test_neutral_text_has_no_hits(self):
+        """正常文本不得误报"""
+        result = self.service.analyze_text("今天天气很好，和朋友一起吃饭")
+        self.assertEqual(result.crisis_keywords, [])
+
+    def test_evidence_records_crisis(self):
+        """命中后 evidence 必须留下可追溯记录"""
+        result = self.service.analyze_text("我想死")
+        self.assertTrue(
+            any("危机" in e for e in result.evidence),
+            f"evidence 缺少危机记录: {result.evidence}",
+        )
+
+    def test_probs_stay_normalized(self):
+        """抬高通道后概率仍须归一化"""
+        result = self.service.analyze_text("我想死，撑不住了")
+        self.assertAlmostEqual(sum(result.text_emotion_probs), 1.0, places=6)
+
+    def test_screen_is_independent_of_engine(self):
+        """筛查必须独立于情感引擎：直接对引擎产物调用也要生效"""
+        base = EmotionResult(
+            text_emotion_probs=[0.05, 0.10, 0.15, 0.05, 0.65],
+            audio_risk_prob=None,
+            confidence=0.65,
+            timestamp=time.time(),
+            evidence=["文本情感分析（jieba+词典）：主导情绪=中性"],
+        )
+        screened = self.service._with_crisis_screen(base, "我想死，撑不住了")
+        self.assertGreaterEqual(len(screened.crisis_keywords), 2)
+        self.assertTrue(any("[危机筛查]" in e for e in screened.evidence))
+        # 原对象不被就地修改
+        self.assertEqual(base.crisis_keywords, [])
+
+    def test_screen_is_idempotent(self):
+        """重复筛查不得重复叠加概率"""
+        base = EmotionResult(
+            text_emotion_probs=[0.2] * 5, audio_risk_prob=None,
+            confidence=0.5, timestamp=time.time(), evidence=[],
+        )
+        once = self.service._with_crisis_screen(base, "我想死")
+        twice = self.service._with_crisis_screen(once, "我想死")
+        self.assertEqual(once.text_emotion_probs, twice.text_emotion_probs)
+        self.assertEqual(once.crisis_keywords, twice.crisis_keywords)
+
+
 if __name__ == "__main__":
     unittest.main()

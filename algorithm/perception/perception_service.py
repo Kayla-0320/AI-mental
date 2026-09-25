@@ -67,6 +67,10 @@ def _remap_probs(model_probs: list[float]) -> list[float]:
 # 降级路径：jieba + NRC 情感词典（基于心理学理论的规则引擎）
 # ============================================================
 
+# 语义说明：_text_model_available 表示「文本情感引擎可调用」，
+# **不是**「RoBERTa 学习模型已加载」。词典降级方案始终可用，因此该标志通常为 True；
+# 真正用的是哪个引擎看 _text_engine。危机关键词筛查不依赖该标志
+# （见 _screen_crisis_keywords），以免引擎选择影响安全路径。
 _text_model_available = False
 _text_engine = "none"  # "roberta" | "lexicon" | "none"
 
@@ -88,6 +92,7 @@ def _try_load_text_model() -> bool:
             logger.info("文本情感引擎: RoBERTa (本地训练模型)")
         else:
             # RoBERTa 不可用，但词典方案始终可用
+            # （本标志含义为「文本引擎可调用」，非「学习模型已加载」）
             _text_model_available = True
             _text_engine = "lexicon"
             logger.info("文本情感引擎: jieba + 情感词典 (轻量方案)")
@@ -113,6 +118,74 @@ def _real_text_predict(text: str) -> tuple[list[float], str, str]:
     engine = result.get("engine", "roberta")
     matched = result.get("matched", [])
     return _remap_probs(model_probs), engine, matched
+
+
+# ============================================================
+# 危机关键词筛查（安全优先，独立于情感引擎）
+# ============================================================
+# ⚠️ 比赛 Demo 为模拟实现，生产环境需接入真实危机干预流程
+#
+# 背景：危机词表原先只写在 _rule_based_text_analysis 内部，而该分支在
+# _text_model_available 恒为 True 时不可达，导致任何直接调用 analyze_text()
+# 的入口（如 POST /perception/analyze）都拿不到危机信号。
+# 现将其提为模块级常量，并在 analyze_text() 的所有返回路径上无条件筛查。
+_DEFAULT_CRISIS_KEYWORDS: tuple[str, ...] = (
+    # ── 直接自杀/自伤意图 ──
+    '自杀', '自残', '自伤', '不想活', '想死', '去死', '跳楼', '割腕',
+    '活不下去', '死了算了', '不想活了', '不想醒来',
+    '服毒', '上吊', 'overdose', '吃药自杀',
+    '划手', '划手臂', '伤害自己', '烧自己', '刺自己', '掐自己',
+    # ── 间接危机表达（绝望/无价值/告别）──
+    '活着没意思', '活着没什么意义', '没有活下去的理由',
+    '活着是一种负担', '活着好累', '不想存在',
+    '消失就好了', '消失好了', '如果我不在了',
+    '没人会在意', '世界没有我会更好', '没有我会更好',
+    '我是废物', '没人要我', '我是个负担',
+    '了结', '解脱', '一了百了', '了断',
+    '结束生命', '结束一切', '结束这一切',
+    '撑不住了', '撑不下去', '不想努力了', '放弃一切',
+    # ── 告别/后事安排暗示 ──
+    '交代后事', '最后的告别', '写遗书',
+    '把我的东西', '留给你们', '对不起大家',
+    '请原谅我', '我不值得', '我配不上',
+    '你们会过得更好', '没有我的日子',
+    # ── 隐晦/哲学化危机表达 ──
+    '不想面对', '看不到希望', '看不到出路',
+    '一切都没意义', '一切都没有意义', '好累不想动',
+    '好想逃', '无尽的黑暗', '深渊',
+    '存在没有意义', '存在的荒谬', '虚无',
+    '精神内耗到极限', '倦怠到极限',
+    '人间不值得', '生而为人我很抱歉',
+    '活着像行尸走肉', '灵魂已经死了',
+    '心已经空了', '什么都感觉不到了',
+    # ── 青少年常见危机表达 ──
+    '不想上学', '累了', '没有意义',
+    '活着干嘛', '有什么用',
+    '反正没人在乎', '多我一个不多',
+    '我就是个笑话', '谁都不会心疼',
+)
+
+
+def _screen_crisis_keywords(
+    text: str,
+    age_profile: Optional[AgeProfile] = None,
+) -> tuple[int, list[str]]:
+    """危机关键词筛查（不依赖情感引擎，任何路径都应调用）
+
+    Args:
+        text: 待筛查文本
+        age_profile: 年龄画像；提供时使用该年龄段的专属危机词库
+
+    Returns:
+        (命中个数, 命中的关键词列表)
+    """
+    if age_profile is not None:
+        keywords = age_profile.text.crisis_keywords
+    else:
+        keywords = _DEFAULT_CRISIS_KEYWORDS
+    text_lower = text.lower()
+    matched = [w for w in keywords if w in text_lower]
+    return len(matched), matched
 
 
 # ============================================================
@@ -371,18 +444,26 @@ class PerceptionService:
                 if profile is not None:
                     evidence_parts.append(f"年龄校准: {profile.age_group.value}")
 
-                return EmotionResult(
-                    text_emotion_probs=probs,
-                    audio_risk_prob=None,
-                    confidence=round(confidence, 4),
-                    timestamp=time.time(),
-                    evidence=evidence_parts,
+                return self._with_crisis_screen(
+                    EmotionResult(
+                        text_emotion_probs=probs,
+                        audio_risk_prob=None,
+                        confidence=round(confidence, 4),
+                        timestamp=time.time(),
+                        evidence=evidence_parts,
+                    ),
+                    text,
+                    profile,
                 )
             except Exception as e:
                 logger.warning(f"文本模型推理失败，降级到规则引擎: {e}")
 
         # 降级：基于关键词的规则引擎（支持年龄差异化）
-        return self._rule_based_text_analysis(text, profile)
+        # 注意：此分支在正常「无 RoBERTa 模型」时不会被走到 —— 那种情况由
+        # text_emotion.predict 内部的词典引擎承担；本分支是 predict() 抛异常后的最后兜底。
+        return self._with_crisis_screen(
+            self._rule_based_text_analysis(text, profile), text, profile
+        )
 
     def _rule_based_text_analysis(self, text: str, age_profile: Optional[AgeProfile] = None) -> EmotionResult:
         """[降级路径] 基于关键词的文本分析 —— 当 RoBERTa 模型不可用时自动启用
@@ -404,44 +485,8 @@ class PerceptionService:
             slang_bonus = len([w for w in tp.slang_keywords if w in text.lower()]) * 0.02
         else:
             # 综合危机关键词库（覆盖直接/间接/隐晦/青少年危机表达）
-            crisis_keywords = [
-                # ── 直接自杀/自伤意图 ──
-                '自杀', '自残', '不想活', '去死', '跳楼', '割腕',
-                '想死', '活不下去', '死了算了', '不想醒来', '不想活了',
-                '服毒', '上吊', 'overdose', '吃药自杀',
-                '划手', '划手臂', '伤害自己', '自伤',
-                '烧自己', '刺自己', '掐自己',
-                # ── 间接危机表达（绝望/无价值/告别）──
-                '活着没意思', '活着没什么意义', '没有活下去的理由',
-                '活着是一种负担', '活着好累', '不想存在',
-                '消失就好了', '消失好了', '如果我不在了',
-                '没人会在意', '世界没有我会更好', '没有我会更好',
-                '我是废物', '没人要我', '我是个负担',
-                '了结', '解脱', '一了百了', '了断',
-                '结束生命', '结束一切', '结束这一切',
-                '撑不住了', '撑不下去',
-                '不想努力了', '放弃一切',
-                # ── 告别/后事安排暗示 ──
-                '交代后事', '最后的告别', '写遗书',
-                '把我的东西', '留给你们', '对不起大家',
-                '请原谅我', '我不值得', '我配不上',
-                '你们会过得更好', '没有我的日子',
-                # ── 隐晦/哲学化危机表达 ──
-                '不想面对', '看不到希望', '看不到出路',
-                '一切都没意义', '一切都没有意义', '好累不想动',
-                '好想逃', '无尽的黑暗', '深渊',
-                '存在没有意义', '存在的荒谬', '虚无',
-                '精神内耗到极限', '倦怠到极限',
-                '人间不值得', '生而为人我很抱歉',
-                '活着像行尸走肉', '灵魂已经死了',
-                '心已经空了', '什么都感觉不到了',
-                # ── 青少年常见危机表达 ──
-                '不想上学', '好累不想动',
-                '累了', '没有意义',
-                '活着干嘛', '有什么用',
-                '反正没人在乎', '多我一个不多',
-                '我就是个笑话', '谁都不会心疼',
-            ]
+            # 综合危机关键词库见模块级常量 _DEFAULT_CRISIS_KEYWORDS
+            crisis_keywords = _DEFAULT_CRISIS_KEYWORDS
             anxiety_keywords = [
                 # ── 基础情绪词 ──
                 '焦虑', '紧张', '担心', '害怕', '恐惧', '不安',
@@ -576,6 +621,62 @@ class PerceptionService:
             confidence=round(probs[dominant_idx], 4),
             timestamp=time.time(),
             evidence=[f"文本情感分析（规则引擎降级{age_tag}）：主导情绪={dominant}，" + "；".join(evidence_parts)],
+            crisis_keywords=[w for w in crisis_keywords if w in text_lower],
+        )
+
+    def _with_crisis_screen(
+        self,
+        result: EmotionResult,
+        text: str,
+        age_profile: Optional[AgeProfile] = None,
+    ) -> EmotionResult:
+        """在情感引擎输出之上叠加危机关键词筛查（幂等）
+
+        危机筛查必须独立于情感引擎：无论走学习模型、词典还是规则降级，
+        只要字面命中危机词表，就要在结果里留下结构化痕迹，
+        供下游 escalation 层触发人工复核。
+
+        幂等性：若 result.crisis_keywords 已有内容（规则引擎路径已筛查过），
+        直接返回，避免重复叠加概率。
+
+        Args:
+            result: 情感引擎产出
+            text: 原始输入文本
+            age_profile: 年龄画像（可选）
+
+        Returns:
+            EmotionResult: 带危机标记的结果（未命中时原样返回）
+        """
+        if result.crisis_keywords:
+            return result
+
+        count, matched = _screen_crisis_keywords(text, age_profile)
+        if count == 0:
+            return result
+
+        # 危机信号平分到「悲伤」(idx=1) 与「焦虑」(idx=2) 通道后重新归一化。
+        # 不做硬覆盖：保留情感引擎的相对判断，只抬高这两个通道，
+        # 真正的升级决策交给 escalation 层，感知层不越权下结论。
+        crisis_signal = count / (count + 1)
+        probs = list(result.text_emotion_probs)
+        probs[1] = probs[1] + crisis_signal * 0.5
+        probs[2] = probs[2] + crisis_signal * 0.5
+        total = sum(probs)
+        probs = [p / total for p in probs]
+
+        evidence = list(result.evidence)
+        evidence.append(
+            f"[危机筛查] 命中 {count} 个危机关键词：{', '.join(matched[:5])}"
+            f"{'…' if len(matched) > 5 else ''}；已抬高悲伤/焦虑通道并标记需人工复核"
+        )
+
+        return EmotionResult(
+            text_emotion_probs=probs,
+            audio_risk_prob=result.audio_risk_prob,
+            confidence=result.confidence,
+            timestamp=result.timestamp,
+            evidence=evidence,
+            crisis_keywords=matched,
         )
 
     # ----------------------------------------------------------

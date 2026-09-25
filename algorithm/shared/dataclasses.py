@@ -44,12 +44,17 @@ class EmotionResult:
         confidence: 综合置信度，范围 [0.0, 1.0]
         timestamp: Unix 时间戳，标记感知完成时刻
         evidence: 支撑该结果的证据描述列表
+        crisis_keywords: 命中的危机关键词列表（安全相关，空列表表示未命中）
+
+    注意：crisis_keywords 非空只表示「文本字面命中了危机词表」，
+    不等于临床判断，下游只能据此触发人工复核流程，不得据此输出诊断结论。
     """
     text_emotion_probs: list[float]       # 5维文本情绪概率分布
     audio_risk_prob: Optional[float]      # 语音风险概率（可为空）
     confidence: float                     # 综合置信度 [0.0, 1.0]
     timestamp: float                      # Unix 时间戳
     evidence: list[str]                   # 证据描述列表
+    crisis_keywords: list[str] = field(default_factory=list)  # 命中的危机关键词
 
 
 @dataclass

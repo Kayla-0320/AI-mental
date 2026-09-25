@@ -146,6 +146,8 @@ export default function Profile() {
   const { comprehensiveState, modalityStatus, updateCounter, keyboardMetrics, textMetrics, voiceMetrics, facialMetrics, circadianMetrics, cognitiveMetrics, hrvMetrics, breathingMetrics, behavioralMetrics, eyeMetrics, voiceSemanticsMetrics, baseline, baselineDeviation, getZScoreForValue, adaptiveWeights, moodTrajectory, getWeeklyReport } = useAnxiety();
   const [profile, setProfile] = useState<any>(null);
   const [moodTrend, setMoodTrend] = useState<any[]>([]);
+  // 画像数据不可用标记：接口失败时不得伪造分数与结论，改为显式提示
+  const [profileUnavailable, setProfileUnavailable] = useState(false);
   const [dynamicProfile, setDynamicProfile] = useState<any>(null);
   const [copingStrategies, setCopingStrategies] = useState<any>(null);
   const [loading, setLoading] = useState(false);
@@ -226,19 +228,15 @@ export default function Profile() {
         profileApi.getCopingStrategies() as any,
       ]);
       setProfile(profileRes.data);
+      setProfileUnavailable(false);
       setMoodTrend(trendRes.data?.moodRecords || []);
       setDynamicProfile(emotionRes.data);
       setCopingStrategies(copingRes.data);
     } catch {
-      // API 全部失败时使用默认数据，避免页面卡死
-      setProfile({
-        anxiety: 35, depression: 30, stress: 40,
-        sleepQuality: 65, socialActivity: 60, emotionalStability: 70,
-        overallScore: 62, riskLevel: 'LOW',
-        report: '你的整体心理状态良好。建议继续保持规律作息，适当运动，与朋友保持联系。如果感到压力增大，可以尝试平台的疗愈功能或与 AI 倾诉。',
-        assessedBy: 'AI',
-        updatedAt: new Date().toISOString(),
-      });
+      // 接口失败时**不得伪造心理画像**：之前这里塞了一组写死的分数（焦虑35/抑郁30…）
+      // 并标注 assessedBy:'AI'，用户会把它当成真实评估结论。改为显式不可用状态。
+      setProfile(null);
+      setProfileUnavailable(true);
     } finally { setLoading(false); }
   }, []);
 
@@ -272,18 +270,11 @@ export default function Profile() {
       handleUpdate().finally(() => {
         clearInterval(timer);
         setGenProgress(100);
-        // 如果 API 失败导致仍然没有画像，使用默认数据避免页面卡死
+        // 生成失败导致仍无画像时，**不得塞入写死的分数冒充 AI 评估结果**
+        // （原实现会显示「焦虑35/抑郁30… 评估方式：AI」+「整体心理状态良好」，
+        //  与「未评估」是完全相反的结论）。改为显式不可用状态。
         setTimeout(() => {
-          if (!profile) {
-            setProfile({
-              anxiety: 35, depression: 30, stress: 40,
-              sleepQuality: 65, socialActivity: 60, emotionalStability: 70,
-              overallScore: 62, riskLevel: 'LOW',
-              report: '你的整体心理状态良好。建议继续保持规律作息，适当运动，与朋友保持联系。如果感到压力增大，可以尝试平台的疗愈功能或与 AI 倾诉。',
-              assessedBy: 'AI',
-              updatedAt: new Date().toISOString(),
-            });
-          }
+          if (!profile) setProfileUnavailable(true);
         }, 500);
       });
     }
@@ -325,6 +316,31 @@ export default function Profile() {
       <div style={{ marginTop: 16 }}><Text type="secondary">正在刷新数据...</Text></div>
     </div>
   );
+
+  // 画像数据不可用：明确告知，不展示任何分数（避免被误读为真实评估结论）
+  if (!profile && profileUnavailable) {
+    return (
+      <Card style={{ borderRadius: 12, textAlign: 'center', padding: '60px 40px' }}>
+        <div style={{ fontSize: 48, marginBottom: 16 }}>📭</div>
+        <Title level={4} style={{ marginBottom: 8 }}>暂时无法获取心理画像</Title>
+        <Text type="secondary" style={{ display: 'block', marginBottom: 16 }}>
+          服务未返回画像数据，因此本页不展示任何评分与结论。
+          <br />
+          下方内容为占位说明，<b>不是</b>你的评估结果，请勿据此判断自身状态。
+        </Text>
+        <Alert
+          type="warning"
+          showIcon
+          style={{ maxWidth: 520, margin: '0 auto 20px', textAlign: 'left' }}
+          message="未获得有效画像数据"
+          description="可能原因：后端服务不可用、尚未完成任何测评，或登录状态已失效。请稍后重试；若持续失败，请联系咨询师或平台支持。"
+        />
+        <Button type="primary" onClick={() => { setProfileUnavailable(false); loadData(); }}>
+          重新加载
+        </Button>
+      </Card>
+    );
+  }
 
   if (!profile) {
     return (
