@@ -1768,6 +1768,30 @@ def _detect_crisis(text: str) -> bool:
     return any(kw in text_lower for kw in _CRISIS_KEYWORDS)
 
 
+# 量表严重程度 → 风险贡献。severity 是**中文**分级名，取自
+# assessment/scale 的 PHQ9_CUTOFFS / GAD7_CUTOFFS / PSS10_CUTOFFS，
+# 例如「中度抑郁」「重度焦虑」「高压力」「轻度焦虑」「中等压力」「无抑郁」。
+# ⚠️ 此前用英文 ("moderate","severe","mild") 比较，恒不命中 —— 除危机关键词
+# 外风险永远算成 low，既漏报了该升级的高风险，也让流式增量在高危轮关不掉。
+_HIGH_SEVERITY_MARKERS = ("中度", "中重度", "重度", "高压力", "严重")
+_MEDIUM_SEVERITY_MARKERS = ("轻度", "中等压力")
+
+
+def _severity_to_risk(severity: str) -> str:
+    """把中文量表分级名映射为风险贡献 'high' / 'medium' / 'low'。
+
+    用**子串标记**而非精确匹配：既兼容三张量表各自的命名，也不会在
+    新增分级时静默漏判（宁可命中面宽一点，配合上层"high 优先"聚合）。
+    """
+    if not severity:
+        return "low"
+    if any(m in severity for m in _HIGH_SEVERITY_MARKERS):
+        return "high"
+    if any(m in severity for m in _MEDIUM_SEVERITY_MARKERS):
+        return "medium"
+    return "low"
+
+
 # ============================================================
 # 流式对话：LLM 增量输出 + 增量安全闸门
 # ============================================================
@@ -2257,13 +2281,13 @@ def _prepare_chat_turn(request: SmartChatRequest) -> _ChatTurnPrep:
 
     # 步骤 2：量表映射 → 风险评估
     scale_results = map_all(emotion_result)
-    # 从量表结果推断风险等级
+    # 从量表结果推断风险等级（severity 是中文分级名，见 _severity_to_risk）
     risk_level = "low"
     for scale_name, result in scale_results.items():
-        severity = result.severity if hasattr(result, 'severity') else "mild"
-        if severity in ("moderate", "severe"):
+        contrib = _severity_to_risk(getattr(result, 'severity', ''))
+        if contrib == "high":
             risk_level = "high"
-        elif severity == "mild" and risk_level != "high":
+        elif contrib == "medium" and risk_level != "high":
             risk_level = "medium"
 
     # 步骤 2.5：独立危机关键词检测（覆盖 perception 情绪分析的盲区）

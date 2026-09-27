@@ -929,3 +929,27 @@ class TestStreamingGateGranularity:
         # 命中红线后不再放行含该词的内容
         joined = "".join(out)
         assert "你有抑郁症" not in joined
+
+
+class TestSeverityToRisk:
+    """量表中文分级名 → 风险贡献。回归此前用英文 moderate/severe 比较、
+    除危机词外风险恒为 low 的 bug（见 api/intervention.py:_severity_to_risk）。"""
+
+    def test_phq9_chinese_levels(self):
+        assert iv._severity_to_risk("无抑郁") == "low"
+        assert iv._severity_to_risk("轻度抑郁") == "medium"
+        assert iv._severity_to_risk("中度抑郁") == "high"
+        assert iv._severity_to_risk("中重度抑郁") == "high"
+        assert iv._severity_to_risk("重度抑郁") == "high"
+
+    def test_gad7_and_pss10_levels(self):
+        assert iv._severity_to_risk("轻度焦虑") == "medium"
+        assert iv._severity_to_risk("中度焦虑") == "high"
+        assert iv._severity_to_risk("重度焦虑") == "high"
+        assert iv._severity_to_risk("低压力") == "low"
+        assert iv._severity_to_risk("中等压力") == "medium"
+        assert iv._severity_to_risk("高压力") == "high"
+
+    def test_empty_and_unknown_are_low(self):
+        assert iv._severity_to_risk("") == "low"
+        assert iv._severity_to_risk("未知") == "low"
