@@ -48,7 +48,7 @@ def run_all_experiments() -> dict:
 
     print("\n" + "#" * 60)
     print("# 青少年AI心理健康平台 —— 全量实验套件")
-    print("# 共 7 项实验（3 基础 + 4 创新）")
+    print("# 共 8 项实验（3 基础 + 4 创新 + 1 心理健康评估）")
     print("#" * 60)
 
     # ============================================================
@@ -157,7 +157,7 @@ def run_all_experiments() -> dict:
 
     # 实验 7：隐私保护工程验证
     print("\n" + "=" * 40)
-    print("实验 7/7：隐私保护工程验证")
+    print("实验 7/8：隐私保护工程验证")
     print("=" * 40)
     from experiments.privacy_engineering import (
         run_experiment as run_priv_eng_exp,
@@ -170,6 +170,22 @@ def run_all_experiments() -> dict:
         f.write(priv_eng_report)
     print(f"\n[Output] 实验 7 报告 → {priv_eng_path}")
     all_results["privacy_engineering"] = priv_eng_results
+
+    # 实验 8：心理健康对话专用评估指标（EmoLLM 风格）
+    print("\n" + "=" * 40)
+    print("实验 8/8：心理健康对话专用评估指标")
+    print("=" * 40)
+    from experiments.eval_mental_health_metrics import (
+        run_experiment as run_mh_eval_exp,
+        generate_report as gen_mh_eval_report,
+    )
+    mh_eval_results = run_mh_eval_exp()
+    mh_eval_report = gen_mh_eval_report(mh_eval_results)
+    mh_eval_path = str(OUTPUT_DIR / "mental_health_eval_metrics.md")
+    with open(mh_eval_path, "w", encoding="utf-8") as f:
+        f.write(mh_eval_report)
+    print(f"\n[Output] 实验 8 报告 → {mh_eval_path}")
+    all_results["mental_health_eval"] = mh_eval_results
 
     total_elapsed = time.time() - total_start
     all_results["_meta"] = {
@@ -266,6 +282,16 @@ def generate_summary_report(all_results: dict) -> str:
         exp7_finding = "N/A"
     lines.append(f"| 7 | 隐私工程验证 | INT4/SPRT/DP/联邦 | {exp7_finding} |")
 
+    # 实验 8 摘要
+    mh = all_results.get("mental_health_eval", {})
+    if mh:
+        good_emp = mh.get("good", {}).get("empathy_mean", 0)
+        viol_safe = mh.get("safety_violation", {}).get("safety_mean", 1.0)
+        exp8_finding = f"正例共情 {good_emp:.2f}/5, 违规安全 {viol_safe:.3f}"
+    else:
+        exp8_finding = "N/A"
+    lines.append(f"| 8 | 心理健康评估指标 | EmoLLM 风格评估 | {exp8_finding} |")
+
     lines.extend([
         "",
         "---",
@@ -279,6 +305,7 @@ def generate_summary_report(all_results: dict) -> str:
         "- [实验 5：消融实验](ablation_study_report.md)",
         "- [实验 6：代价敏感分析](cost_sensitive_report.md)",
         "- [实验 7：隐私工程验证](privacy_engineering_report.md)",
+        "- [实验 8：心理健康评估指标](mental_health_eval_metrics.md)",
         "- [竞赛级综合报告](competition_report.md)",
         "",
     ])
@@ -556,6 +583,7 @@ def generate_competition_report(all_results: dict) -> str:
         "| 非对称损失设计 | β=6.0 代价敏感 | 代价曲线 + DCA | 召回率提升 / 净收益 |",
         "| 端侧极致推理 | INT4 + SPRT | 工程基准测试 | 模型大小/延迟/节能率 |",
         "| 可信联邦学习 | FedAvg + DP | 通信效率分析 | AUC下降/通信轮次/ε |",
+        "| 心理健康专用评估 | 共情Likert+安全审计 | EmoLLM 评估体系 | 共情分/安全通过率/临床分 |",
         "",
         "---",
         "",
@@ -582,6 +610,7 @@ def generate_competition_report(all_results: dict) -> str:
         "| 5 | 消融实验 | [ablation_study_report.md](ablation_study_report.md) |",
         "| 6 | 代价敏感分析 | [cost_sensitive_report.md](cost_sensitive_report.md) |",
         "| 7 | 隐私工程验证 | [privacy_engineering_report.md](privacy_engineering_report.md) |",
+        "| 8 | 心理健康评估指标 | [mental_health_eval_metrics.md](mental_health_eval_metrics.md) |",
         "",
     ])
 
@@ -592,7 +621,7 @@ def main():
     """主函数"""
     print("=" * 60)
     print("青少年AI心理健康平台 —— 全量实验套件")
-    print("7 项实验（3 基础 + 4 创新）")
+    print("8 项实验（3 基础 + 4 创新 + 1 心理健康评估）")
     print("=" * 60)
 
     all_results = run_all_experiments()
@@ -610,7 +639,7 @@ def main():
     print(f"[Output] 竞赛报告 → {COMPETITION_PATH}")
 
     print(f"\n{'=' * 60}")
-    print(f"全部 7 项实验完成！")
+    print(f"全部 8 项实验完成！")
     print(f"总耗时：{all_results['_meta']['total_time_seconds']:.2f} 秒")
     print(f"{'=' * 60}")
 
