@@ -326,9 +326,9 @@ class TestPromptBansTemplatedReplies:
         ]
         iv._call_llm("考试没考好", history, SAD_PROBS, "low", style=UserStyle.CALM)
         prompt = captured_prompt["messages"][0]["content"]
-        assert "本轮硬性禁用开场" in prompt
+        assert "本轮硬性禁用" in prompt
         assert "我能感受到" in prompt
-        assert "禁止再用" in prompt
+        assert "禁止用作" in prompt
 
     def test_no_opening_reminder_on_first_turn(self, captured_prompt):
         """首轮没有任何历史时不该出现这条提醒（避免噪音）。"""
@@ -848,3 +848,84 @@ class TestFallbackTemplates:
             for _ in range(8)
         }
         assert any("？" in r for r in replies)
+
+
+class TestClicheDedupAndLength:
+    """跨轮陪伴套话去重 + 日常回复长度上限（2026-09-27 用户截图：连续两轮
+    都出现"我会一直在这里陪着你"+"慢慢来"，且回复长到两大段）。"""
+
+    def test_used_cliches_scans_full_body(self):
+        """套话在句中/句尾也要被识别（区别于 _used_openings 只看句首）。"""
+        hist = [{"role": "assistant", "content": "嗯。我会一直在这里陪着你，慢慢来。"}]
+        used = iv._used_cliches(hist)
+        assert any("我会一直" in c for c in used)
+        assert "慢慢来" in used
+
+    def test_trim_removes_repeated_cliche_sentences(self):
+        """本轮回复里重复上轮说过的套话句应被删掉。"""
+        hist = [{"role": "assistant", "content": "我会一直在这里陪着你。"}]
+        new = "被这么说肯定难受。我会一直在这里陪着你。你愿意多说说吗？"
+        out = iv._trim_reply(new, iv._used_cliches(hist))
+        assert "我会一直在这里陪着你" not in out
+        # 非套话内容必须保留
+        assert "被这么说肯定难受" in out
+        assert "你愿意多说说吗" in out
+
+    def test_trim_enforces_length_cap(self):
+        """低风险长回复被压到上限内，且不返回空。"""
+        long = "这是一句比较长的话用来测试。" * 12
+        out = iv._trim_reply(long, [])
+        assert len(out) <= iv._MAX_REPLY_CHARS + 20
+        assert out
+
+    def test_crisis_reply_never_truncated(self):
+        """危机/高风险含热线与安全确认，一个字都不能删。"""
+        crisis = (
+            "我非常担心你的安全。你现在是否处于危险中？"
+            "请立即拨打24小时心理援助热线：400-161-9995。"
+        )
+        hist = [{"role": "assistant", "content": "我会一直陪着你，慢慢来。"}]
+        out = iv._finalize_reply(
+            crisis, True, user_message="我不想活了",
+            conversation_history=hist, risk_level="crisis",
+        )
+        assert "400-161-9995" in out
+        assert "安全" in out
+
+    def test_low_risk_dedups_and_caps(self):
+        """低风险走完整定稿：套话被删 + 长度受限。"""
+        hist = [{"role": "assistant", "content": "我会一直在这里陪着你，慢慢来。"}]
+        raw = (
+            "听到你这么说我真的很心疼。我会一直在这里陪着你。"
+            "我们可以慢慢来。你愿意和我说说具体是什么让你有压力吗？"
+        )
+        out = iv._finalize_reply(
+            raw, True, user_message="我最近压力有点大",
+            conversation_history=hist, risk_level="low",
+        )
+        assert "我会一直在这里陪着你" not in out
+        assert len(out) <= iv._MAX_REPLY_CHARS + 20
+
+
+class TestStreamingGateGranularity:
+    """闸门按小句释放，让流式观感是"陆续长出"而非"整段蹦出"。"""
+
+    def test_releases_multiple_clause_deltas(self):
+        gate = iv._StreamingSafetyGate()
+        released: list[str] = []
+        for tok in ["你好，", "看到你", "发来的", "消息，", "我有点", "担心。"]:
+            released += gate.feed(tok)
+        released += gate.flush()
+        assert len(released) >= 2
+
+    def test_red_line_still_trips_at_clause(self):
+        """小句切分不得放过红线词 —— 整词仍在某一片段里被拦下。"""
+        gate = iv._StreamingSafetyGate()
+        out: list[str] = []
+        for tok in ["你", "有抑", "郁症", "，", "建议", "就医。"]:
+            out += gate.feed(tok)
+            if gate.tripped:
+                break
+        # 命中红线后不再放行含该词的内容
+        joined = "".join(out)
+        assert "你有抑郁症" not in joined

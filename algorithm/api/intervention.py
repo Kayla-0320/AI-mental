@@ -1128,6 +1128,85 @@ def _used_openings(conversation_history: list) -> list[str]:
     return used
 
 
+# 反复出现的"陪伴/鼓励"套话。它们单说一次是好的，但模型爱每轮都堆一句，
+# 于是"我会一直陪着你""慢慢来""你已经很棒了"变成新的机械感来源
+# （2026-09-27 用户截图：连续两轮都出现"我会一直在这里陪着你"+"慢慢来"）。
+# 与 _STALE_OPENINGS 的区别：开场只看句首，这些要扫**整段正文**。
+_CLICHE_SENTENCES = (
+    "我会一直在这里", "我会一直陪", "我在这里陪着你", "在这里陪着你", "会一直在这里",
+    "慢慢来", "不着急", "按你的节奏",
+    "你不需要马上", "不用马上回答", "不需要强迫自己",
+    "你已经很棒", "你已经很勇敢", "这本身就是一种勇气", "本身就是一种释放",
+    "不会评判你", "不评判你", "认真听你说", "愿意说就说", "想说的时候随时说",
+)
+
+
+def _used_cliches(conversation_history: list) -> list[str]:
+    """本段对话里 AI **正文中**已经出现过的陪伴/鼓励套话。
+
+    扫全部 assistant 消息的完整内容（不是只看开场），因为"我会一直陪着你"
+    这类话通常出现在句中/句尾。返回命中集合，供 prompt 硬禁用 + 定稿删除共用。
+
+    Args:
+        conversation_history: 对话历史 ``[{role, content}]``。
+
+    Returns:
+        list[str]: 已经说过的套话（按定义顺序，去重）。
+    """
+    used: list[str] = []
+    for phrase in _CLICHE_SENTENCES:
+        for msg in conversation_history:
+            if msg.get("role") != "assistant":
+                continue
+            if phrase in str(msg.get("content", "")):
+                used.append(phrase)
+                break
+    return used
+
+
+# 日常共情回复的正文长度上限（危机/高风险的安全文本不受此限）。
+_MAX_REPLY_CHARS = 95
+
+
+def _trim_reply(text: str, used_cliches: list[str]) -> str:
+    """定稿后处理：删掉**本轮回复里**重复上轮已说过的套话句，并压到长度上限。
+
+    只做删除，不改写（与 _cap_questions 同一原则：宁可少删也不改坏语义）。
+    - 逐句扫描：若某句含有"上轮已用过"的套话，删掉该句（这是重复的陪伴宣言）。
+    - 若删空了，回退到原句（绝不返回空回复）。
+    - 再按 _MAX_REPLY_CHARS 截断到完整句：保留前若干句、总字数不超限，至少留一句。
+
+    Args:
+        text: 模型回复。
+        used_cliches: :func:`_used_cliches` 的结果（上轮已说过的套话）。
+
+    Returns:
+        str: 处理后的回复。
+    """
+    parts = _split_sentences(text)
+    if not parts:
+        return text.strip()
+
+    # 1) 删除含"已用过套话"的句子（本轮若自己也重复，同样只保留首次出现）
+    if used_cliches:
+        kept = [p for p in parts if not any(c in p for c in used_cliches)]
+        # 全被删光说明整段都是套话 —— 保留原句避免空回复
+        parts = kept if kept else parts
+
+    # 2) 长度截断：按整句累加，超过上限就停在上一句，至少保留第一句
+    result = ""
+    for p in parts:
+        candidate = (result + p.strip()) if result else p.strip()
+        if len(candidate) > _MAX_REPLY_CHARS and result:
+            break
+        result = candidate
+    if not result:
+        result = parts[0].strip()
+    if len(result) != len(text.strip()):
+        logger.info("回复去套话/压长度：%r → %r", text[:40], result[:40])
+    return result
+
+
 def _is_bare_echo(text: str, user_message: str) -> bool:
     """回复是否只是把用户的话原样抛回来（顶多把"我"换成"你"）。
 
@@ -1193,15 +1272,17 @@ def _finalize_reply(
     allow_question: bool,
     max_questions: int = 1,
     user_message: str = "",
+    conversation_history: Optional[list] = None,
+    risk_level: str = "low",
 ) -> str:
-    """定稿一条模型回复：先把单轮问句数压到上限，再按需删/改结尾问句。
+    """定稿一条模型回复：压问句数 → 按需删尾问句 → 去重复套话 + 压长度。
 
     单独抽出来是为了让**流式与非流式两条路径共用**同一套定稿规则；
     已经吐出去的字收不回来，所以流式路径只能在整段生成后定稿（见
     ``_chat_stream_events``：定稿结果与已上屏内容不一致时补一个 REVISE 事件）。
 
-    顺序上**先压数量、再判尾句**：一轮抛两个问句时，删掉第二个之后
-    第一个可能正好落在结尾，还得再按 `allow_question` 判定一次。
+    顺序上**先压数量、再判尾句、最后去套话/压长度**：删掉多余问句后
+    才做句子级裁剪，避免裁剪把该保留的问句又带出来。
 
     ⚠️ ``allow_question=False`` **只应来自"内容层面不该问"的判断**
     （用户拒绝深谈 / 高危机 / 寒暄无内容可问），**不要**因为"连着问了几轮"
@@ -1209,11 +1290,16 @@ def _finalize_reply(
     削成「老师骂你了。」—— 问句没了，只剩回声，比原来更糟。
     连着追问只由 prompt 侧的语气规则降温（见 :data:`_QUESTION_RUN_LENGTH`）。
 
+    ⚠️ 去套话/压长度**只对低/中风险生效**：危机/高风险的回复含安全确认与
+    热线号码，一个字都不能删（见 :func:`_trim_reply`）。
+
     Args:
         text: 模型原始回复。
         allow_question: 本轮是否允许以问句结尾。
         max_questions: 单轮问句数上限，默认 1。
         user_message: 用户本轮发言；传入后可以识别并改写"复读用户原话"的回复。
+        conversation_history: 对话历史；传入后可删除上轮已说过的套话。
+        risk_level: 本轮风险等级，决定要不要做去套话/压长度。
 
     Returns:
         str: 定稿后的回复。
@@ -1223,12 +1309,17 @@ def _finalize_reply(
         text = _expand_bare_echo(text, user_message)
 
     capped = _cap_questions(text, max_questions=max_questions)
-    if allow_question:
+    if not allow_question:
+        cleaned, removed = _strip_trailing_question(capped)
+        if removed:
+            logger.info("本轮禁止提问，已删去结尾问句：%r → %r", capped[:40], cleaned[:40])
+        capped = cleaned
+
+    # 去重复套话 + 压长度：仅日常（低/中风险）；危机/高风险的安全文本原样保留
+    if risk_level in ("high", "crisis"):
         return capped
-    cleaned, removed = _strip_trailing_question(capped)
-    if removed:
-        logger.info("本轮禁止提问，已删去结尾问句：%r → %r", capped[:40], cleaned[:40])
-    return cleaned
+    used_cliches = _used_cliches(conversation_history or [])
+    return _trim_reply(capped, used_cliches)
 
 
 def _build_llm_messages(
@@ -1356,16 +1447,26 @@ def _build_llm_messages(
             "再顺着往下问**一个**问题，让 ta 有话可接。"
         )
 
-    # 已经用过的套路开场 —— 从"软提醒"升级为"硬禁用"：单独成块、置于角色之后，
-    # 明确列出禁止用作开头的短语（原来是塞在 final_reminder 末尾的一句备注，容易被忽略）。
+    # 已经用过的套路开场 + 上轮说过的陪伴套话 —— 合成一个"硬禁用"块，
+    # 放在最靠近"这一轮"的位置。开场只看句首，套话扫整段正文：
+    # 模型爱每轮补一句"我会一直陪着你/慢慢来/你已经很棒了"，说一次是暖，
+    # 轮轮说就是机械。这里点名 + 定稿处 :func:`_trim_reply` 兜底删除。
     used_openings = _used_openings(conversation_history)
+    used_cliches = _used_cliches(conversation_history)
+    ban_lines = []
     if used_openings:
-        openings_ban = (
-            "# 本轮硬性禁用开场\n"
-            "以下开场你**在本段对话里已经用过，本轮禁止再用其中任何一个**"
-            "（含近义改写）：" + "、".join(f"「{o}」" for o in used_openings) + "。"
-            "换一种说法，或干脆不用开场句、直接接 ta 说的事。"
+        ban_lines.append(
+            "禁止用作**开场**（已用过，含近义改写也不行）："
+            + "、".join(f"「{o}」" for o in used_openings) + "。"
         )
+    if used_cliches:
+        ban_lines.append(
+            "禁止再说的**陪伴/鼓励套话**（上几轮已经说过，本轮一个字都别再出现）："
+            + "、".join(f"「{c}」" for c in used_cliches) + "。"
+            "要传达陪伴，就用**这一轮独有的、指着 ta 刚说的那件事**的说法，别用万能句。"
+        )
+    if ban_lines:
+        openings_ban = "# 本轮硬性禁用\n" + "\n".join(ban_lines)
     else:
         openings_ban = ""
 
@@ -1546,7 +1647,8 @@ def _call_llm(
             reply = data.get('choices', [{}])[0].get('message', {}).get('content', '')
             if reply.strip():
                 return _finalize_reply(
-                    reply.strip(), allow_question_ending, user_message=user_message
+                    reply.strip(), allow_question_ending, user_message=user_message,
+                    conversation_history=conversation_history, risk_level=risk_level,
                 )
         else:
             logger.warning("千问调用失败 HTTP %s，回退模板回复", resp.status_code)
@@ -1685,12 +1787,13 @@ def _detect_crisis(text: str) -> bool:
 # 句末标点 + 换行：一个「完整语义单位」的切分依据。
 _SENTENCE_BOUNDARY_RE = re.compile(r'[。！？!?；;\n]')
 
-# 逗号级兜底：当缓冲超过此长度且无句末标点时，在最近一个逗号处提前放行。
-# 原因：Qwen3-TTS 合成速度约 RTF~2.0，长句（40 字）合成需 ~16 秒，
-# 如果坚持等到句号，用户会感觉 AI 一直在"思考"而不回应。
-# 50 字约为"你好，我是你的AI心理咨询师，今天我们可以聊聊"的长度 ——
-# 在第二个逗号处放行，第一段约 20 字（合成 ~8 秒），已显著优于等整句。
-_COMMA_EARLY_RELEASE_CHARS = 50
+# 逗号级提前放行：缓冲超过此长度且暂无句末标点时，在最近一个小句边界放行。
+# 用途是**聊天的流式观感** —— 阈值取 50 时，一句 20~30 字的中文要整句憋完才吐，
+# 前端只收到 1~2 个 delta，看着就像"转圈→整段蹦出来"，不像在逐字生成。
+# 降到 12 后，逗号/顿号/冒号处即切，一句也能拆成几个小片段陆续上屏。
+# ⚠️ 安全性不降：红线词都是不含逗号的连续短语（"你有抑郁症"等），小句边界切不开
+# 它们，每个放行片段仍各自过 :meth:`_StreamingSafetyGate.screen` 筛查。
+_COMMA_EARLY_RELEASE_CHARS = 12
 _COMMA_BOUNDARY_RE = re.compile(r'[，,、：:]')
 
 # 单个语义单位的字符上限。中文一句话通常 10~30 字，正常路径碰不到这个上限；
@@ -2011,9 +2114,12 @@ def _chat_stream_events(request: SmartChatRequest) -> Iterator[str]:
                 shown_parts.append(unit)
                 yield _sse_pack(ChatStreamEventType.DELTA, {'text': unit})
     else:
-        # 与非流式路径用同一个定稿函数：本轮不许提问时删掉结尾问句。
+        # 与非流式路径用同一个定稿函数：本轮不许提问时删掉结尾问句，
+        # 并做去套话/压长度（危机/高风险内部会跳过裁剪）。
         raw_reply = _finalize_reply(
-            raw_reply, allow_question, user_message=request.message
+            raw_reply, allow_question, user_message=request.message,
+            conversation_history=request.conversation_history,
+            risk_level=prep.risk_level,
         )
         if streaming_allowed and not gate.tripped:
             # 取出缓冲里的残句（闸门已拦下时不得再放行）。
