@@ -646,6 +646,19 @@ _LLM_BASE_URL = os.environ.get(
 _LLM_MODEL = os.environ.get('DASHSCOPE_MODEL', 'qwen-turbo')
 _LLM_TIMEOUT = 15
 
+
+def _sampling_params(risk_level: str) -> dict:
+    """按风险等级给采样参数 —— 日常共情求"多变鲜活"，危机求"稳准不出格"。
+
+    - 高风险 / 危机：低温(0.7)，不加 frequency_penalty。此时要的是措辞稳妥、
+      安全确认到位，宁可平实也不要"活"到跑偏。
+    - 低 / 中风险（日常）：高温(0.95) + frequency_penalty=0.3，抑制同一会话内
+      反复出现同样的词和句式，从采样层面削弱"复读机"感。
+    """
+    if risk_level in ("high", "crisis"):
+        return {"temperature": 0.7}
+    return {"temperature": 0.95, "frequency_penalty": 0.3}
+
 # 连续追问的容忍轮数：允许连着两轮追问，只拦"连着三轮"。
 #
 # 取值经过两轮用户反馈校准：
@@ -1226,6 +1239,7 @@ def _build_llm_messages(
     style: Optional[UserStyle] = None,
     scene_context: str = "",
     ask_question: bool = True,
+    memory_context: str = "",
 ) -> list[dict]:
     """装配千问调用的消息列表（system prompt + 最近 8 条历史 + 本轮发言）。
 
@@ -1250,9 +1264,13 @@ def _build_llm_messages(
     Returns:
         list[dict]: OpenAI 兼容的 messages 列表。
     """
-    emotion_labels = ['快乐', '悲伤', '焦虑', '愤怒', '中性']
-    dominant = emotion_labels[max(range(len(emotion_probs)), key=lambda i: emotion_probs[i])]
-    confidence = max(emotion_probs)
+    # ⚠️ 刻意**不把情绪标签的字面值喂进 prompt**。过去注入「主导情绪=焦虑」，
+    # 模型会忍不住复述这个词（"听起来你很焦虑"）—— 这恰恰是"复读情绪标签"
+    # 这一死板来源。这里只保留**负性强度数值**与风险等级：够模型把握分量，
+    # 又不会被某个具体情绪词锚定。
+    neg_intensity = _negative_emotion_intensity(emotion_probs)
+    # 节拍轮次：对话已进行的轮数（决定本轮"接一句"还是"往下问"）。
+    turn_count = len(conversation_history) // 2
 
     style_desc = {
         UserStyle.INTROVERTED: '用户偏内向安静，回复要短、留白多，别连着追问',
@@ -1292,18 +1310,30 @@ def _build_llm_messages(
     # ⚠️ social_only 必须排在最前：寒暄轮次没有内容可追问，若还注入
     # "本轮要追问"，模型就会对着"你好"问"发生什么事了"。
     asked_repeatedly = _assistant_asked_repeatedly(conversation_history)
+    # 节拍：默认「问、问、接一句」——每三轮留一轮**只承接不提问**，
+    # 打断"陈述句+问号"的机械循环。ask_rule 与 final_reminder 必须同源，
+    # 否则会出现"中段说不用问、末尾又叫它问"的自相矛盾。beat_no_question 一处决定两者。
+    beat_no_question = (turn_count % 3 == 2)
     if not ask_question:
         ask_rule = (
             "本轮**不要提问**：用户情绪还没平复，或此刻不想被追问。"
             "只回应 ta 说的内容，让 ta 感到被听到就够了，结尾不要出现问号。"
         )
+        beat_no_question = True
     elif social_only:
         ask_rule = "本轮**不要提问**：ta 只说了寒暄/客套话，没有内容可追问。"
+        beat_no_question = True
     elif asked_repeatedly:
         ask_rule = (
             "⚠️ 本轮**不要提问**：前面已经连着三轮用问句结尾了。"
             "这一轮换成一句陈述 —— 接住 ta 刚说的内容、或者说一句你的感受。"
             "连着问会把对话变成审问。"
+        )
+        beat_no_question = True
+    elif beat_no_question:
+        ask_rule = (
+            "这一轮**先不往下问**：接住 ta 刚说的，给一句你自己的感受、"
+            "或点出 ta 没说出口的那层，就够了。老是以问题收尾会像在做笔录。"
         )
     else:
         ask_rule = (
@@ -1315,24 +1345,40 @@ def _build_llm_messages(
     # 实测（2026-09-26 重放截图对话）：把"本轮不要提问"只写在中段的 ask_rule 里，
     # 模型约一半轮次照问不误；末尾再重复一条可明显提高遵守率，
     # 但仍是概率性的 —— 真正的不变量由 :func:`_finalize_reply` 保证。
-    if ask_question and not asked_repeatedly and not social_only:
-        final_reminder = (
-            "这一轮：先接住 ta 说的具体内容（提到 ta 说的人或事），"
-            "再顺着往下问**一个**问题，让 ta 有话可接。"
-        )
-    else:
+    if beat_no_question:
         final_reminder = (
             "这一轮：只说回应，不要提问。"
             "接住 ta 刚说的内容，用陈述句说出来就够了。"
         )
+    else:
+        final_reminder = (
+            "这一轮：先接住 ta 说的具体内容（提到 ta 说的人或事），"
+            "再顺着往下问**一个**问题，让 ta 有话可接。"
+        )
 
-    # 已经用过的套路开场只提醒一次（"用过了就换"），空列表时不加噪音。
+    # 已经用过的套路开场 —— 从"软提醒"升级为"硬禁用"：单独成块、置于角色之后，
+    # 明确列出禁止用作开头的短语（原来是塞在 final_reminder 末尾的一句备注，容易被忽略）。
     used_openings = _used_openings(conversation_history)
     if used_openings:
-        final_reminder += (
-            f"\n（注意：你已经用过「{'」「'.join(used_openings)}」这些开场了，"
-            "这一轮换一种说法。）"
+        openings_ban = (
+            "# 本轮硬性禁用开场\n"
+            "以下开场你**在本段对话里已经用过，本轮禁止再用其中任何一个**"
+            "（含近义改写）：" + "、".join(f"「{o}」" for o in used_openings) + "。"
+            "换一种说法，或干脆不用开场句、直接接 ta 说的事。"
         )
+    else:
+        openings_ban = ""
+
+    # 人物画像连续性：把长期记忆里提炼出的稳定事实回注，让模型"记得这个人"
+    # （叫得出细节，而不是每轮都像第一次见面）。memory_context 来自
+    # _prepare_chat_turn 的记忆召回，为空时这一段不注入。
+    if memory_context:
+        persona_line = (
+            "关于这个人（你之前记住的，可在合适处自然带出，别硬塞也别复述整段）：\n"
+            + memory_context.strip()
+        )
+    else:
+        persona_line = ""
 
     system_prompt = f"""# 角色定位
 你是一个会听人说话的 AI 陪伴者，**不是医生，也不是老师**。
@@ -1363,72 +1409,52 @@ def _build_llm_messages(
 2. 提到自伤、自杀、伤人时，先做安全确认，并建议联系线下心理危机热线或医院心理科。
 3. 被问身份时说明：我是 AI 陪伴者，**不能替代线下持证心理咨询师与精神科医生**。
 
-# 怎么回应
-## 1）先接住 ta 说的具体内容
-每次回复都要碰到 ta 刚说的东西 —— 提到的人、发生的事、ta 的原话：
-- ta 说「爸妈又吵架了」，你的回应里就该有"吵架"这件事；
-- ta 说「老师骂我了」，就该有"老师"或"骂"。
-只回一句放之四海而皆准的「嗯，我在」，等于告诉 ta 你没看 ta 说什么。
+# 怎么说话
+- **先接住 ta 刚说的具体东西**（提到的人、事、ta 的原话），再往下走一句。
+- 共情要**指着那件事说**，不是贴情绪标签：与其"你很伤心"，不如"被当着全班说那种话，谁也受不了"。
+- 不是每轮都要提问收尾。有时就接一句、停一下，让 ta 自己往下说。
+- 一次 1~3 句、20~100 字，按 ta 给的信息量定；别写一大段，别分点。口语、可以停顿。
 
-## 2）共情（要做，但别用固定句式）
-共情 = 让 ta 知道你接住了 ta 的感受，**不是**复读情绪标签。
-- ❌「我能感受到你现在很难受。」（每轮都这样，就是在背范文）
-- ✅「被当着全班那么说，搁谁都得缓半天。」
-- ✅「这事儿听起来就堵得慌。」
-- ✅「你没有做错什么，别先怪自己。」
-可轮换的说法：「听着确实挺难受的」／「换我我也受不了」／「这不能怪你」／
-「你现在这样，是有原因的」。整段对话里别连着用同一句。
+# 两段示范（学这个**感觉和节奏**，句子不要照抄）
+【示范一 · 学业压力】
+ta：作业堆成山了，我怎么写都写不完，好烦。
+你：怎么写都写不完这种感觉，是真的能把人磨没脾气。是今天特别多，还是一直这么堆着？
+ta：一直这样，快一个月了，晚上都睡不好。
+你：连着快一个月，白天硬撑、晚上还睡不成——这哪是矫情，是真扛久了。
+ta：反正没人觉得这算个事。
+你：我听着是。这么重的日子一个人顶着，本身就不轻。是哪件事最先压上来的？
+（注意节奏：问、问、**第三句不急着问**，先陪一句；也从不重复同一句开场。）
 
-## 3）追问（默认动作，一次只问一个）
-顺着 ta 刚说的内容问一个开放式问题，方向按 ta 说的选：
-- **探事件**：发生了什么？当时是什么情况？
-- **探感受**：那是什么感觉？是心里堵，还是身上也不舒服？
-- **探想法**：那一刻你脑子里冒出来的第一个念头是什么？多数人说「难受」时自己也没说清是什么事，所以事件类问题往往最好接。
-但如果 ta 一直在讲事情，就换个方向；ta 明显绕开了你的问题，就先放着。
-（括号里的方向标注不要输出给来访者。）
+【示范二 · 被老师当众批评】
+ta：老师当着全班的面骂我，说我什么都做不好。
+你：当着全班被这么说——光是想想脸上都发烫。那句话到现在还卡在脑子里？
+ta：嗯，我可能就真的很差。
+你：他一句话就给你整个人判了分？我不认。气归气，先别拿他的话往自己身上贴。
+ta：其实我也没气，就是难受。
+你：那就是伤着你了，跟气不气没关系。被信任的大人那样说，最扎人。
+（注意：ta 自我贬低时**不跟着复读**——不说"你觉得你很差"，而是挡回去。）
 
-## 4）遇到寒暄/客套
-见下方「当前轮次信息」里的本轮说明：打招呼就自然回应，不要提情绪、不要追问。
+# 要避免（这几条最伤"活人感"）
+1. 每轮同一句式开头（"我能感受到…""听起来你…""我理解你…"），或每轮都走"复述情绪→发生了什么？"这个固定节拍。
+2. 把 ta 的原话加个问号抛回去（"老师骂你了？"）——等于没说；也别把 ta 原话直接当你自己的句子（人称都串了）。
+3. 堆共情词（我懂/抱抱/你真勇敢/我一直陪你），一两次就够；同一句留白（"嗯，我在"）全篇只能用一次。
+4. 猜测 ta 没说的状态、或替 ta 编处境。ta 没讲的，你就是不知道。
+5. 跟着 ta 贬低自己的话复读。ta 说"他说我很废物"，你接"他那样说你，听着确实难受"，别回"你觉得你是废物"。
 
-# 别写成这样（这些就是"死板"的来源）
-1. 只复述情绪的句子当开场：严重禁止「我能感受到你现在很难受。」
-   这类**不含任何具体信息**的句子（ta 难受你当然知道，说了等于没说）。
-2. 每轮都用同一个句式开头（尤其「我能感受到…」「听起来你…」「我理解你…」）。
-3. 每轮都走「复述情绪 → 发生了什么？」这个固定节拍。
-4. 「『原话』——然后贴一个情绪判断」当默认动作：
-   「『爸妈又吵架了』——这事儿还搅着你吧？」偶尔一次是复述，连着用就是复读机。
-5. 同一个短句反复用：「嗯，我在。」这类留白句，整段对话里只能用一次。
-6. 堆共情词：「我懂」「抱抱」「你已经很勇敢了」「我会一直陪着你」出现一两次就够。
-7. 重复用户贬低自己的原词。ta 说「他说我很废物」，你回「他那样说你，听着确实难受」，
-   **不要**回「你觉得你是废物」。
-8. **把 ta 的话原样抛回去**（"复读 + 问号"）：ta 说「老师骂我了」，你回「老师骂你了？」——
-   等于什么都没说。要么接一句自己的话，要么直接问细节。
-   同样禁止把 ta 的原话直接当成你的句子：「我妈说要不是你他们早就离了？」这种
-   人称都串了，一句话就暴露你没在听。
+# 追问方向（要问时挑一个，别每轮都是"什么感觉"）
+- **探事件**：发生了什么？当时是什么情况？—— ta 只说"难受"时往往自己也没头绪，事件类问题最好接。
+- **探感受**：那是心里堵，还是身上也不舒服？
+- **探想法**：那一刻脑子里冒出来的第一个念头是什么？
+上面这几行、以及示范里"（注意…）"的括号说明都是**给你的**，不要输出给来访者。
 
-# 可以怎么回应（轮换着用；下面只是例子，不是台词）
-1. 接具体内容 + 追问：「老师当着全班说的？那次是什么事？」
-2. 共情 + 追问：「被这么说肯定难受。这话是他随口说的，还是特意冲你来的？」
-3. 点出 ta 没说出口的那层：「你好像不是气他骂你，是气自己当时没吭声。」
-4. 说一句实话：「这确实挺伤人的，我要是你也会难受很久。」
-5. 邀请往下走：「后来呢？」「再往下说点？」
-6. 轻松一点（只在 ta 自己先松口时用）：「这老师嘴也太快了。」
-7. 承认接不住：「我不知道该说什么，但我在听。」
-8. 复述 ta 的原话（最多一两次）：「『我很废物』——这话是他说你的，还是你自己也这么想？」
-9. 留白：「嗯。」／「……」 短没关系，但别重复同一句。
-
-像人一样说话：允许口语、允许停顿。不要每句话都像示范答案。
-
-# 语气与长度
-单次 1~3 句、20~100 字，按 ta 给的信息量决定；情绪很重时可以更短。
-不要写成一大段，不要分点罗列。语气沉稳、温和，不高亢、不肉麻。
-
-# 当前轮次信息（仅供参考，不要把这些标签或分析过程说出来）
-主导情绪={dominant}（置信度{confidence:.0%}）；风险等级={risk_level}
+# 当前轮次信息（内部参考，别把这些词或分析过程说出来）
+当下负面情绪强度约 {neg_intensity:.0%}；风险等级={risk_level}。
+（强度只用来把握回应分量，**不要**据此点名 ta 的情绪，也不要输出"焦虑/悲伤"这类标签。）
 {style_desc}
+{persona_line}
 {ask_rule}
 {social_rule}
-
+{openings_ban}
 {final_reminder}
 """
     if scene_context:
@@ -1455,6 +1481,7 @@ def _call_llm(
     style: Optional[UserStyle] = None,
     dialogue_mode: str = "EMPATHY",
     scene_context: str = "",
+    memory_context: str = "",
 ) -> str:
     """调用千问大模型生成回复，失败时回退模板。
 
@@ -1502,12 +1529,16 @@ def _call_llm(
         style=style,
         scene_context=scene_context,
         ask_question=ask_question,
+        memory_context=memory_context,
     )
     try:
         resp = requests.post(
             f'{_LLM_BASE_URL}/chat/completions',
             headers={'Content-Type': 'application/json', 'Authorization': f'Bearer {api_key}'},
-            json={'model': _LLM_MODEL, 'messages': messages, 'temperature': 0.85, 'max_tokens': 200},
+            json={
+                'model': _LLM_MODEL, 'messages': messages, 'max_tokens': 200,
+                **_sampling_params(risk_level),
+            },
             timeout=_LLM_TIMEOUT,
         )
         if resp.ok:
@@ -1654,6 +1685,14 @@ def _detect_crisis(text: str) -> bool:
 # 句末标点 + 换行：一个「完整语义单位」的切分依据。
 _SENTENCE_BOUNDARY_RE = re.compile(r'[。！？!?；;\n]')
 
+# 逗号级兜底：当缓冲超过此长度且无句末标点时，在最近一个逗号处提前放行。
+# 原因：Qwen3-TTS 合成速度约 RTF~2.0，长句（40 字）合成需 ~16 秒，
+# 如果坚持等到句号，用户会感觉 AI 一直在"思考"而不回应。
+# 50 字约为"你好，我是你的AI心理咨询师，今天我们可以聊聊"的长度 ——
+# 在第二个逗号处放行，第一段约 20 字（合成 ~8 秒），已显著优于等整句。
+_COMMA_EARLY_RELEASE_CHARS = 50
+_COMMA_BOUNDARY_RE = re.compile(r'[，,、：:]')
+
 # 单个语义单位的字符上限。中文一句话通常 10~30 字，正常路径碰不到这个上限；
 # 它的作用是兜底：模型若不输出任何句末标点，不能让内容永久卡在缓冲里。
 _STREAM_UNIT_MAX_CHARS = 200
@@ -1679,6 +1718,7 @@ def _iter_llm_deltas(
     messages: list[dict],
     api_key: str,
     timeout: int = _LLM_TIMEOUT,
+    sampling: Optional[dict] = None,
 ) -> Iterator[str]:
     """以流式方式调用千问，逐块产出回复增量文本（OpenAI 兼容 SSE）。
 
@@ -1689,6 +1729,7 @@ def _iter_llm_deltas(
         messages: 由 :func:`_build_llm_messages` 装配的消息列表。
         api_key: DashScope API Key。
         timeout: 连接与读取超时（秒）。
+        sampling: 由 :func:`_sampling_params` 给的采样参数；为空回退温度 0.85。
 
     Yields:
         str: 增量文本片段。
@@ -1697,6 +1738,7 @@ def _iter_llm_deltas(
         requests.RequestException: 网络层失败。
         RuntimeError: 服务返回非 2xx 状态码。
     """
+    payload_sampling = sampling or {"temperature": 0.85}
     with requests.post(
         f'{_LLM_BASE_URL}/chat/completions',
         headers={
@@ -1706,9 +1748,9 @@ def _iter_llm_deltas(
         json={
             'model': _LLM_MODEL,
             'messages': messages,
-            'temperature': 0.85,
             'max_tokens': 200,
             'stream': True,
+            **payload_sampling,
         },
         stream=True,
         timeout=timeout,
@@ -1833,6 +1875,19 @@ class _StreamingSafetyGate:
             match = _SENTENCE_BOUNDARY_RE.search(self._pending)
             if match:
                 cut = match.end()
+            elif len(self._pending) >= _COMMA_EARLY_RELEASE_CHARS:
+                # 逗号级兜底：缓冲够长但无句末标点时，在最近一个逗号处放行。
+                # 这让长句（如"你好，我是AI心理咨询师，今天我们可以聊聊你的感受"）
+                # 不必等到句号就能开始合成，减少首声延迟。
+                comma_match = None
+                for m in _COMMA_BOUNDARY_RE.finditer(self._pending):
+                    comma_match = m
+                if comma_match:
+                    cut = comma_match.end()
+                elif len(self._pending) >= _STREAM_UNIT_MAX_CHARS:
+                    cut = len(self._pending)
+                else:
+                    break
             elif len(self._pending) >= _STREAM_UNIT_MAX_CHARS:
                 cut = len(self._pending)
             else:
@@ -1918,9 +1973,12 @@ def _chat_stream_events(request: SmartChatRequest) -> Iterator[str]:
             style=prep.user_style,
             scene_context=prep.scene_context,
             ask_question=prep.ask_question,
+            memory_context=prep.memory_context,
         )
         try:
-            for delta in _iter_llm_deltas(messages, api_key):
+            for delta in _iter_llm_deltas(
+                messages, api_key, sampling=_sampling_params(prep.risk_level)
+            ):
                 raw_parts.append(delta)
                 if not streaming_allowed:
                     continue  # 高风险/危机：整段生成，不增量上屏
@@ -2068,6 +2126,7 @@ class _ChatTurnPrep:
     distortion_meta: Optional[dict]
     ask_question: bool
     loop: SafetyLoop
+    memory_context: str = ""
 
 
 def _prepare_chat_turn(request: SmartChatRequest) -> _ChatTurnPrep:
@@ -2270,6 +2329,7 @@ def _prepare_chat_turn(request: SmartChatRequest) -> _ChatTurnPrep:
         distortion_meta=distortion_meta,
         ask_question=ask_question,
         loop=loop,
+        memory_context=memory_context,
     )
 
 
@@ -2434,6 +2494,7 @@ async def smart_chat(request: SmartChatRequest) -> SmartChatResponse:
             style=user_style,
             dialogue_mode=dialogue_mode,
             scene_context=scene_context,
+            memory_context=prep.memory_context,
         )
 
         return _audit_and_finalize(prep, request, llm_reply)
