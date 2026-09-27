@@ -1,12 +1,17 @@
 /**
  * rPPG 心率变异性 Hook —— 通过摄像头面部皮肤颜色微变化提取心率
  * 年龄差异化：不同年龄段心率基线和HRV正常范围不同
+ *
+ * ⚠️ 当前 RPPG_AVAILABLE = false：本设备不具备可信的心率采集能力。
+ * 该 Hook 只保留数据结构与接口，不再输出任何心率/HRV 数值，
+ * 以免把摄像头噪声伪装成生理测量（见 perceptionCapabilities.ts）。
  */
 import { useState, useCallback, useRef } from 'react';
 import type { HRVAnalysis } from '../types/multimodal.types';
 import { defaultHRV } from '../types/multimodal.types';
 import type { AgeGroup } from './ageConfig';
 import { getHRVConfig } from './ageConfig';
+import { RPPG_AVAILABLE } from './perceptionCapabilities';
 
 export function useRPPG(ageGroup: AgeGroup | null = null) {
   const [metrics, setMetrics] = useState<HRVAnalysis>({ ...defaultHRV });
@@ -15,6 +20,9 @@ export function useRPPG(ageGroup: AgeGroup | null = null) {
 
   // 从面部视频帧提取 rPPG 信号（简化版：绿色通道分析）
   const updateFromFrame = useCallback((greenChannelMean: number, timestamp: number) => {
+    // 不具备心率采集能力：不采样、不估算、不更新任何指标
+    if (!RPPG_AVAILABLE) return;
+
     // rPPG 简化估计：通过绿色通道变化估计心率
     // 实际应用中需要更复杂的信号处理（FFT/自相关）
     hrHistoryRef.current.push(greenChannelMean);

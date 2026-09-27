@@ -5,13 +5,16 @@ import {
   SmileOutlined, LockOutlined, RiseOutlined,
 } from '@ant-design/icons';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
-import { extraApi, profileApi } from '../../services';
+import dayjs from 'dayjs';
+import { extraApi, profileApi, moodApi } from '../../services';
 
 const { Title, Text, Paragraph } = Typography;
 
 const categoryLabels: Record<string, string> = {
   checkin: '打卡', healing: '疗愈', assessment: '探索', social: '社交', milestone: '里程碑',
 };
+
+const defaultKeywords = ['平静', '专注', '温暖', '好奇', '放松', '勇敢'];
 
 const categoryIcons: Record<string, string> = {
   checkin: '📅', healing: '🌿', assessment: '🔍', social: '🤝', milestone: '🎯',
@@ -27,56 +30,55 @@ export default function MyGrowth() {
   const [streakDays, setStreakDays] = useState(0);
 
   useEffect(() => {
-    Promise.all([
-      extraApi.getAllAchievements(),
-      extraApi.getAchievements(),
-      profileApi.getMoodTrend().catch(() => ({ data: [] })),
-      // 获取心情打卡历史以计算连续天数
-      (async () => {
-        try {
-          const res = await (await import('../../services')).moodApi.getCheckInHistory(365) as any;
-          return res.data?.checkIns || [];
-        } catch { return []; }
-      })(),
-    ]).then(([allRes, progressRes, moodRes, checkIns]: any[]) => {
-      if (allRes.code === 0) setAllAchievements(allRes.data);
-      if (progressRes.code === 0) {
-        const ids = new Set<string>(progressRes.data.achievements.map((ua: any) => ua.achievementId));
-        setUnlockedIds(ids);
+    (async () => {
+      const [allRes, progressRes, moodRes, checkInRes]: any[] = await Promise.all([
+        extraApi.getAllAchievements().catch(() => null),
+        extraApi.getAchievements().catch(() => null),
+        profileApi.getMoodTrend().catch(() => null),
+        moodApi.getCheckInHistory(365).catch(() => null),
+      ]);
+
+      if (allRes?.code === 0) setAllAchievements(allRes.data || []);
+      if (progressRes?.code === 0) {
+        setUnlockedIds(new Set<string>((progressRes.data.achievements || []).map((ua: any) => ua.achievementId)));
         setStats(progressRes.data.stats);
       }
-      if (moodRes.data) {
-        const trend = moodRes.data.slice(-14);
-        setMoodTrend(trend);
-        // 从心情趋势中提取情绪关键词
-        const keywords = new Set<string>();
-        trend.forEach((r: any) => {
-          if (r.mood) keywords.add(r.mood);
-          if (r.note) keywords.add(r.note);
-          if (r.tags) r.tags.forEach((t: string) => keywords.add(t));
-        });
-        const defaultKeywords = ['平静', '专注', '温暖', '好奇', '放松', '勇敢'];
-        const merged = Array.from(keywords).filter(k => k.length > 0).slice(0, 6);
-        setEmotionKeywords(merged.length >= 3 ? merged : [...merged, ...defaultKeywords.slice(0, 6 - merged.length)]);
-      } else {
-        setEmotionKeywords(['平静', '专注', '温暖', '好奇', '放松', '勇敢']);
-      }
 
-      // 计算连续打卡天数
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
+      // /profile/mood-trend 的 data 是 { moodRecords, profiles }，不是数组
+      const payload: any = moodRes?.data;
+      const records: any[] = Array.isArray(payload) ? payload : (payload?.moodRecords || []);
+      const trend = records.slice(-14);
+      setMoodTrend(trend.map((r: any) => ({
+        date: dayjs(r.recordedAt || r.checkInDate).format('MM-DD'),
+        score: typeof r.score === 'number' ? r.score : 0,
+      })));
+
+      const keywords = Array.from(new Set(
+        trend
+          .map((r: any) => r.mood)
+          .filter((k: any) => typeof k === 'string' && k.length > 0 && k.length <= 8),
+      )).slice(0, 6);
+      setEmotionKeywords(
+        keywords.length >= 3 ? keywords : [...keywords, ...defaultKeywords.slice(0, 6 - keywords.length)],
+      );
+
+      // /mood/checkin/history 的 data 直接是数组
+      const checkInPayload: any = checkInRes?.data;
+      const checkIns: any[] = Array.isArray(checkInPayload)
+        ? checkInPayload
+        : (checkInPayload?.checkIns || []);
+      const days = new Set(checkIns.map((c: any) => dayjs(c.checkInDate).format('YYYY-MM-DD')));
       let streak = 0;
-      for (let i = 0; i < checkIns.length; i++) {
-        const d = new Date(checkIns[i].checkInDate);
-        d.setHours(0, 0, 0, 0);
-        const diff = (today.getTime() - d.getTime()) / 86400000;
-        if (diff === i) streak++;
-        else break;
+      let cursor = dayjs();
+      if (!days.has(cursor.format('YYYY-MM-DD'))) cursor = cursor.subtract(1, 'day');
+      while (days.has(cursor.format('YYYY-MM-DD'))) {
+        streak++;
+        cursor = cursor.subtract(1, 'day');
       }
       setStreakDays(streak);
 
       setLoading(false);
-    });
+    })();
   }, []);
 
   if (loading) return <div style={{ padding: 40, textAlign: 'center' }}><Spin /></div>;
@@ -212,15 +214,15 @@ export default function MyGrowth() {
                   <ResponsiveContainer width="100%" height={200}>
                     <LineChart data={moodTrend}>
                       <XAxis dataKey="date" tick={{ fontSize: 11 }} />
-                      <YAxis domain={[0, 10]} tick={{ fontSize: 11 }} />
+                      <YAxis domain={[0, 100]} tick={{ fontSize: 11 }} />
                       <Tooltip />
                       <Line
                         type="monotone"
-                        dataKey="mood"
+                        dataKey="score"
                         stroke="#ff8fab"
                         strokeWidth={2}
                         dot={{ fill: '#ff8fab', r: 4 }}
-                        name="心情"
+                        name="心情指数"
                       />
                     </LineChart>
                   </ResponsiveContainer>

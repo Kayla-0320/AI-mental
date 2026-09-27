@@ -456,7 +456,6 @@ export default function PatientRoom() {
                     { label: '焦虑', value: myProfile.anxiety, color: '#ff4d4f' },
                     { label: '抑郁', value: myProfile.depression, color: '#722ed1' },
                     { label: '压力', value: myProfile.stress, color: '#fa8c16' },
-                    { label: '睡眠', value: myProfile.sleepQuality, color: '#1890ff' },
                     { label: '社交', value: myProfile.socialActivity, color: '#52c41a' },
                     { label: '情绪稳定', value: myProfile.emotionalStability, color: '#13c2c2' },
                   ].map(({ label, value, color }) => (
@@ -470,6 +469,18 @@ export default function PatientRoom() {
                       </div>
                     </div>
                   ))}
+                  {/* 睡眠无法自动检测：只有用户手动记录过才显示分数 */}
+                  <div style={{ marginBottom: 8 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 2 }}>
+                      <Text type="secondary">睡眠</Text>
+                      {(myProfile.sleepQuality || 0) > 0
+                        ? <Text style={{ fontWeight: 600, color: '#1890ff', fontSize: 12 }}>{myProfile.sleepQuality}</Text>
+                        : <Text type="secondary" style={{ fontSize: 12 }}>未记录</Text>}
+                    </div>
+                    <div style={{ height: 4, background: '#f0f0f0', borderRadius: 2 }}>
+                      <div style={{ height: '100%', width: `${(myProfile.sleepQuality || 0)}%`, background: '#1890ff', borderRadius: 2 }} />
+                    </div>
+                  </div>
                 </div>
               )}
 

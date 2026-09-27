@@ -212,9 +212,11 @@ class AiService {
   }
 
   // 基于当天所有文字动态生成心理画像
+  // ⚠️ 不生成 sleepQuality：平台没有夜间传感器，睡眠无法由文字/情绪推算。
+  //    睡眠只能来自用户手动记录（SleepRecord / MoodCheckIn.sleepHours）。
   async generateDynamicProfile(texts: string[]): Promise<{
     anxiety: number; depression: number; stress: number;
-    sleepQuality: number; socialActivity: number; emotionalStability: number;
+    sleepQuality?: number; socialActivity: number; emotionalStability: number;
     overallScore: number; riskLevel: string;
     emotionalSummary: string;
     dominantEmotions: string[];
@@ -229,8 +231,7 @@ class AiService {
   "anxiety": 0-100焦虑分数,
   "depression": 0-100抑郁分数,
   "stress": 0-100压力分数,
-  "sleepQuality": 0-100睡眠质量（越高越好）,
-  "socialActivity": 0-100社交活跃度,
+  "socialActivity": 0-100社交活跃度（仅指平台内互动与表达，不代表真实社交状况）,
   "emotionalStability": 0-100情绪稳定性,
   "overallScore": 0-100综合心理健康分,
   "riskLevel": "LOW/MEDIUM/HIGH/CRISIS",
@@ -238,6 +239,7 @@ class AiService {
   "dominantEmotions": ["今日主要情绪1", "主要情绪2", "主要情绪3"],
   "emotionalTrend": "情绪变化趋势描述（如：从焦虑逐渐平复/持续低落/波动较大）"
 }
+注意：不要输出睡眠相关字段。你只看到了文字，无法得知患者的睡眠情况，任何睡眠评分都属编造。
 
 今日文字记录：
 ${combinedText}`
@@ -247,10 +249,13 @@ ${combinedText}`
     try {
       const response = await this.chat(messages, { temperature: 0.3 });
       let cleaned = response.content.replace(/```json\n?/g, '').replace(/```/g, '').trim();
-      return JSON.parse(cleaned);
+      const parsed = JSON.parse(cleaned);
+      // 双保险：即使模型自作主张返回了睡眠字段，也直接丢弃
+      if (parsed && typeof parsed === 'object') delete parsed.sleepQuality;
+      return parsed;
     } catch {
       return {
-        anxiety: 50, depression: 50, stress: 50, sleepQuality: 50,
+        anxiety: 50, depression: 50, stress: 50,
         socialActivity: 50, emotionalStability: 50, overallScore: 50,
         riskLevel: 'LOW', emotionalSummary: '数据不足，无法生成分析',
         dominantEmotions: [], emotionalTrend: '平稳',

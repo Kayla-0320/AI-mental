@@ -129,15 +129,38 @@ algorithm/
 
 ## 快速启动
 
+> ⚠️ **必须用项目自己的虚拟环境启动，端口是 `8001`。**
+>
+> 不要用 PATH 上的 `uvicorn`。算法服务的依赖（尤其 `sherpa-onnx`）通常只装在项目 venv 里，
+> 而用错解释器的后果**很隐蔽**：服务照常启动、`/health` 照常 200，但 `/api/v1/asr/ws`
+> 会直接 404，前端「语音输入」从此静默失效 —— 只有查 `/api/v1/asr/status` 才看得出原因。
+> 本项目已经因此坏过两次。
+
+推荐用仓库根目录的守卫脚本（启动前会校验解释器、依赖、端口）：
+
 ```bash
-# 安装依赖
-pip install -r requirements.txt
+# 在仓库根目录
+npm run dev:algorithm          # 等价于 node scripts/run-algorithm.mjs
+npm run dev:algorithm:check    # 只做检查，不启动
+```
+
+手动启动（等价做法，解释器必须指向项目 venv）：
+
+```bash
+# 安装依赖（只需一次）
+"<项目 venv>/Scripts/python.exe" -m pip install -r requirements.txt
 
 # 启动服务（开发模式）
-uvicorn main:app --reload --port 8000
+"<项目 venv>/Scripts/python.exe" -m uvicorn main:app --host 127.0.0.1 --port 8001
 
 # 访问 API 文档
-# http://localhost:8000/docs
+# http://localhost:8001/docs
+```
+
+启动后自检（`streaming_available` 必须是 `true`，否则语音输入不可用）：
+
+```bash
+curl http://localhost:8001/api/v1/asr/status
 ```
 
 ---

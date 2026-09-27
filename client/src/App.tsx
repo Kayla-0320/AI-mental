@@ -1,5 +1,6 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { useAuthStore } from './store/authStore';
+import SplashScreen from './components/SplashScreen';
 import PatientLayout from './pages/patient/PatientLayout';
 import ConsultantLayout from './pages/consultant/ConsultantLayout';
 import AdminLayout from './pages/admin/AdminLayout';
@@ -15,6 +16,7 @@ import Companions from './pages/patient/Companions';
 import MyGrowth from './pages/patient/MyGrowth';
 import Profile from './pages/patient/Profile';
 import MyDigitalTwin from './pages/patient/MyDigitalTwin';
+import VoiceCall from './pages/patient/VoiceCall';
 import ConsultantDashboard from './pages/consultant/ConsultantDashboard';
 import ConsultantAppointments from './pages/consultant/ConsultantAppointments';
 import ConsultantConsultations from './pages/consultant/ConsultantConsultations';
@@ -45,9 +47,17 @@ function RoleRoute({ children, role }: { children: React.ReactNode; role: string
 
 export default function App() {
   return (
-    <Routes>
+    <>
+      <SplashScreen />
+      <Routes>
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
+
+      {/* AI 陪伴通话：整屏页面，**刻意**与 /login 同级、不进 PatientLayout ——
+          带上侧边栏就不像"打电话"了。会话 id 可选：无 id 时页面自己建一个
+          再 replace 到 /call/<id>（见 VoiceCall.tsx 的会话生命周期）。 */}
+      <Route path="/call" element={<PrivateRoute><RoleRoute role="PATIENT"><VoiceCall /></RoleRoute></PrivateRoute>} />
+      <Route path="/call/:conversationId" element={<PrivateRoute><RoleRoute role="PATIENT"><VoiceCall /></RoleRoute></PrivateRoute>} />
 
       {/* 患者端 */}
       <Route path="/" element={<PrivateRoute><RoleRoute role="PATIENT"><PatientLayout /></RoleRoute></PrivateRoute>}>
@@ -96,6 +106,7 @@ export default function App() {
       </Route>
 
       <Route path="*" element={<Navigate to="/" />} />
-    </Routes>
+      </Routes>
+    </>
   );
 }

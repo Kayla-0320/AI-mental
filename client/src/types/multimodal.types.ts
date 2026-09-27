@@ -126,6 +126,22 @@ export interface VoiceAnalysis {
   speechTextHistory: string[];    // 识别历史（最近 5 条）
   isSpeechRecognizing: boolean;   // 是否正在识别语音
 
+  // 本地语音识别状态（sherpa-onnx，音频不出本机）
+  // 刻意如实上报：引擎不可用时必须能看出来，不允许静默降级成空文本
+  asrEngine: string;              // 'sherpa-onnx-streaming-zipformer' | 'unavailable' | ''
+  asrError: string;               // 非空表示识别不可用及具体原因
+  asrLatencyMs: number;           // 最近一次解码耗时（毫秒）
+  // 流式识别的中间结果：会被后续结果覆盖，只用于"边说边出字"上屏。
+  // 下游的文本情感/认知扭曲/语音语义分析只吃 speechText（定稿），不吃这个字段。
+  asrPartialText: string;
+  // 最近一次定稿的文本 + 递增序号。
+  // 序号是必需的：连续两段说出完全相同的话时 speechText 不变，
+  // 只靠文本变化判断会漏掉第二段。
+  asrFinalText: string;
+  asrFinalSeq: number;
+  // 最近一次定稿是否经过离线大模型复识别纠错
+  asrRefined: boolean;
+
   // 状态
   isRecording: boolean;
   duration: number;               // 已录制时长 秒
@@ -177,7 +193,6 @@ export interface FacialAnalysis {
   // 微表情事件
   microExpressions: {
     count: number;                 // 微表情次数 (< 500ms)
-    avgDuration: number;           // 平均持续 ms
     recentEmotions: string[];      // 最近检测到的微表情情绪
   };
 
@@ -195,10 +210,32 @@ export interface FacialAnalysis {
   };
 
   // 状态
+  /** 采集循环是否在跑（**会话级**状态；不等于"画面里有人"）。 */
   isDetecting: boolean;
-  confidence: number;              // 检测置信度 0-1
+  /**
+   * 本帧是否检测到人脸（**帧级**状态）。
+   *
+   * 这是整个视觉链路里最诚实、最抗噪的一个信号：
+   * 低头看手机、侧脸、走动、说话带动下半脸都不影响它，
+   * 而它的产品含义是真实的 —— "对方还在听吗"。
+   * 通话场景里如果需要视觉反馈，优先用这个，而不是微表情。
+   */
+  facePresent: boolean;
+  /**
+   * 检测置信度 0-1，**必须来自本帧真实测得的信号质量**；拿不到时为 `null`。
+   *
+   * 改造前这里是 `min(0.95, 0.7 + frameCount * 0.005)` —— 一个**帧计数常量**：
+   * 只要摄像头开着满 50 帧（5 秒）就恒为 0.95，画面全黑、没有人在镜头里也一样。
+   * 它会一路传进融合权重并改写落库的 `patientProfile.riskLevel`。
+   *
+   * 现在：由「AU 是否来自模型输出 × 人脸尺度 × 头部姿态」三者相乘得到；
+   * `null` 表示本次没有可信的置信度，**下游必须把该模态剔除**，而不是拿常数顶上。
+   */
+  confidence: number | null;
   frameCount: number;
   timestamp: number;
+  /** 设备不可用 / 流中断的原因（中文，可直接上屏）；空串表示正常。 */
+  unavailableReason: string;
 }
 
 // ===== 融合后的综合情绪状态 =====
@@ -240,6 +277,11 @@ export interface ComprehensiveEmotionState {
   activeModalities: string[];      // 当前活跃的模态列表
   lastUpdated: number;
 
+  // 数据可信度说明：哪些模态本设备根本不具备采集能力
+  // 用于界面与报告如实告知，禁止对不可用模态编造数值
+  unavailableModalities: string[];
+  availabilityNote: string;
+
   // 温暖治愈信息
   caringMessage: string;
   evidence: string[];
@@ -249,11 +291,14 @@ export interface ComprehensiveEmotionState {
 // ===== 新增 7 模态类型定义 =====
 
 // ===== 昼夜节律分析 =====
+// 注意：本模块只记录「App 内活动时间」，**不检测睡眠**。
+// 睡眠时长/质量必须由用户手动记录，禁止由活动时间或情绪分推算。
 export interface CircadianAnalysis {
-  riskScore: number;               // 昼夜节律风险 0-1
+  riskScore: number;               // 深夜活动风险 0-1（活动时间推导，非睡眠检测）
   lateNightRisk: number;           // 深夜活动风险 0-1
-  regularityScore: number;         // 作息规律性 0-1
+  regularityScore: number;         // 活动时间规律性 0-1
   lastActivityHour: number;        // 最近活动小时 (0-23)
+  activitySampleCount: number;     // 已采集的活动样本数（样本不足时规律性不可信）
   isActive: boolean;
   timestamp: number;
 }
@@ -307,14 +352,57 @@ export interface BehavioralActivationAnalysis {
 }
 
 // ===== 眼动模式分析 =====
+// ⚠️ 本平台未接入虹膜注视跟踪：downwardGazeRatio / attentionScatter 均由头部姿态推算，
+//    分别是「低头帧占比」和「头部偏航波动」，属注视方向的代理指标。字段名沿用历史接口。
 export interface EyeMovementAnalysis {
   riskScore: number;               // 眼动风险 0-1
-  blinkRate: number;               // 眨眼频率 次/分
-  downwardGazeRatio: number;       // 向下注视比例 0-1
-  attentionScatter: number;        // 注意力分散度 0-1
-  signalQuality: number;           // 信号质量 0-1
+  blinkRate: number;               // 眨眼频率 次/分（60 秒滚动窗口）
+  downwardGazeRatio: number;       // 低头帧占比 0-1（头部俯仰代理）
+  attentionScatter: number;        // 头部偏航波动 0-1（头部姿态代理）
+  signalQuality: number;           // 信号质量 0-1（来源基准分 × 面部帧覆盖率）
   isMeasuring: boolean;
   timestamp: number;
+  /** 眨眼来源：blendshape=MediaPipe 眼睑闭合度，ear=关键点纵横比降级 */
+  blinkMethod?: 'blendshape' | 'ear' | 'none';
+  /** 平均眨眼时长 ms */
+  avgBlinkDuration?: number;
+  /** 长眨眼次数（>400ms） */
+  longBlinkCount?: number;
+  /** 60 秒窗口内计入的眨眼次数 */
+  blinkSampleCount?: number;
+  /** 标记：注视相关字段来自头部姿态代理，非眼球注视 */
+  poseProxy?: boolean;
+  /**
+   * 眨眼通道的实测帧率（自适应档位 30/15/10，跑不动会自动降档）。
+   * 它是「闭眼时长精度」的唯一决定因素，所以必须可见。
+   */
+  blinkChannelFps?: number;
+  /**
+   * 本次测量的闭眼时长量化粒度（ms）= 1000 / blinkChannelFps。
+   * 30fps → 33ms；10fps → 100ms。界面/证据里应据此说明时长精度，
+   * 而不是让读者以为时长是毫秒级精确的。
+   */
+  blinkDurationQuantumMs?: number;
+  /** 状态机实测的采样间隔中位数（ms） */
+  blinkSampleIntervalMs?: number;
+  /** 时长由亚采样插值得到的比例 0–1（插值默认关闭，故通常为 0） */
+  blinkInterpolatedShare?: number;
+  /**
+   * 「每眼睁闭眼」第二判定通道（浏览器内 ONNX，Apache-2.0，46KB）的状态。
+   * ⚠️ 这些字段**只上报、不参与 riskScore**：模型训练域是近红外眼图，
+   * 在本平台 RGB 画面上存在域偏移，必须先标定阈值。
+   */
+  eyeStateModelStatus?: string;
+  /** 两眼中较小的闭眼概率（与 min(eyeBlinkLeft, eyeBlinkRight) 口径对齐） */
+  eyeStateModelClosedBoth?: number;
+  eyeStateModelClosedLeft?: number;
+  eyeStateModelClosedRight?: number;
+  /** 单次推理耗时 ms */
+  eyeStateModelLatencyMs?: number;
+  /** 累计参与比较的帧数 */
+  eyeStateModelSamples?: number;
+  /** 与 blendshape 判定的一致率 0–1（评估第二通道是否可信的入口指标） */
+  eyeStateModelAgreement?: number;
 }
 
 // ===== 语音深层语义分析 =====
@@ -357,6 +445,8 @@ export const defaultVoice: VoiceAnalysis = {
   emotionProbs: [0.2, 0.2, 0.2, 0.2, 0.2],
   riskScore: 0, detectedEmotion: '中性',
   speechText: '', speechTextHistory: [], isSpeechRecognizing: false,
+  asrEngine: '', asrError: '', asrLatencyMs: 0,
+  asrPartialText: '', asrFinalText: '', asrFinalSeq: 0, asrRefined: false,
   isRecording: false, duration: 0, timestamp: 0,
 };
 
@@ -370,16 +460,17 @@ export const defaultFacial: FacialAnalysis = {
     mouthAspect: 0, headPitch: 0, headYaw: 0, headRoll: 0,
   },
   geometry: { browDistance: 0, mouthWidth: 0, eyeAspect: 0, mouthOpen: 0 },
-  microExpressions: { count: 0, avgDuration: 0, recentEmotions: [] },
+  microExpressions: { count: 0, recentEmotions: [] },
   dominantExpression: '平静', expressionIntensity: 0,
   emotionMapping: { happiness: 0, sadness: 0, anger: 0, fear: 0, surprise: 0, disgust: 0, distress: 0 },
-  isDetecting: false, confidence: 0, frameCount: 0, timestamp: 0,
+  isDetecting: false, facePresent: false, confidence: null, frameCount: 0, timestamp: 0,
+  unavailableReason: '',
 };
 
 // ===== 新增 7 模态默认值 =====
 export const defaultCircadian: CircadianAnalysis = {
   riskScore: 0, lateNightRisk: 0, regularityScore: 0.5,
-  lastActivityHour: 12, isActive: false, timestamp: 0,
+  lastActivityHour: 12, activitySampleCount: 0, isActive: false, timestamp: 0,
 };
 
 export const defaultCognitiveDistortion: CognitiveDistortionAnalysis = {

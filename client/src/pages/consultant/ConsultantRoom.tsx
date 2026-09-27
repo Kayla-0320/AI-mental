@@ -27,7 +27,7 @@ const twinDimLabels: Record<string, string> = {
   text_emotion: '文本情绪', voice_acoustic: '语音声学', facial: '面部表情',
   circadian: '昼夜节律', cognitive: '认知扭曲', behavior: '行为模式',
   hrv: '心率变异性', breathing: '呼吸模式', behavioral_act: '行为激活',
-  eye: '眼动模式', voice_semantics: '语音语义',
+  eye: '眨眼/头姿', voice_semantics: '语音语义',
 };
 const twinDimColor = (k: string): string => {
   const palette = ['#722ed1', '#1890ff', '#13c2c2', '#52c41a', '#fa8c16', '#ff4d4f', '#eb2f96', '#2f54eb', '#a0d911', '#faad14', '#f5222d'];
@@ -533,11 +533,12 @@ export default function ConsultantRoom() {
 
   const { patient, profile, anxiety } = data;
 
+  // 睡眠只在患者手动记录过时才展示（0 = 未采集，平台无法自动检测睡眠）
   const radarData = profile ? [
     { subject: '焦虑', value: profile.anxiety },
     { subject: '抑郁', value: profile.depression },
     { subject: '压力', value: profile.stress },
-    { subject: '睡眠', value: profile.sleepQuality },
+    ...((profile.sleepQuality || 0) > 0 ? [{ subject: '睡眠(手动)', value: profile.sleepQuality }] : []),
     { subject: '社交', value: profile.socialActivity },
     { subject: '情绪稳定', value: profile.emotionalStability },
   ] : [];
@@ -746,7 +747,6 @@ export default function ConsultantRoom() {
                     { label: '焦虑', value: profile.anxiety, color: '#ff4d4f' },
                     { label: '抑郁', value: profile.depression, color: '#722ed1' },
                     { label: '压力', value: profile.stress, color: '#fa8c16' },
-                    { label: '睡眠质量', value: profile.sleepQuality, color: '#1890ff' },
                     { label: '社交活跃', value: profile.socialActivity, color: '#52c41a' },
                     { label: '情绪稳定', value: profile.emotionalStability, color: '#13c2c2' },
                   ].map(({ label, value, color }) => (
@@ -758,6 +758,20 @@ export default function ConsultantRoom() {
                       <Progress percent={value} showInfo={false} size="small" strokeColor={color} />
                     </Col>
                   ))}
+                  {/* 睡眠维度：仅当患者手动记录过时展示，否则明确标注"未采集" */}
+                  <Col xs={12} md={8} lg={4}>
+                    <div style={{ marginBottom: 4 }}>
+                      <Text type="secondary" style={{ fontSize: 12 }}>睡眠质量</Text>
+                      {(profile.sleepQuality || 0) > 0 ? (
+                        <>
+                          <Text style={{ float: 'right', fontWeight: 600, color: '#1890ff' }}>{profile.sleepQuality}</Text>
+                          <Progress percent={profile.sleepQuality} showInfo={false} size="small" strokeColor="#1890ff" />
+                        </>
+                      ) : (
+                        <div style={{ fontSize: 12, color: '#999' }}>未采集（无夜间传感器，仅手动记录）</div>
+                      )}
+                    </div>
+                  </Col>
                 </Row>
                 <Divider style={{ margin: '16px 0' }} />
                 <div>
@@ -1644,15 +1658,18 @@ export default function ConsultantRoom() {
                         <div style={{ fontSize: 10, color: '#999', fontWeight: 500, marginBottom: 4, marginTop: 4 }}>🧠 认知分析层</div>
                       </Col>
 
-                      {/* 昼夜节律 */}
+                      {/* 昼夜活动（仅活动时间，非睡眠检测） */}
                       {patientMultimodal.comprehensiveState.circadian?.isActive && (
                         <Col xs={8} md={8}>
                           <div style={{ padding: 8, background: '#e6fffb', borderRadius: 6, height: '100%' }}>
-                            <div style={{ fontSize: 11, fontWeight: 600, color: '#13c2c2', marginBottom: 4 }}>🕐 昼夜节律</div>
+                            <div style={{ fontSize: 11, fontWeight: 600, color: '#13c2c2', marginBottom: 4 }}>🕐 昼夜活动</div>
                             <div style={{ fontSize: 10, lineHeight: 1.7, color: '#555' }}>
-                              <div>风险：<Tag color={(patientMultimodal.comprehensiveState.circadian.riskScore || 0) > 0.5 ? 'red' : 'green'} style={{ fontSize: 9, lineHeight: '14px', padding: '0 4px' }}>{Math.round((patientMultimodal.comprehensiveState.circadian.riskScore || 0) * 100)}%</Tag></div>
-                              <div>规律性：<Progress percent={Math.round((patientMultimodal.comprehensiveState.circadian.regularityScore || 0) * 100)} showInfo={false} size="small" strokeColor="#13c2c2" style={{ width: 44, display: 'inline-block', verticalAlign: 'middle' }} /></div>
-                              <div>深夜风险：{Math.round((patientMultimodal.comprehensiveState.circadian.lateNightRisk || 0) * 100)}%</div>
+                              <div>深夜活动风险：<Tag color={(patientMultimodal.comprehensiveState.circadian.lateNightRisk || 0) > 0.5 ? 'red' : 'green'} style={{ fontSize: 9, lineHeight: '14px', padding: '0 4px' }}>{Math.round((patientMultimodal.comprehensiveState.circadian.lateNightRisk || 0) * 100)}%</Tag></div>
+                              <div>活动时间规律性：{(patientMultimodal.comprehensiveState.circadian.activitySampleCount || 0) >= 10
+                                ? <Progress percent={Math.round((patientMultimodal.comprehensiveState.circadian.regularityScore || 0) * 100)} showInfo={false} size="small" strokeColor="#13c2c2" style={{ width: 44, display: 'inline-block', verticalAlign: 'middle' }} />
+                                : <span style={{ color: '#999' }}>样本不足({patientMultimodal.comprehensiveState.circadian.activitySampleCount || 0}/10)</span>}
+                              </div>
+                              <div style={{ color: '#999' }}>仅平台内活动时间，非睡眠监测</div>
                             </div>
                           </div>
                         </Col>
@@ -1696,7 +1713,18 @@ export default function ConsultantRoom() {
                         <div style={{ fontSize: 10, color: '#999', fontWeight: 500, marginBottom: 4, marginTop: 4 }}>💓 生理行为层</div>
                       </Col>
 
-                      {/* rPPG 心率 */}
+                      {/* rPPG 心率 / 呼吸：平台无采集能力，明确告知咨询师"没有这项数据" */}
+                      {!(patientMultimodal.comprehensiveState.hrv?.isMeasuring) && (
+                        <Col xs={8} md={6}>
+                          <div style={{ padding: 8, background: '#fafafa', borderRadius: 6, height: '100%', border: '1px dashed #e0e0e0' }}>
+                            <div style={{ fontSize: 11, fontWeight: 600, color: '#bfbfbf', marginBottom: 4 }}>❤️ rPPG 心率</div>
+                            <div style={{ fontSize: 10, lineHeight: 1.7, color: '#bfbfbf' }}>
+                              <div>未采集（无心率传感器）</div>
+                              <div>患者设备不支持 rPPG</div>
+                            </div>
+                          </div>
+                        </Col>
+                      )}
                       {patientMultimodal.comprehensiveState.hrv?.isMeasuring && (
                         <Col xs={8} md={6}>
                           <div style={{ padding: 8, background: '#fff1f0', borderRadius: 6, height: '100%' }}>
@@ -1717,7 +1745,17 @@ export default function ConsultantRoom() {
                         </Col>
                       )}
 
-                      {/* 呼吸模式 */}
+                      {!(patientMultimodal.comprehensiveState.breathing?.isMeasuring) && (
+                        <Col xs={8} md={6}>
+                          <div style={{ padding: 8, background: '#fafafa', borderRadius: 6, height: '100%', border: '1px dashed #e0e0e0' }}>
+                            <div style={{ fontSize: 11, fontWeight: 600, color: '#bfbfbf', marginBottom: 4 }}>🌬️ 呼吸模式</div>
+                            <div style={{ fontSize: 10, lineHeight: 1.7, color: '#bfbfbf' }}>
+                              <div>未采集（算法未启用）</div>
+                              <div>待语音识别稳定后接入</div>
+                            </div>
+                          </div>
+                        </Col>
+                      )}
                       {patientMultimodal.comprehensiveState.breathing?.isMeasuring && (
                         <Col xs={8} md={6}>
                           <div style={{ padding: 8, background: '#e6fffb', borderRadius: 6, height: '100%' }}>
@@ -1752,11 +1790,11 @@ export default function ConsultantRoom() {
                         </Col>
                       )}
 
-                      {/* 眼动模式 */}
+                      {/* 眨眼 / 头姿（头姿为注视代理，非眼球注视） */}
                       {patientMultimodal.comprehensiveState.eyeMovement?.isMeasuring && (
                         <Col xs={8} md={6}>
                           <div style={{ padding: 8, background: '#f9f0ff', borderRadius: 6, height: '100%' }}>
-                            <div style={{ fontSize: 11, fontWeight: 600, color: '#9254de', marginBottom: 4 }}>👁️ 眼动模式</div>
+                            <div style={{ fontSize: 11, fontWeight: 600, color: '#9254de', marginBottom: 4 }}>👁️ 眨眼 / 头姿</div>
                             <div style={{ fontSize: 10, lineHeight: 1.7, color: '#555' }}>
                               <div>眨眼：{patientMultimodal.comprehensiveState.eyeMovement.blinkRate} 次/分
                                 {patientMultimodal.comprehensiveState.baseline?.blinkRate?.n >= 2 && (() => {
@@ -1766,8 +1804,12 @@ export default function ConsultantRoom() {
                                   return <span style={{ color: z > 2 ? '#ff4d4f' : '#999' }}> (基线 {Math.round(bl.mean)}{diff > 0 ? ` +${diff}` : diff < 0 ? ` ${diff}` : ''})</span>;
                                 })()}
                               </div>
-                              <div>向下注视：{Math.round((patientMultimodal.comprehensiveState.eyeMovement.downwardGazeRatio || 0) * 100)}%</div>
-                              <div>注意力分散：{Math.round((patientMultimodal.comprehensiveState.eyeMovement.attentionScatter || 0) * 100)}%</div>
+                              <div>低头帧占比：{Math.round((patientMultimodal.comprehensiveState.eyeMovement.downwardGazeRatio || 0) * 100)}%</div>
+                              <div>头姿波动：{Math.round((patientMultimodal.comprehensiveState.eyeMovement.attentionScatter || 0) * 100)}%</div>
+                              <div style={{ color: '#bfbfbf' }}>
+                                来源：{patientMultimodal.comprehensiveState.eyeMovement.blinkMethod === 'ear' ? 'EAR 降级' : '眼睑闭合度'}；
+                                头姿为注视代理指标
+                              </div>
                             </div>
                           </div>
                         </Col>

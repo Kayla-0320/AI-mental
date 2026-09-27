@@ -19,6 +19,12 @@ sentencepiece==0.2.0
 librosa==0.10.2
 soundfile==0.12.1
 
+# --- 本地语音识别（ASR）---
+# 替代浏览器 Web Speech API：识别在本机 CPU 完成，音频不出设备、不依赖外网。
+# 模型不在版本库内，需先下载：python algorithm/tools/download_asr_model.py
+# （模型源默认走 hf-mirror，因为本网络环境 huggingface.co 与 GitHub release 均不可达）
+sherpa-onnx==1.13.8
+
 # --- 计算机视觉 / 面部表情 ---
 opencv-python==4.10.0.84
 mediapipe==0.10.14

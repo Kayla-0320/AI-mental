@@ -281,3 +281,261 @@ class EscalationResult:
     response_time_seconds: float = 0.0
     timestamp: float = 0.0
     audit_log_id: str = ""
+
+
+# ============================================================
+# 语音识别数据类
+# ============================================================
+
+class AsrEngine(str, Enum):
+    """语音识别引擎枚举
+
+    当前只落地了本地 sherpa-onnx 两条路径。刻意不提供「浏览器 Web Speech API」
+    选项 —— 那条路径的声音会被送到厂商云服务（Edge→微软 Azure、Chrome→谷歌），
+    与「敏感原始数据不出设备」冲突。
+    """
+    PARAFORMER = "sherpa-onnx-paraformer"              # 本地离线整段（/asr/transcribe）
+    ZIPFORMER_STREAMING = "sherpa-onnx-streaming-zipformer"  # 本地流式边说边出字（/asr/ws）
+    UNAVAILABLE = "unavailable"                        # 模型缺失或加载失败
+
+
+class AsrEventType(str, Enum):
+    """流式识别事件的类型"""
+    PARTIAL = "partial"   # 中间结果：会被后续结果覆盖，只用于上屏
+    FINAL = "final"       # 定稿：这一段话结束，可以送入下游文本/语义分析
+
+
+@dataclass
+class AsrResult:
+    """语音转文字结果 —— 非流式（整段）识别的输出
+
+    由 `asr/engine.py` 产生，经 `/api/v1/asr/transcribe` 暴露给前端。
+
+    Attributes:
+        text: 识别文本；可能为空字符串（该段音频无可用语音）
+        engine: 实际使用的识别引擎
+        duration_ms: 输入音频时长（毫秒）
+        latency_ms: 本次识别耗时（毫秒）
+        error: 失败原因；为空字符串表示成功
+    """
+    text: str
+    engine: AsrEngine = AsrEngine.PARAFORMER
+    duration_ms: float = 0.0
+    latency_ms: float = 0.0
+    error: str = ""
+
+    @property
+    def is_empty(self) -> bool:
+        """是否未识别出任何文本"""
+        return not self.text.strip()
+
+    @property
+    def ok(self) -> bool:
+        """本次识别是否成功（成功不等同于识别出了文本）"""
+        return self.engine is not AsrEngine.UNAVAILABLE and not self.error
+
+
+@dataclass
+class StreamingAsrUpdate:
+    """流式识别的一次增量更新
+
+    由 `asr/streaming.py` 产生，经 `/api/v1/asr/ws` 以 JSON 推给前端。
+
+    为什么把 PARTIAL 和 FINAL 分开：
+        中间结果会不断被后续结果覆盖，只适合"上屏给用户看"；下游的文本情感、
+        认知扭曲、语音语义分析必须只吃定稿，否则同一句话会被反复分析，
+        既浪费也算出不稳定结果。
+
+    Attributes:
+        event: partial（中间结果）或 final（定稿）
+        text: 当前累计文本（flushing 之前是这一段的完整累计，不是增量片段）
+        elapsed_ms: 该段音频已累计的时长（毫秒）
+        latency_ms: 本次解码耗时（毫秒）
+        reason: 仅 final 时有意义 —— "endpoint"（端点检测）或 "finalize"（用户主动结束）
+        engine: 产出这段文本的引擎（定稿若经离线模型纠错，这里是离线引擎）
+        refined: 定稿文本是否经过离线大模型复识别纠错
+    """
+    event: AsrEventType
+    text: str
+    elapsed_ms: float = 0.0
+    latency_ms: float = 0.0
+    reason: str = ""
+    engine: AsrEngine = AsrEngine.ZIPFORMER_STREAMING
+    refined: bool = False
+
+    @property
+    def is_final(self) -> bool:
+        """是否为定稿事件"""
+        return self.event is AsrEventType.FINAL
+
+    @property
+    def is_empty(self) -> bool:
+        """是否未识别出任何文本"""
+        return not self.text.strip()
+
+
+# ============================================================
+# 语音合成数据类
+# ============================================================
+
+class TtsEngine(str, Enum):
+    """语音合成引擎枚举
+
+    两条本地路径，通过环境变量 ``TTS_BACKEND`` 切换：
+        * ``vits``  —— sherpa-onnx VITS 离线合成（16 kHz，零 GPU 占用）
+        * ``qwen3`` —— Qwen3-TTS 0.6B 对话级合成（24 kHz，需 GPU 显存）
+
+    刻意不提供浏览器 ``speechSynthesis``：它的音频**不经过 Web Audio**，
+    拿不到 ``MediaStream`` / ``AudioNode``，因此既不能作为回声消除的参考信号，
+    也做不了文本级自回声过滤（见 docs/voice_call_plan.md §6.3 的否决理由，
+    那是架构性的，不是延迟性的）。
+
+    与 ``AsrEngine`` 同一条原则：音频只在本机流转，不出设备。
+    """
+    VITS = "sherpa-onnx-vits"     # 本地离线合成（/tts/ws）
+    QWEN3 = "qwen3-tts"           # 本地对话级合成（/tts/ws，voice design）
+    UNAVAILABLE = "unavailable"   # 模型缺失或加载失败
+
+
+@dataclass
+class TtsSynthesisResult:
+    """一次语音合成的结果（计时与状态；**不承载音频数据**）
+
+    音频本身走 WebSocket 的二进制帧，这里只保留可观测性所需的元数据 ——
+    与 ``AsrResult`` 把音频丢给调用方、只回一个结果对象是同一个思路。
+
+    ⚠️ 关于 ``first_chunk_ms``：实测（docs/tts_benchmark.md §1 发现一）
+    ``sherpa_onnx.OfflineTts.generate(callback=...)`` 对每一句**只回调一次**，
+    携带的是整句合成完的音频。因此 **``first_chunk_ms`` 与 ``synth_ms`` 相等**。
+    保留这个字段是为了：(1) 与 benchmark 的产物字段对齐；
+    (2) 将来若换成真流式 TTS，协议与消费端都不用改。
+    **不要**据此认为"首块比整句快"。
+
+    Attributes:
+        seq: 本次合成的序号，与请求里的 seq 对应（客户端据此对号入座）
+        engine: 实际使用的合成引擎
+        spoken_text: **实际被念出来的文本**（已过术语替换，可能与请求文本不同）。
+            客户端做文本级自回声过滤时要拿这个值，而不是原始请求文本 ——
+            否则 `CBT → 认知行为疗法` 这类替换会让过滤失效。
+        sample_rate: 输出 PCM 的采样率（Hz）
+        audio_ms: 产出音频时长（毫秒）
+        first_chunk_ms: 从调用到第一次回调的耗时（毫秒）；VITS 下等于 synth_ms
+        synth_ms: 合成总耗时（毫秒）
+        cancelled: 是否被中途取消（客户端已打断，音频不再下发）
+        error: 失败原因；为空字符串表示成功
+    """
+    seq: int
+    engine: TtsEngine = TtsEngine.VITS
+    spoken_text: str = ""
+    sample_rate: int = 16000
+    audio_ms: float = 0.0
+    first_chunk_ms: float = 0.0
+    synth_ms: float = 0.0
+    cancelled: bool = False
+    error: str = ""
+
+    @property
+    def rtf(self) -> float:
+        """实时率 = 合成耗时 / 音频时长
+
+        判据是 **< 1.0**（否则合成追不上播放，队列越积越长，听起来"越说越慢"）。
+        `voice_call_plan.md` 阶段 0 的 go 判据更严：< 0.4。
+        实测本机 4 线程 0.180、8 线程 0.112（docs/tts_benchmark.md）。
+        音频时长为 0 时返回 0.0（表示"无从判断"，不是"很快"）。
+        """
+        return self.synth_ms / self.audio_ms if self.audio_ms > 0 else 0.0
+
+    @property
+    def ok(self) -> bool:
+        """本次合成是否成功（成功不等同于产出了音频）
+
+        被取消算成功：取消是正常路径（用户打断），不是故障。
+        """
+        return self.engine is not TtsEngine.UNAVAILABLE and not self.error
+
+    @property
+    def is_silent(self) -> bool:
+        """是否一个字都没合成出来
+
+        单独暴露这个判断，是为了让"模型静默失效"（例如 ``max_num_sentences=1``
+        导致的截断、或文本全被 OOV 吞掉）能被上游显式发现，而不是当成正常空结果。
+        """
+        return self.audio_ms <= 0.0
+
+
+# ============================================================
+# 文本流式对话数据类
+# ============================================================
+
+class ChatStreamEventType(str, Enum):
+    """文本流式对话的事件类型（跨语言契约）
+
+    同一套取值同时出现在三个地方，改动必须三处同步：
+        1. Python 产出端 ``algorithm/api/intervention.py``（/smart-chat/stream）
+        2. Node 中转端 ``server/src/services/algorithm-bridge.ts``（原样透传）
+        3. 浏览器消费端 ``client/src/services/index.ts``
+
+    事件顺序约定：
+        meta → (delta*) → done
+        meta → (delta*) → revise → done      # 安全审计改写了回复
+        meta → error                          # 前处理失败，未产生任何 delta
+        meta → (delta*) → revise → error      # 流中断，revise 携带已审计的兜底文本
+
+    Attributes:
+        META: 前处理完成，携带风险等级、对话模式与情绪概率；此时还没有任何回复文本
+        DELTA: 回复的增量片段，消费端应**追加**到当前气泡
+        REVISE: 权威改稿，消费端应**整体替换**当前气泡（安全审计否掉了已生成的内容）
+        DONE: 本轮结束，携带与非流式 /smart-chat 完全一致的审计结论
+        ERROR: 出错，本轮作废；消费端应回退到非流式路径
+    """
+    META = "meta"
+    DELTA = "delta"
+    REVISE = "revise"
+    DONE = "done"
+    ERROR = "error"
+
+
+@dataclass
+class ChatStreamEvent:
+    """文本流式对话的一次事件
+
+    为什么流式路径必须保留 REVISE 这个事件类型：
+        本项目的安全审计是**整段回复级**的判据（五轴审计要看完整回复与对话
+        历史），因此不可能在逐字吐字之前就拿到审计结论。折中方案是
+        「先说、后校」：增量上屏保证体感，审计一旦否掉就整体改稿。
+        只有显式区分"追加"与"替换"，消费端才不会把权威改稿拼在错误文本后面。
+
+    Attributes:
+        event: 事件类型
+        text: DELTA 为增量片段、REVISE 为完整替换文本、DONE 为最终文本；其余为空
+        risk_level: 本轮风险等级（META / DONE 携带）
+        dialogue_mode: 对话模式 EMPATHY / SOCRATIC（META / DONE 携带）
+        emotion_probs: 五维文本情绪概率（META / DONE 携带）
+        streaming: META 携带 —— 本轮是否允许增量上屏。
+            high / crisis 风险恒为 False：升级流程必须原子下发，
+            逐字吐出的安全确认与热线会看起来像普通闲聊。
+        audit_passed: DONE 携带 —— 五轴审计是否通过
+        requires_escalation: DONE 携带 —— 是否需要触发升级
+        fallback: DONE 携带 —— 是否走了模板兜底（未用上真实 LLM）
+        error: ERROR 携带 —— 失败原因
+    """
+    event: ChatStreamEventType
+    text: str = ""
+    risk_level: str = ""
+    dialogue_mode: str = ""
+    emotion_probs: list[float] = field(default_factory=list)
+    streaming: bool = False
+    audit_passed: bool = True
+    requires_escalation: bool = False
+    fallback: bool = False
+    error: str = ""
+
+    @property
+    def is_terminal(self) -> bool:
+        """是否为终结事件（消费端收到后本轮不再期待新事件）"""
+        return self.event in (ChatStreamEventType.DONE, ChatStreamEventType.ERROR)
+
+    @property
+    def replaces_bubble(self) -> bool:
+        """是否为整体替换语义（消费端必须清空当前气泡再写入 ``text``）"""
+        return self.event is ChatStreamEventType.REVISE

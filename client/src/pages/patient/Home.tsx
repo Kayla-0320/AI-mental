@@ -33,10 +33,9 @@ export default function Home() {
 
   useEffect(() => {
     const hour = new Date().getHours();
-    if (hour < 6) setGreeting('夜深了，还没睡呀');
-    else if (hour < 12) setGreeting('早上好');
-    else if (hour < 14) setGreeting('中午好');
-    else if (hour < 18) setGreeting('下午好');
+    if (hour >= 5 && hour < 11) setGreeting('早上好');
+    else if (hour >= 11 && hour < 14) setGreeting('中午好');
+    else if (hour >= 14 && hour < 18) setGreeting('下午好');
     else setGreeting('晚上好');
 
     // 检查今天是否已打卡
@@ -127,10 +126,10 @@ export default function Home() {
       }}>
         <Row align="middle" gutter={24}>
           <Col flex="auto">
-            <Title level={3} style={{ color: '#fff', marginBottom: 4 }}>
+            <Title level={3} style={{ color: '#ff69b4', marginBottom: 4 }}>
               {greeting} <SmileOutlined />
             </Title>
-            <Text style={{ color: 'rgba(255,255,255,0.85)', fontSize: 15 }}>
+            <Text style={{ color: '#ffb6c1', fontSize: 15 }}>
               {checkedIn ? '今天已经打过卡啦~' : '今天心情怎么样？点一点记录一下'}
             </Text>
             {!checkedIn && (

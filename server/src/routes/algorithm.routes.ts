@@ -178,8 +178,10 @@ router.post('/perception/upload', async (req: AuthRequest, res) => {
             anxiety: Math.round((result.text_emotion_probs[2] || 0) * 100),
             depression: Math.round((result.text_emotion_probs[1] || 0) * 100),
             stress: Math.round((result.audio_risk_prob || 0) * 100),
-            sleepQuality: 50,
-            socialActivity: 50,
+            // ⚠️ 睡眠与社交无法从多模态推理得出，这里不再填 50 这种"看起来像真值"的占位分。
+            // 0 = 未采集；睡眠真实数据只来自用户手动记录（SleepRecord）。
+            sleepQuality: 0,
+            socialActivity: 0,
             emotionalStability: Math.round((1 - (result.text_emotion_probs[2] || 0)) * 100),
             overallScore: Math.round((1 - (result.text_emotion_probs[1] + result.text_emotion_probs[2]) / 2) * 100),
             riskLevel: (result.text_emotion_probs[2] || 0) > 0.5 ? 'MEDIUM' : 'LOW',
@@ -240,6 +242,40 @@ router.get('/baseline/:userId', async (req: AuthRequest, res) => {
     const result = await algorithmBridge.getBaseline(req.params.userId as string);
     if (!result) {
       return res.json({ code: 0, data: null, message: '该用户暂无基线数据' });
+    }
+    res.json({ code: 0, data: result });
+  } catch (error: any) {
+    res.status(error.statusCode || 500).json({ code: error.code || 500, message: error.message });
+  }
+});
+
+// ============================================================
+// 本地语音识别（sherpa-onnx Paraformer）—— 替代浏览器 Web Speech API
+// ============================================================
+
+/**
+ * POST /api/algorithm/asr/transcribe
+ *
+ * 上传一段 16bit PCM WAV（base64），返回本地识别文本。
+ *
+ * Body: { audio_base64: string, sample_rate?: number }
+ *
+ * 与 `/perception/upload` 的区别：那条路做的是「情感感知」，本条只做「转文字」。
+ * 识别完全在本机完成 —— 音频不离开设备，也不依赖外网；这替代了原先的
+ * `webkitSpeechRecognition`（Edge 走微软 Azure、Chrome 走谷歌云）。
+ */
+router.post('/asr/transcribe', async (req: AuthRequest, res) => {
+  try {
+    const { audio_base64, sample_rate } = req.body || {};
+    if (typeof audio_base64 !== 'string' || audio_base64.length === 0) {
+      return res.status(400).json({ code: 400, message: '缺少 audio_base64' });
+    }
+    const result = await algorithmBridge.transcribeAudio({
+      audio_base64,
+      sample_rate: typeof sample_rate === 'number' ? sample_rate : 16000,
+    });
+    if (!result) {
+      return res.json({ code: 0, data: null, message: '算法服务不可用' });
     }
     res.json({ code: 0, data: result });
   } catch (error: any) {

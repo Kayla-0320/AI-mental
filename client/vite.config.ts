@@ -13,6 +13,9 @@ export default defineConfig({
       '/algorithm': {
         target: 'http://localhost:8001',
         changeOrigin: true,
+        // 流式语音识别走 WebSocket：/algorithm/api/v1/asr/ws
+        // 少了 ws:true，握手会被 vite 当成普通 HTTP 处理而失败
+        ws: true,
         rewrite: (path) => path.replace(/^\/algorithm/, ''),
       },
       '/socket.io': {

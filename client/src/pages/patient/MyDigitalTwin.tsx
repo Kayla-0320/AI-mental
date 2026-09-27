@@ -11,7 +11,7 @@ const DIM_LABELS: Record<string, string> = {
   text_emotion: '文本情绪', voice_acoustic: '语音声学', facial: '面部表情',
   circadian: '昼夜节律', cognitive: '认知扭曲', behavior: '行为模式',
   hrv: '心率变异性', breathing: '呼吸模式', behavioral_act: '行为激活',
-  eye: '眼动模式', voice_semantics: '语音语义',
+  eye: '眨眼/头姿', voice_semantics: '语音语义',
 };
 
 export default function MyDigitalTwin() {

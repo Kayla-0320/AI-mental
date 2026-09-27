@@ -7,9 +7,14 @@ import {
   FileTextOutlined, HeartOutlined, PhoneOutlined,
 } from '@ant-design/icons';
 import { RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, Legend, AreaChart, Area } from 'recharts';
-import { profileApi } from '../../services';
+import { profileApi, extraApi } from '../../services';
 import { useAnxiety } from '../../context/AnxietyContext';
 import { useOnDeviceInference } from '../../hooks/useOnDeviceInference';
+import {
+  RPPG_UNAVAILABLE_REASON,
+  BREATHING_UNAVAILABLE_REASON,
+  SLEEP_UNAVAILABLE_REASON,
+} from '../../hooks/perceptionCapabilities';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -143,7 +148,8 @@ function OnDeviceInferencePanel() {
 
 export default function Profile() {
   const navigate = useNavigate();
-  const { comprehensiveState, modalityStatus, updateCounter, keyboardMetrics, textMetrics, voiceMetrics, facialMetrics, circadianMetrics, cognitiveMetrics, hrvMetrics, breathingMetrics, behavioralMetrics, eyeMetrics, voiceSemanticsMetrics, baseline, baselineDeviation, getZScoreForValue, adaptiveWeights, moodTrajectory, getWeeklyReport } = useAnxiety();
+  const { comprehensiveState, modalityStatus, updateCounter, keyboardMetrics, textMetrics, voiceMetrics, facialMetrics, circadianMetrics, cognitiveMetrics, hrvMetrics, breathingMetrics, behavioralMetrics, eyeMetrics, voiceSemanticsMetrics, baseline, baselineDeviation, getZScoreForValue, adaptiveWeights, moodTrajectory, getWeeklyReport, cameraEnabled, mediaNotice, toggleCamera } = useAnxiety();
+  const [mediaToggling, setMediaToggling] = useState(false);
   const [profile, setProfile] = useState<any>(null);
   const [moodTrend, setMoodTrend] = useState<any[]>([]);
   // 画像数据不可用标记：接口失败时不得伪造分数与结论，改为显式提示
@@ -165,20 +171,61 @@ export default function Profile() {
   const safetyTriggeredRef = useRef(false);
 
   // ===== 睡眠监测状态 =====
-  const [sleepLogs, setSleepLogs] = useState<any[]>([
-    { date: '09-10', duration: 7.5, quality: 7, bedtime: '23:30', note: '正常入睡' },
-    { date: '09-11', duration: 6.0, quality: 5, bedtime: '00:15', note: '入睡困难' },
-    { date: '09-12', duration: 8.0, quality: 8, bedtime: '23:00', note: '睡得很好' },
-    { date: '09-13', duration: 5.5, quality: 4, bedtime: '01:00', note: '多梦易醒' },
-    { date: '09-14', duration: 7.0, quality: 6, bedtime: '23:45', note: '一般' },
-    { date: '09-15', duration: 7.5, quality: 7, bedtime: '23:15', note: '不错' },
-    { date: '09-16', duration: 6.5, quality: 6, bedtime: '00:00', note: '稍晚睡' },
-  ]);
+  // ⚠️ 睡眠不可自动检测：这里只保存用户「手动记录」的真实数据，不预置任何假记录。
+  // （原实现在这里写死了 7 条睡眠记录，会被当成真实睡眠数据展示，已删除）
+  const [sleepLogs, setSleepLogs] = useState<any[]>([]);
+  const [sleepLoading, setSleepLoading] = useState(false);
+  const [sleepSaving, setSleepSaving] = useState(false);
   const [sleepFormOpen, setSleepFormOpen] = useState(false);
   const [sleepDuration, setSleepDuration] = useState(7);
   const [sleepQuality, setSleepQuality] = useState(6);
   const [sleepBedtime, setSleepBedtime] = useState('23:00');
   const [sleepNote, setSleepNote] = useState('');
+
+  // 拉取用户真实睡眠记录（无记录则保持空，不编造）
+  const loadSleepRecords = useCallback(async () => {
+    setSleepLoading(true);
+    try {
+      const res = await extraApi.getSleepRecords(30) as any;
+      const records = res?.data || res || [];
+      setSleepLogs((Array.isArray(records) ? records : []).map((r: any) => {
+        const bed = new Date(r.bedTime);
+        const wake = new Date(r.wakeTime);
+        return {
+          id: r.id,
+          date: bed.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }),
+          duration: r.duration,
+          quality: r.quality,
+          bedtime: bed.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }),
+          wakeTime: wake.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }),
+          note: r.notes || r.dreamRecall || '',
+        };
+      }));
+    } catch {
+      // 接口失败时保持空列表：没有数据就是没有数据，不用假数据填充
+      setSleepLogs([]);
+    } finally {
+      setSleepLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { loadSleepRecords(); }, [loadSleepRecords]);
+
+  // 由「入睡时间 + 时长」推导起床时间（后端要求 bedTime/wakeTime 成对）
+  const buildSleepTimes = () => {
+    const toLocalIso = (d: Date) => {
+      const pad = (n: number) => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:00`;
+    };
+    const [hStr, mStr] = (sleepBedtime || '23:00').split(':');
+    const bedHour = Number(hStr);
+    const bedMinute = Number(mStr);
+    const bed = new Date();
+    bed.setHours(Number.isFinite(bedHour) ? bedHour : 23, Number.isFinite(bedMinute) ? bedMinute : 0, 0, 0);
+    if (bed.getTime() > Date.now()) bed.setDate(bed.getDate() - 1); // 今天还没到点则算昨晚入睡
+    const wake = new Date(bed.getTime() + sleepDuration * 60 * 60 * 1000);
+    return { bedTime: toLocalIso(bed), wakeTime: toLocalIso(wake) };
+  };
 
   // PHQ-9 第9题安全拦截
   useEffect(() => {
@@ -371,21 +418,34 @@ export default function Profile() {
     // 青少年同龄常模均值（基于 CMDC 数据集模拟）
     return {
       anxiety: 38, depression: 30, stress: 42,
-      sleepQuality: 62, socialActivity: 58, emotionalStability: 55,
+      socialActivity: 58, emotionalStability: 55,
     };
   };
 
+  // 睡眠维度：只有用户真实手动记录过睡眠，才允许出现在雷达图上。
+  // 平台没有夜间传感器，绝不能用情绪分推算出一个"睡眠 44 分"。
+  const sleepDimensionValue = sleepLogs.length > 0
+    ? Math.round((sleepLogs.reduce((s, l) => s + l.quality, 0) / sleepLogs.length) * 10)
+    : null;
+
+  const buildSleepDimension = (peerValue: number) => (
+    sleepDimensionValue === null
+      ? [{ subject: '睡眠(未记录)', value: 0, peer: 0 }]
+      : [{ subject: '睡眠(手动)', value: Math.min(100, Math.max(0, sleepDimensionValue)), peer: peerValue }]
+  );
+
   const getDynamicRadarData = () => {
     const hasMultimodalData = comprehensiveState.activeModalities.length > 0;
-    const peer = getPeerBaselineData();
+    const peerSleep = 62;
     
     if (!hasMultimodalData) {
+      const peer = getPeerBaselineData();
       // 没有多模态数据时，使用 profile 静态数据
       return [
         { subject: '焦虑', value: profile.anxiety, peer: peer.anxiety },
         { subject: '抑郁', value: profile.depression, peer: peer.depression },
         { subject: '压力', value: profile.stress, peer: peer.stress },
-        { subject: '睡眠', value: profile.sleepQuality, peer: peer.sleepQuality },
+        ...buildSleepDimension(peerSleep),
         { subject: '社交', value: profile.socialActivity, peer: peer.socialActivity },
         { subject: '情绪稳定', value: profile.emotionalStability, peer: peer.emotionalStability },
       ];
@@ -408,9 +468,6 @@ export default function Profile() {
     // 压力维度：愤怒概率 + 焦虑概率的加权 (0-100)
     const stress = Math.round((angerProb * 0.7 + anxietyProb * 0.3) * 100);
     
-    // 睡眠维度：高负面情绪=低睡眠 (0-100)
-    const sleepQuality = Math.round(Math.max(0, (1 - (anxietyProb + sadnessProb + angerProb) * 0.8) * 100));
-    
     // 社交维度：快乐概率 + 部分中性 (0-100)
     const socialActivity = Math.round((happinessProb * 0.7 + neutralProb * 0.3) * 100);
     
@@ -422,7 +479,7 @@ export default function Profile() {
       { subject: '焦虑', value: Math.min(100, Math.max(0, anxiety)), peer: peerBaseline.anxiety },
       { subject: '抑郁', value: Math.min(100, Math.max(0, depression)), peer: peerBaseline.depression },
       { subject: '压力', value: Math.min(100, Math.max(0, stress)), peer: peerBaseline.stress },
-      { subject: '睡眠', value: Math.min(100, Math.max(0, sleepQuality)), peer: peerBaseline.sleepQuality },
+      ...buildSleepDimension(peerSleep),
       { subject: '社交', value: Math.min(100, Math.max(0, socialActivity)), peer: peerBaseline.socialActivity },
       { subject: '情绪稳定', value: Math.min(100, Math.max(0, emotionalStability)), peer: peerBaseline.emotionalStability },
     ];
@@ -526,6 +583,10 @@ export default function Profile() {
             <div style={{ marginTop: 8, padding: '8px 12px', background: '#f6ffed', borderRadius: 8, fontSize: 12, color: '#389e0d' }}>
               <strong>同龄对比说明：</strong>绿色虚线为同龄青少年（12-17岁）常模基线，紫色区域为你的实际评分。
               超出基线表示该维度高于同龄平均水平，低于基线表示低于同龄平均水平。
+              <div style={{ marginTop: 4, color: '#ad6800' }}>
+                <strong>关于「睡眠」维度：</strong>平台无法检测睡眠，该维度只在你自己手动记录过睡眠后才会出现；
+                显示「睡眠(未记录)」时不参与任何对比。
+              </div>
             </div>
           </Card>
         </Col>
@@ -547,13 +608,18 @@ export default function Profile() {
           </Card>
         </Col>
 
-        {/* 睡眠监测模块 */}
+        {/* 睡眠监测模块 —— 平台无夜间传感器，睡眠只能由用户手动记录 */}
         <Col xs={24}>
           <Card 
-            title={<Space><ClockCircleOutlined /> 睡眠监测 <Tag color="blue" style={{ fontSize: 11 }}>手动记录</Tag></Space>}
+            title={<Space><ClockCircleOutlined /> 睡眠监测 <Tag color="blue" style={{ fontSize: 11 }}>仅手动记录</Tag><Tag color="orange" style={{ fontSize: 11 }}>非设备测量</Tag></Space>}
             extra={<Button type="primary" size="small" onClick={() => setSleepFormOpen(!sleepFormOpen)}>{sleepFormOpen ? '收起' : '+ 记录睡眠'}</Button>}
             style={{ borderRadius: 12 }}
           >
+            <div style={{ marginBottom: 12, padding: '6px 12px', background: '#fff7e6', borderRadius: 6, fontSize: 12, color: '#ad6800' }}>
+              平台没有可穿戴设备或夜间传感器，<strong>无法自动检测睡眠</strong>。
+              下方数据全部来自你自己的记录，没有任何自动推算。
+            </div>
+
             {/* 睡眠记录表单 */}
             {sleepFormOpen && (
               <div style={{ padding: 16, background: '#f0f5ff', borderRadius: 8, marginBottom: 16 }}>
@@ -563,7 +629,7 @@ export default function Profile() {
                     <Input type="number" min={0} max={24} step={0.5} value={sleepDuration} onChange={(e: ChangeEvent<HTMLInputElement>) => setSleepDuration(Number(e.target.value))} style={{ borderRadius: 8 }} />
                   </Col>
                   <Col xs={24} md={6}>
-                    <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>睡眠质量 (1-10)</Text>
+                    <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>主观睡眠质量 (1-10)</Text>
                     <Input type="number" min={1} max={10} value={sleepQuality} onChange={(e: ChangeEvent<HTMLInputElement>) => setSleepQuality(Number(e.target.value))} style={{ borderRadius: 8 }} />
                   </Col>
                   <Col xs={24} md={6}>
@@ -575,62 +641,91 @@ export default function Profile() {
                     <Input value={sleepNote} onChange={(e: ChangeEvent<HTMLInputElement>) => setSleepNote(e.target.value)} placeholder="如：多梦、入睡困难" style={{ borderRadius: 8 }} />
                   </Col>
                 </Row>
-                <Button type="primary" style={{ marginTop: 12, borderRadius: 8 }} onClick={() => {
-                  const today = new Date().toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' });
-                  setSleepLogs(prev => [...prev, { date: today, duration: sleepDuration, quality: sleepQuality, bedtime: sleepBedtime, note: sleepNote }]);
-                  setSleepFormOpen(false);
-                  message.success('睡眠记录已保存');
+                <Button type="primary" loading={sleepSaving} style={{ marginTop: 12, borderRadius: 8 }} onClick={async () => {
+                  if (!(sleepDuration > 0 && sleepDuration <= 24)) {
+                    message.warning('请填写 0~24 之间的睡眠时长');
+                    return;
+                  }
+                  setSleepSaving(true);
+                  try {
+                    const { bedTime, wakeTime } = buildSleepTimes();
+                    await extraApi.recordSleep({
+                      bedTime,
+                      wakeTime,
+                      quality: sleepQuality,
+                      notes: sleepNote || undefined,
+                    });
+                    await loadSleepRecords();
+                    setSleepFormOpen(false);
+                    setSleepNote('');
+                    message.success('睡眠记录已保存');
+                  } catch {
+                    message.error('保存失败，请稍后重试');
+                  } finally {
+                    setSleepSaving(false);
+                  }
                 }}>保存记录</Button>
               </div>
             )}
 
-            {/* 睡眠统计摘要 */}
-            <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
-              <Col xs={8}>
-                <div style={{ textAlign: 'center', padding: 12, background: '#f6ffed', borderRadius: 8 }}>
-                  <Text type="secondary" style={{ fontSize: 12 }}>平均时长</Text>
-                  <div style={{ fontSize: 24, fontWeight: 'bold', color: '#52c41a' }}>
-                    {(sleepLogs.reduce((s, l) => s + l.duration, 0) / sleepLogs.length).toFixed(1)}h
-                  </div>
-                </div>
-              </Col>
-              <Col xs={8}>
-                <div style={{ textAlign: 'center', padding: 12, background: '#f0f5ff', borderRadius: 8 }}>
-                  <Text type="secondary" style={{ fontSize: 12 }}>平均质量</Text>
-                  <div style={{ fontSize: 24, fontWeight: 'bold', color: '#6366f1' }}>
-                    {(sleepLogs.reduce((s, l) => s + l.quality, 0) / sleepLogs.length).toFixed(1)}/10
-                  </div>
-                </div>
-              </Col>
-              <Col xs={8}>
-                <div style={{ textAlign: 'center', padding: 12, background: '#fff7e6', borderRadius: 8 }}>
-                  <Text type="secondary" style={{ fontSize: 12 }}>平均入睡</Text>
-                  <div style={{ fontSize: 24, fontWeight: 'bold', color: '#fa8c16' }}>
-                    {sleepLogs.map(l => l.bedtime).sort().slice(0, 3).pop() || '--'}
-                  </div>
-                </div>
-              </Col>
-            </Row>
+            {sleepLoading ? (
+              <Skeleton active paragraph={{ rows: 3 }} />
+            ) : sleepLogs.length === 0 ? (
+              <Empty description="还没有睡眠记录，点击右上角「记录睡眠」手动添加" />
+            ) : (
+              <>
+                {/* 睡眠统计摘要 */}
+                <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
+                  <Col xs={8}>
+                    <div style={{ textAlign: 'center', padding: 12, background: '#f6ffed', borderRadius: 8 }}>
+                      <Text type="secondary" style={{ fontSize: 12 }}>平均时长</Text>
+                      <div style={{ fontSize: 24, fontWeight: 'bold', color: '#52c41a' }}>
+                        {(sleepLogs.reduce((s, l) => s + l.duration, 0) / sleepLogs.length).toFixed(1)}h
+                      </div>
+                    </div>
+                  </Col>
+                  <Col xs={8}>
+                    <div style={{ textAlign: 'center', padding: 12, background: '#f0f5ff', borderRadius: 8 }}>
+                      <Text type="secondary" style={{ fontSize: 12 }}>平均主观质量</Text>
+                      <div style={{ fontSize: 24, fontWeight: 'bold', color: '#6366f1' }}>
+                        {(sleepLogs.reduce((s, l) => s + l.quality, 0) / sleepLogs.length).toFixed(1)}/10
+                      </div>
+                    </div>
+                  </Col>
+                  <Col xs={8}>
+                    <div style={{ textAlign: 'center', padding: 12, background: '#fff7e6', borderRadius: 8 }}>
+                      <Text type="secondary" style={{ fontSize: 12 }}>最近一次入睡</Text>
+                      <div style={{ fontSize: 24, fontWeight: 'bold', color: '#fa8c16' }}>
+                        {sleepLogs[0]?.bedtime || '--'}
+                      </div>
+                    </div>
+                  </Col>
+                </Row>
 
-            {/* 睡眠趋势图 */}
-            <ResponsiveContainer width="100%" height={180}>
-              <LineChart data={sleepLogs.slice(-7)}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="date" tick={{ fontSize: 11 }} />
-                <YAxis yAxisId="left" domain={[0, 12]} tick={{ fontSize: 11 }} />
-                <YAxis yAxisId="right" orientation="right" domain={[0, 10]} tick={{ fontSize: 11 }} />
-                <Tooltip />
-                <Legend />
-                <Line yAxisId="left" type="monotone" dataKey="duration" name="时长(h)" stroke="#52c41a" strokeWidth={2} dot={{ fill: '#52c41a' }} />
-                <Line yAxisId="right" type="monotone" dataKey="quality" name="质量(1-10)" stroke="#6366f1" strokeWidth={2} dot={{ fill: '#6366f1' }} />
-              </LineChart>
-            </ResponsiveContainer>
+                {/* 睡眠趋势图（仅展示用户手动记录的数据点） */}
+                <ResponsiveContainer width="100%" height={180}>
+                  <LineChart data={[...sleepLogs].reverse().slice(-7)}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                    <YAxis yAxisId="left" domain={[0, 12]} tick={{ fontSize: 11 }} />
+                    <YAxis yAxisId="right" orientation="right" domain={[0, 10]} tick={{ fontSize: 11 }} />
+                    <Tooltip />
+                    <Legend />
+                    <Line yAxisId="left" type="monotone" dataKey="duration" name="时长(h)" stroke="#52c41a" strokeWidth={2} dot={{ fill: '#52c41a' }} />
+                    <Line yAxisId="right" type="monotone" dataKey="quality" name="主观质量(1-10)" stroke="#6366f1" strokeWidth={2} dot={{ fill: '#6366f1' }} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </>
+            )}
 
-            {/* 同龄对比提示 */}
+            {/* 同龄对比提示（仅在有本人记录时才给对比结论） */}
             <div style={{ marginTop: 8, padding: '6px 12px', background: '#fffbe6', borderRadius: 6, fontSize: 12, color: '#ad8b00' }}>
               <strong>同龄参考：</strong>青少年（12-17岁）建议睡眠时长 8-10 小时，平均入睡时间不晚于 23:00。
               {sleepLogs.length > 0 && (sleepLogs.reduce((s, l) => s + l.duration, 0) / sleepLogs.length) < 8 && (
                 <span style={{ color: '#ff4d4f', marginLeft: 8 }}>你的平均睡眠时长低于建议值，建议调整作息。</span>
+              )}
+              {sleepLogs.length === 0 && (
+                <span style={{ marginLeft: 8 }}>你还没有记录过睡眠，因此这里不做任何个人对比。</span>
               )}
             </div>
           </Card>
@@ -676,10 +771,9 @@ export default function Profile() {
                       { label: '焦虑', value: dynamicProfile.profile.anxiety, color: '#ff4d4f' },
                       { label: '抑郁', value: dynamicProfile.profile.depression, color: '#722ed1' },
                       { label: '压力', value: dynamicProfile.profile.stress, color: '#fa8c16' },
-                      { label: '睡眠', value: dynamicProfile.profile.sleepQuality, color: '#1890ff' },
                       { label: '社交', value: dynamicProfile.profile.socialActivity, color: '#52c41a' },
                       { label: '情绪稳定', value: dynamicProfile.profile.emotionalStability, color: '#13c2c2' },
-                    ].map(({ label, value, color }) => (
+                    ].filter(m => typeof m.value === 'number').map(({ label, value, color }) => (
                       <Col xs={12} key={label}>
                         <div style={{ marginBottom: 4 }}>
                           <Text type="secondary" style={{ fontSize: 12 }}>{label}</Text>
@@ -689,6 +783,10 @@ export default function Profile() {
                       </Col>
                     ))}
                   </Row>
+                  {/* ⚠️ 不再展示"睡眠"维度：平台无法检测睡眠，此前的数值由当天文字情绪推算得出 */}
+                  <div style={{ marginTop: 8, fontSize: 11, color: '#ad6800' }}>
+                    本画像不包含睡眠维度——平台没有夜间传感器，睡眠数据请见下方「睡眠监测」的手动记录。
+                  </div>
                 </Col>
               </Row>
               <Divider style={{ margin: '16px 0' }} />
@@ -703,7 +801,7 @@ export default function Profile() {
             title={
               <Space>
                 <ThunderboltOutlined /> 实时多模态情绪分析
-                <Tag color="purple" style={{ fontSize: 12 }}>AI 11 模态融合</Tag>
+                <Tag color="purple" style={{ fontSize: 12 }}>AI 多模态融合</Tag>
                 {comprehensiveState.activeModalities.length > 0 && (
                   <Tag color="green">{comprehensiveState.activeModalities.length} 个模态采集中</Tag>
                 )}
@@ -714,28 +812,54 @@ export default function Profile() {
                 <Text type="secondary" style={{ fontSize: 12 }}>
                   <ClockCircleOutlined /> {comprehensiveState.lastUpdated > 0 ? new Date(comprehensiveState.lastUpdated).toLocaleTimeString() : '等待数据'}
                 </Text>
-                {/* 手动启动按钮 */}
-                <Button 
-                  type="primary" 
+                {/* 采集开关。
+                    改造前这里是一个只能开、不能关的「启动分析」按钮，点完还会弹 alert
+                    说"如果还是没有变化，请检查摄像头/麦克风权限" —— 等于在引导用户再点一次。
+                    而每次点击都会真的再开一路摄像头 + 麦克风（`start()` 覆盖写、无重入守卫），
+                    实测连点 4 次泄漏出 5 条 live 麦克风轨道。
+                    现在它是一个真正的开关，并且失败原因直接显示在下方。 */}
+                <Button
+                  type={cameraEnabled ? 'default' : 'primary'}
+                  danger={cameraEnabled}
                   size="small"
-                  onClick={() => {
-                    console.log('[Profile] 手动启动按钮被点击');
-                    // 触发一个自定义事件，让 AnxietyContext 监听到并启动分析
-                    window.dispatchEvent(new CustomEvent('start-multimodal-analysis'));
-                    // 显示提示
-                    alert('已发送启动指令！请等待 3 秒后查看调试面板变化。\n\n如果还是没有变化，请检查：\n1. 浏览器是否允许了摄像头/麦克风权限\n2. 控制台是否有红色错误信息');
+                  loading={mediaToggling}
+                  onClick={async () => {
+                    setMediaToggling(true);
+                    try {
+                      await toggleCamera();
+                    } finally {
+                      setMediaToggling(false);
+                    }
                   }}
                 >
-                  启动分析
+                  {cameraEnabled ? '关闭采集' : '开启采集'}
                 </Button>
               </Space>
             }
             style={{ borderRadius: 12 }}
           >
+            {/* 采集失败必须可见：改造前摄像头启动失败被 start() 静默吞掉，
+                "用户拒了摄像头权限"的表现是界面显示一切正常、实际一个数据都没有。 */}
+            {mediaNotice && (
+              <Alert
+                type="warning"
+                showIcon
+                style={{ marginBottom: 12 }}
+                message={mediaNotice}
+              />
+            )}
+            {facialMetrics.unavailableReason && !mediaNotice && (
+              <Alert
+                type="info"
+                showIcon
+                style={{ marginBottom: 12 }}
+                message={`面部读数不可用：${facialMetrics.unavailableReason}`}
+              />
+            )}
             {/* 11 模态状态面板 */}
             <div style={{ padding: '12px 16px', background: '#f5f5f5', borderRadius: 8, marginBottom: 16 }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-                <div style={{ fontWeight: 600, fontSize: 13, color: '#5b4a8a' }}> 11 模态实时状态</div>
+                <div style={{ fontWeight: 600, fontSize: 13, color: '#5b4a8a' }}> 模态实时状态</div>
                 <Space size={4}>
                   {baselineDeviation.calibrated && (
                     <Tag color={baselineDeviation.maxDeviation > 2 ? 'red' : 'green'} style={{ fontSize: 10, lineHeight: '16px', padding: '0 6px' }}>
@@ -813,11 +937,11 @@ export default function Profile() {
                 <div style={{ fontSize: 10, color: '#999', fontWeight: 500, marginBottom: 4 }}>🧠 认知分析层</div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 6 }}>
                   <div style={{ padding: 8, background: circadianMetrics.isActive ? '#e6fffb' : '#fff', borderRadius: 6, border: `1px solid ${circadianMetrics.isActive ? '#87e8de' : '#d9d9d9'}` }}>
-                    <div style={{ fontWeight: 600, fontSize: 12 }}>🕐 昼夜节律</div>
+                    <div style={{ fontWeight: 600, fontSize: 12 }}>🕐 昼夜活动</div>
                     <div style={{ fontSize: 11, lineHeight: 1.7, color: '#555' }}>
-                      <div>状态：{circadianMetrics.isActive ? '✅ 采集中' : '⏳ 等待活动记录'}</div>
-                      <div>规律性：{Math.round((circadianMetrics.regularityScore || 0) * 100)}%</div>
-                      <div>深夜风险：{Math.round((circadianMetrics.lateNightRisk || 0) * 100)}%</div>
+                      <div>状态：{circadianMetrics.isActive ? '✅ 记录中' : '⏳ 等待活动记录'}</div>
+                      <div>时间规律性：{(circadianMetrics.activitySampleCount || 0) >= 10 ? `${Math.round((circadianMetrics.regularityScore || 0) * 100)}%` : `样本不足(${circadianMetrics.activitySampleCount || 0}/10)`}</div>
+                      <div>深夜活动风险：{Math.round((circadianMetrics.lateNightRisk || 0) * 100)}%</div>
                     </div>
                   </div>
                   <div style={{ padding: 8, background: (cognitiveMetrics.riskScore || 0) > 0 || cognitiveMetrics.timestamp > 0 ? '#fff0f6' : '#fff', borderRadius: 6, border: `1px solid ${(cognitiveMetrics.riskScore || 0) > 0 ? '#ffadd2' : '#d9d9d9'}` }}>
@@ -840,27 +964,30 @@ export default function Profile() {
               </div>
             
               {/* 生理行为层 */}
+              {/* ⚠️ 心率(rPPG)/呼吸 本设备无采集能力：卡片保留但置灰，不显示任何数值 */}
               <div>
                 <div style={{ fontSize: 10, color: '#999', fontWeight: 500, marginBottom: 4 }}> 生理行为层</div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 6 }}>
-                  <div style={{ padding: 8, background: hrvMetrics.isMeasuring ? '#fff1f0' : '#fff', borderRadius: 6, border: `1px solid ${(() => { const hrZ = Math.abs(getZScoreForValue('heartRate', hrvMetrics.heartRate || 0)); return hrZ > 2 ? '#ff4d4f' : hrvMetrics.isMeasuring ? '#ffa39e' : '#d9d9d9'; })()}` }}>
-                    <div style={{ fontWeight: 600, fontSize: 12 }}>❤️ rPPG 心率</div>
-                    <div style={{ fontSize: 11, lineHeight: 1.7, color: '#555' }}>
-                      <div>测量：{hrvMetrics.isMeasuring ? '✅' : '⏳ 需面部帧≥30'}</div>
-                      <div>心率：{hrvMetrics.heartRate || '--'} bpm
-                        {baseline.heartRate.n >= 2 && <span style={{ color: Math.abs(getZScoreForValue('heartRate', hrvMetrics.heartRate || 0)) > 2 ? '#ff4d4f' : '#999' }}> (均值 {Math.round(baseline.heartRate.mean)})</span>}
-                      </div>
-                      <div>HRV：{hrvMetrics.hrvRmssd || '--'} ms</div>
+                  <div style={{ padding: 8, background: '#fafafa', borderRadius: 6, border: '1px dashed #e0e0e0' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 4 }}>
+                      <div style={{ fontWeight: 600, fontSize: 12, color: '#bfbfbf' }}>❤️ rPPG 心率</div>
+                      <Tag color="default" style={{ fontSize: 9, lineHeight: '14px', padding: '0 4px', margin: 0, color: '#8c8c8c' }}>暂不支持检测</Tag>
+                    </div>
+                    <div style={{ fontSize: 11, lineHeight: 1.7, color: '#bfbfbf' }}>
+                      <div>心率：-- bpm</div>
+                      <div>HRV：-- ms</div>
+                      <div style={{ fontSize: 10 }}>{RPPG_UNAVAILABLE_REASON}</div>
                     </div>
                   </div>
-                  <div style={{ padding: 8, background: breathingMetrics.isMeasuring ? '#e6fffb' : '#fff', borderRadius: 6, border: `1px solid ${(() => { const brZ = Math.abs(getZScoreForValue('breathingRate', breathingMetrics.breathingRate || 0)); return brZ > 2 ? '#ff4d4f' : breathingMetrics.isMeasuring ? '#87e8de' : '#d9d9d9'; })()}` }}>
-                    <div style={{ fontWeight: 600, fontSize: 12 }}>🌬️ 呼吸模式</div>
-                    <div style={{ fontSize: 11, lineHeight: 1.7, color: '#555' }}>
-                      <div>测量：{breathingMetrics.isMeasuring ? '✅' : ' 需音频能量≥60'}</div>
-                      <div>频率：{breathingMetrics.breathingRate || '--'} 次/分
-                        {baseline.breathingRate.n >= 2 && <span style={{ color: Math.abs(getZScoreForValue('breathingRate', breathingMetrics.breathingRate || 0)) > 2 ? '#ff4d4f' : '#999' }}> (均值 {Math.round(baseline.breathingRate.mean)})</span>}
-                      </div>
-                      <div>叹气：{breathingMetrics.sighCount || 0} 次</div>
+                  <div style={{ padding: 8, background: '#fafafa', borderRadius: 6, border: '1px dashed #e0e0e0' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 4 }}>
+                      <div style={{ fontWeight: 600, fontSize: 12, color: '#bfbfbf' }}>🌬️ 呼吸模式</div>
+                      <Tag color="default" style={{ fontSize: 9, lineHeight: '14px', padding: '0 4px', margin: 0, color: '#8c8c8c' }}>暂不支持检测</Tag>
+                    </div>
+                    <div style={{ fontSize: 11, lineHeight: 1.7, color: '#bfbfbf' }}>
+                      <div>频率：-- 次/分</div>
+                      <div>叹气：-- 次</div>
+                      <div style={{ fontSize: 10 }}>{BREATHING_UNAVAILABLE_REASON}</div>
                     </div>
                   </div>
                   <div style={{ padding: 8, background: behavioralMetrics.isActive ? '#f0f5ff' : '#fff', borderRadius: 6, border: `1px solid ${behavioralMetrics.isActive ? '#adc6ff' : '#d9d9d9'}` }}>
@@ -872,13 +999,18 @@ export default function Profile() {
                     </div>
                   </div>
                   <div style={{ padding: 8, background: eyeMetrics.isMeasuring ? '#f9f0ff' : '#fff', borderRadius: 6, border: `1px solid ${(() => { const blZ = Math.abs(getZScoreForValue('blinkRate', eyeMetrics.blinkRate || 0)); return blZ > 2 ? '#ff4d4f' : eyeMetrics.isMeasuring ? '#d3adf7' : '#d9d9d9'; })()}` }}>
-                    <div style={{ fontWeight: 600, fontSize: 12 }}>👁️ 眼动模式</div>
+                    <div style={{ fontWeight: 600, fontSize: 12 }}>👁️ 眨眼 / 头姿</div>
                     <div style={{ fontSize: 11, lineHeight: 1.7, color: '#555' }}>
                       <div>测量：{eyeMetrics.isMeasuring ? '✅' : '⏳ 需面部帧数据'}</div>
                       <div>眨眼：{eyeMetrics.blinkRate || '--'} 次/分
                         {baseline.blinkRate.n >= 2 && <span style={{ color: Math.abs(getZScoreForValue('blinkRate', eyeMetrics.blinkRate || 0)) > 2 ? '#ff4d4f' : '#999' }}> (均值 {Math.round(baseline.blinkRate.mean)})</span>}
                       </div>
-                      <div>向下：{Math.round((eyeMetrics.downwardGazeRatio || 0) * 100)}%</div>
+                      <div>低头帧占比：{Math.round((eyeMetrics.downwardGazeRatio || 0) * 100)}%</div>
+                      <div style={{ fontSize: 10, color: '#bfbfbf' }}>
+                        {eyeMetrics.isMeasuring
+                          ? `眨眼来源：${eyeMetrics.blinkMethod === 'ear' ? 'EAR 降级' : '眼睑闭合度'}（头姿为注视代理）`
+                          : '开启摄像头后由面部帧计算'}
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -888,8 +1020,13 @@ export default function Profile() {
               <div style={{ marginTop: 8, padding: 8, background: '#fffbe6', borderRadius: 6, fontSize: 11, color: '#8c6d1f', lineHeight: 1.6 }}>
                 <strong>💡 激活条件：</strong>
                 键盘(自动) · 文字(输入文字) · 语音(开启麦克风) · 面部(开启摄像头) ·
-                昼夜(自动记录) · 认知(文字分析后) · 语义(语音识别后) ·
-                心率(面部帧≥30) · 呼吸(音频能量≥60) · 行为(自动) · 眼动(面部帧数据)
+                昼夜活动(自动记录) · 认知(文字分析后) · 语义(语音识别后) ·
+                行为(自动) · 眼动(面部帧数据)
+                <div style={{ marginTop: 4, color: '#ad6800' }}>
+                  <strong>⚠️ 未接入传感器：</strong>
+                  {RPPG_UNAVAILABLE_REASON} · {BREATHING_UNAVAILABLE_REASON} · {SLEEP_UNAVAILABLE_REASON}
+                  ，这三项不参与焦虑指数计算，界面也不会显示其数值。
+                </div>
               </div>
             </div>
 
@@ -916,10 +1053,11 @@ export default function Profile() {
                 marginBottom: 16,
                 border: '1px solid #e8e0f0',
               }}>
-                <div style={{ display: 'flex', alignItems: 'center', marginBottom: 12 }}>
+                <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
                   <span style={{ fontSize: 20, marginRight: 8 }}>📋</span>
                   <Text strong style={{ fontSize: 15, color: '#5b4a8a' }}>多模态心理观察报告</Text>
                   <Tag color="purple" style={{ marginLeft: 8, fontSize: 11 }}>每3秒更新</Tag>
+                  <Tag color="orange" style={{ marginLeft: 4, fontSize: 11 }}>不含心率/呼吸/睡眠</Tag>
                 </div>
                 <div style={{
                   fontSize: 14,
@@ -929,6 +1067,9 @@ export default function Profile() {
                   letterSpacing: 0.3,
                 }}>
                   {comprehensiveState.narrativeAnalysis}
+                </div>
+                <div style={{ marginTop: 12, padding: '6px 10px', background: '#fff7e6', borderRadius: 6, fontSize: 11, color: '#ad6800', lineHeight: 1.7 }}>
+                  {comprehensiveState.availabilityNote || BREATHING_UNAVAILABLE_REASON + '；' + SLEEP_UNAVAILABLE_REASON}
                 </div>
               </div>
             )}
@@ -1021,7 +1162,7 @@ export default function Profile() {
               {/* 11 模态详细分析 */}
               <Divider style={{ margin: '16px 0' }} />
               <div style={{ display: 'flex', alignItems: 'center', marginBottom: 12 }}>
-                <Text strong style={{ fontSize: 15, color: '#5b4a8a' }}>🔬 11 模态感知详情</Text>
+                <Text strong style={{ fontSize: 15, color: '#5b4a8a' }}>🔬 多模态感知详情</Text>
                 <Tag color="purple" style={{ marginLeft: 8, fontSize: 11 }}>年龄差异化校准</Tag>
               </div>
               <Row gutter={[16, 16]}>
@@ -1204,21 +1345,25 @@ export default function Profile() {
 
                 {/* ===== 认知分析层 ===== */}
 
-                {/* 昼夜节律分析 */}
+                {/* 昼夜活动分析（仅活动时间，非睡眠检测） */}
                 {(circadianMetrics?.isActive || comprehensiveState.circadian?.isActive) && (
                   <Col xs={24} md={8}>
-                    <Card size="small" title={<Space><span style={{ fontSize: 16 }}>🕐</span> 昼夜节律</Space>} style={{ borderRadius: 10, background: '#e6fffb' }}>
+                    <Card size="small" title={<Space><span style={{ fontSize: 16 }}>🕐</span> 昼夜活动 <Tag color="default" style={{ fontSize: 10 }}>非睡眠检测</Tag></Space>} style={{ borderRadius: 10, background: '#e6fffb' }}>
                       <div style={{ fontSize: 13, lineHeight: 2 }}>
-                        <div><Text type="secondary">风险评分：</Text>
-                          <Tag color={(circadianMetrics?.riskScore ?? comprehensiveState.circadian?.riskScore ?? 0) > 0.5 ? 'red' : (circadianMetrics?.riskScore ?? comprehensiveState.circadian?.riskScore ?? 0) > 0.2 ? 'orange' : 'green'} style={{ fontSize: 11 }}>
-                            {Math.round((circadianMetrics?.riskScore ?? comprehensiveState.circadian?.riskScore ?? 0) * 100)}%
+                        <div><Text type="secondary">深夜活动风险：</Text>
+                          <Tag color={(circadianMetrics?.lateNightRisk ?? comprehensiveState.circadian?.lateNightRisk ?? 0) > 0.5 ? 'red' : (circadianMetrics?.lateNightRisk ?? comprehensiveState.circadian?.lateNightRisk ?? 0) > 0.2 ? 'orange' : 'green'} style={{ fontSize: 11 }}>
+                            {Math.round((circadianMetrics?.lateNightRisk ?? comprehensiveState.circadian?.lateNightRisk ?? 0) * 100)}%
                           </Tag>
                         </div>
                         <div><Text type="secondary">最近活动：</Text><Text strong>{Math.round(circadianMetrics?.lastActivityHour ?? comprehensiveState.circadian?.lastActivityHour ?? 0)}</Text> 时</div>
-                        <div><Text type="secondary">作息规律性：</Text>
-                          <Progress percent={Math.round((circadianMetrics?.regularityScore ?? comprehensiveState.circadian?.regularityScore ?? 0) * 100)} showInfo={false} size="small" strokeColor="#13c2c2" style={{ width: 80, display: 'inline-block', verticalAlign: 'middle' }} />
+                        <div><Text type="secondary">活动时间规律性：</Text>
+                          {(circadianMetrics?.activitySampleCount ?? comprehensiveState.circadian?.activitySampleCount ?? 0) >= 10 ? (
+                            <Progress percent={Math.round((circadianMetrics?.regularityScore ?? comprehensiveState.circadian?.regularityScore ?? 0) * 100)} showInfo={false} size="small" strokeColor="#13c2c2" style={{ width: 80, display: 'inline-block', verticalAlign: 'middle' }} />
+                          ) : (
+                            <Text type="secondary" style={{ fontSize: 12 }}>样本不足（{(circadianMetrics?.activitySampleCount ?? comprehensiveState.circadian?.activitySampleCount ?? 0)}/10）</Text>
+                          )}
                         </div>
-                        <div><Text type="secondary">深夜风险：</Text>{Math.round((circadianMetrics?.lateNightRisk ?? comprehensiveState.circadian?.lateNightRisk ?? 0) * 100)}%</div>
+                        <div style={{ fontSize: 11, color: '#8c8c8c' }}>仅记录平台内活动时间，不代表真实睡眠情况</div>
                       </div>
                     </Card>
                   </Col>
@@ -1262,37 +1407,34 @@ export default function Profile() {
 
                 {/* ===== 生理行为层 ===== */}
 
-                {/* rPPG 心率变异性 */}
-                {(hrvMetrics?.isMeasuring ?? comprehensiveState.hrv?.isMeasuring) && (
-                  <Col xs={24} md={8}>
-                    <Card size="small" title={<Space><span style={{ fontSize: 16 }}>❤️</span> rPPG 心率变异性</Space>} style={{ borderRadius: 10, background: '#fff1f0' }}>
-                      <div style={{ fontSize: 13, lineHeight: 2 }}>
-                        <div><Text type="secondary">心率：</Text><Text strong style={{ fontSize: 16, color: '#ff4d4f' }}>{hrvMetrics?.heartRate ?? comprehensiveState.hrv?.heartRate ?? 0}</Text> bpm</div>
-                        <div><Text type="secondary">HRV (RMSSD)：</Text><Text strong>{hrvMetrics?.hrvRmssd ?? comprehensiveState.hrv?.hrvRmssd ?? 0}</Text> ms</div>
-                        <div><Text type="secondary">信号质量：</Text>
-                          <Progress percent={Math.round((hrvMetrics?.signalQuality ?? comprehensiveState.hrv?.signalQuality ?? 0) * 100)} showInfo={false} size="small" strokeColor="#ff4d4f" style={{ width: 80, display: 'inline-block', verticalAlign: 'middle' }} />
-                        </div>
-                        <div><Text type="secondary">风险评分：</Text>{Math.round((hrvMetrics?.riskScore ?? comprehensiveState.hrv?.riskScore ?? 0) * 100)}%</div>
-                      </div>
-                    </Card>
-                  </Col>
-                )}
+                {/* rPPG 心率 / 呼吸：本设备无采集能力，卡片保留但置灰，不显示任何数值 */}
+                <Col xs={24} md={8}>
+                  <Card
+                    size="small"
+                    title={<Space><span style={{ fontSize: 16, filter: 'grayscale(1)' }}>❤️</span> <Text type="secondary">rPPG 心率变异性</Text><Tag color="default" style={{ fontSize: 10 }}>暂不支持检测</Tag></Space>}
+                    style={{ borderRadius: 10, background: '#fafafa', border: '1px dashed #e0e0e0' }}
+                  >
+                    <div style={{ fontSize: 13, lineHeight: 2, color: '#bfbfbf' }}>
+                      <div>心率：-- bpm</div>
+                      <div>HRV (RMSSD)：-- ms</div>
+                      <div style={{ fontSize: 11, color: '#8c8c8c' }}>{RPPG_UNAVAILABLE_REASON}，未启用 rPPG，因此不作任何估算。</div>
+                    </div>
+                  </Card>
+                </Col>
 
-                {/* 呼吸模式分析 */}
-                {(breathingMetrics?.isMeasuring ?? comprehensiveState.breathing?.isMeasuring) && (
-                  <Col xs={24} md={8}>
-                    <Card size="small" title={<Space><span style={{ fontSize: 16 }}>🌬️</span> 呼吸模式</Space>} style={{ borderRadius: 10, background: '#e6fffb' }}>
-                      <div style={{ fontSize: 13, lineHeight: 2 }}>
-                        <div><Text type="secondary">呼吸频率：</Text><Text strong>{breathingMetrics?.breathingRate ?? comprehensiveState.breathing?.breathingRate ?? 0}</Text> 次/分</div>
-                        <div><Text type="secondary">规律性 CV：</Text>{breathingMetrics?.regularityCV ?? comprehensiveState.breathing?.regularityCV ?? 0}</div>
-                        <div><Text type="secondary">叹气次数：</Text><Text strong>{breathingMetrics?.sighCount ?? comprehensiveState.breathing?.sighCount ?? 0}</Text> 次</div>
-                        <div><Text type="secondary">信号质量：</Text>
-                          <Progress percent={Math.round((breathingMetrics?.signalQuality ?? comprehensiveState.breathing?.signalQuality ?? 0) * 100)} showInfo={false} size="small" strokeColor="#36cfc9" style={{ width: 80, display: 'inline-block', verticalAlign: 'middle' }} />
-                        </div>
-                      </div>
-                    </Card>
-                  </Col>
-                )}
+                <Col xs={24} md={8}>
+                  <Card
+                    size="small"
+                    title={<Space><span style={{ fontSize: 16, filter: 'grayscale(1)' }}>🌬️</span> <Text type="secondary">呼吸模式</Text><Tag color="default" style={{ fontSize: 10 }}>暂不支持检测</Tag></Space>}
+                    style={{ borderRadius: 10, background: '#fafafa', border: '1px dashed #e0e0e0' }}
+                  >
+                    <div style={{ fontSize: 13, lineHeight: 2, color: '#bfbfbf' }}>
+                      <div>呼吸频率：-- 次/分</div>
+                      <div>叹气次数：-- 次</div>
+                      <div style={{ fontSize: 11, color: '#8c8c8c' }}>{BREATHING_UNAVAILABLE_REASON}，当前不输出呼吸数值。</div>
+                    </div>
+                  </Card>
+                </Col>
 
                 {/* 行为激活水平 */}
                 {(behavioralMetrics?.isActive ?? comprehensiveState.behavioralActivation?.isActive) && (
@@ -1314,16 +1456,27 @@ export default function Profile() {
                   </Col>
                 )}
 
-                {/* 眼动模式分析 */}
+                {/* 眨眼 / 头姿分析 */}
                 {(eyeMetrics?.isMeasuring ?? comprehensiveState.eyeMovement?.isMeasuring) && (
                   <Col xs={24} md={8}>
-                    <Card size="small" title={<Space><span style={{ fontSize: 16 }}>👁️</span> 眼动模式</Space>} style={{ borderRadius: 10, background: '#f9f0ff' }}>
+                    <Card size="small" title={<Space><span style={{ fontSize: 16 }}>👁️</span> 眨眼 / 头姿</Space>} style={{ borderRadius: 10, background: '#f9f0ff' }}>
                       <div style={{ fontSize: 13, lineHeight: 2 }}>
-                        <div><Text type="secondary">眨眼频率：</Text><Text strong>{eyeMetrics?.blinkRate ?? comprehensiveState.eyeMovement?.blinkRate ?? 0}</Text> 次/分</div>
-                        <div><Text type="secondary">向下注视：</Text>{Math.round((eyeMetrics?.downwardGazeRatio ?? comprehensiveState.eyeMovement?.downwardGazeRatio ?? 0) * 100)}%</div>
-                        <div><Text type="secondary">注意力分散：</Text>{Math.round((eyeMetrics?.attentionScatter ?? comprehensiveState.eyeMovement?.attentionScatter ?? 0) * 100)}%</div>
+                        <div><Text type="secondary">眨眼频率：</Text><Text strong>{eyeMetrics?.blinkRate ?? comprehensiveState.eyeMovement?.blinkRate ?? 0}</Text> 次/分
+                          {eyeMetrics?.blinkMethod && (
+                            <Tag color={eyeMetrics.blinkMethod === 'blendshape' ? 'purple' : 'orange'} style={{ fontSize: 10, marginLeft: 6 }}>
+                              {eyeMetrics.blinkMethod === 'blendshape' ? '眼睑闭合度' : 'EAR 降级'}
+                            </Tag>
+                          )}
+                        </div>
+                        <div><Text type="secondary">平均眨眼时长：</Text>{eyeMetrics?.avgBlinkDuration ?? 0} ms</div>
+                        <div><Text type="secondary">低头帧占比：</Text>{Math.round((eyeMetrics?.downwardGazeRatio ?? comprehensiveState.eyeMovement?.downwardGazeRatio ?? 0) * 100)}%</div>
+                        <div><Text type="secondary">头姿波动：</Text>{Math.round((eyeMetrics?.attentionScatter ?? comprehensiveState.eyeMovement?.attentionScatter ?? 0) * 100)}%</div>
                         <div><Text type="secondary">信号质量：</Text>
                           <Progress percent={Math.round((eyeMetrics?.signalQuality ?? comprehensiveState.eyeMovement?.signalQuality ?? 0) * 100)} showInfo={false} size="small" strokeColor="#9254de" style={{ width: 80, display: 'inline-block', verticalAlign: 'middle' }} />
+                        </div>
+                        <div style={{ fontSize: 11, color: '#bfbfbf', lineHeight: 1.6 }}>
+                          眨眼来自 MediaPipe 眼睑闭合度（60 秒滚动窗口）；低头/头姿波动由头部姿态推算，
+                          本平台未接入虹膜注视跟踪，不构成「注视方向」。
                         </div>
                       </div>
                     </Card>

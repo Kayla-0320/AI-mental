@@ -26,9 +26,17 @@ export default function Sleep() {
   const handleRecord = async () => {
     if (!bedTime || !wakeTime) return message.warning('请选择入睡和起床时间');
     try {
+      // TimePicker 只给了时分，这里补上日期：
+      // 起床时间早于入睡时间说明跨过午夜，起床应记为第二天，否则时长会算成负数。
+      const base = dayjs();
+      let bed = base.hour(bedTime.hour()).minute(bedTime.minute()).second(0).millisecond(0);
+      let wake = base.hour(wakeTime.hour()).minute(wakeTime.minute()).second(0).millisecond(0);
+      if (!wake.isAfter(bed)) wake = wake.add(1, 'day');
+      if (bed.isAfter(dayjs())) bed = bed.subtract(1, 'day'); // 今天还没到点则算昨晚入睡
+      if (!wake.isAfter(bed)) wake = wake.add(1, 'day');
       await extraApi.recordSleep({
-        bedTime: bedTime.toISOString(),
-        wakeTime: wakeTime.toISOString(),
+        bedTime: bed.toISOString(),
+        wakeTime: wake.toISOString(),
         quality,
         notes,
       });
@@ -53,6 +61,10 @@ export default function Sleep() {
         <Button className="cloud-btn" icon={<PlusOutlined />} onClick={() => setModal(true)}>
           记录睡眠
         </Button>
+      </div>
+
+      <div style={{ marginBottom: 16, padding: '8px 12px', background: '#fff7e6', borderRadius: 8, fontSize: 12, color: '#ad6800' }}>
+        平台没有夜间传感器，<strong>无法自动检测睡眠</strong>。这里的数据全部由你手动记录，不做任何推算。
       </div>
 
       <Row gutter={16} style={{ marginBottom: 24 }}>

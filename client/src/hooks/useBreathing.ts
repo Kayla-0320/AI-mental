@@ -1,12 +1,18 @@
 /**
  * 呼吸模式分析 Hook —— 通过麦克风能量变化检测呼吸节律
  * 年龄差异化：不同年龄段正常呼吸频率不同
+ *
+ * ⚠️ 当前 BREATHING_AVAILABLE = false：麦克风能量过零率无法区分
+ * 呼吸、说话与环境噪声，读数会在 5~40 次/分之间乱跳。
+ * 该 Hook 只保留数据结构与接口，不再输出任何呼吸数值，
+ * 待语音识别稳定后改为由语音停顿/气口节奏推断（见 perceptionCapabilities.ts）。
  */
 import { useState, useCallback, useRef } from 'react';
 import type { BreathingAnalysis } from '../types/multimodal.types';
 import { defaultBreathing } from '../types/multimodal.types';
 import type { AgeGroup } from './ageConfig';
 import { getBreathingConfig } from './ageConfig';
+import { BREATHING_AVAILABLE } from './perceptionCapabilities';
 
 export function useBreathing(ageGroup: AgeGroup | null = null) {
   const [metrics, setMetrics] = useState<BreathingAnalysis>({ ...defaultBreathing });
@@ -15,6 +21,9 @@ export function useBreathing(ageGroup: AgeGroup | null = null) {
   const config = getBreathingConfig(ageGroup);
 
   const updateFromAudioEnergy = useCallback((rmsEnergy: number) => {
+    // 不具备呼吸检测能力：不采样、不估算、不更新任何指标
+    if (!BREATHING_AVAILABLE) return;
+
     energyHistoryRef.current.push(rmsEnergy);
     if (energyHistoryRef.current.length > 600) energyHistoryRef.current = energyHistoryRef.current.slice(-600);
 

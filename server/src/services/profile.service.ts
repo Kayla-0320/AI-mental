@@ -69,6 +69,9 @@ class ProfileService {
     // 计算情绪维度
     const moodScores = this.calculateMoodScores(recentMoods);
 
+    // 睡眠维度只能来自用户真实记录（无夜间传感器，禁止由情绪分推算）
+    const realSleepScore = await this.calculateRealSleepQuality(userId);
+
     // 调用 AI 生成画像报告
     let report = '';
     try {
@@ -87,7 +90,8 @@ class ProfileService {
         anxiety: moodScores.anxiety,
         depression: moodScores.depression,
         stress: moodScores.stress,
-        sleepQuality: moodScores.sleepQuality,
+        // 0 表示"用户尚未记录睡眠"，前端据此显示"未采集"而不是把 0 当成睡眠质量
+        sleepQuality: realSleepScore ?? 0,
         socialActivity: moodScores.socialActivity,
         emotionalStability: moodScores.emotionalStability,
         overallScore: moodScores.overall,
@@ -213,6 +217,8 @@ class ProfileService {
       // 如果画像过期且有新消息，重新分析
       if (isStale && hasNewMessages) {
         const dynamicProfile = await aiService.generateDynamicProfile(texts);
+        // 睡眠不参与 AI 文字分析：单独取真实记录（无记录则记 0 = 未采集）
+        const realSleepScore = await this.calculateRealSleepQuality(userId);
         // 保存新画像
         if (patientProfile) {
           await prisma.psychologicalProfile.create({
@@ -221,7 +227,7 @@ class ProfileService {
               anxiety: dynamicProfile.anxiety,
               depression: dynamicProfile.depression,
               stress: dynamicProfile.stress,
-              sleepQuality: dynamicProfile.sleepQuality,
+              sleepQuality: realSleepScore ?? 0,
               socialActivity: dynamicProfile.socialActivity,
               emotionalStability: dynamicProfile.emotionalStability,
               overallScore: dynamicProfile.overallScore,
@@ -239,7 +245,7 @@ class ProfileService {
           hasData: true,
           messageCount: todayMessages.length,
           moodCount: todayMoods.length,
-          profile: dynamicProfile,
+          profile: { ...dynamicProfile, sleepQuality: realSleepScore ?? 0, sleepQualitySource: realSleepScore === null ? 'none' : 'manual_record' },
           updatedAt: new Date(),
         };
       }
@@ -254,6 +260,7 @@ class ProfileService {
           depression: latestDynamicProfile.depression,
           stress: latestDynamicProfile.stress,
           sleepQuality: latestDynamicProfile.sleepQuality,
+          sleepQualitySource: latestDynamicProfile.sleepQuality > 0 ? 'manual_record' : 'none',
           socialActivity: latestDynamicProfile.socialActivity,
           emotionalStability: latestDynamicProfile.emotionalStability,
           overallScore: latestDynamicProfile.overallScore,
@@ -269,11 +276,12 @@ class ProfileService {
     // 如果没有动态画像但有文字，实时分析
     if (texts.length > 0) {
       const dynamicProfile = await aiService.generateDynamicProfile(texts);
+      const realSleepScore = await this.calculateRealSleepQuality(userId);
       return {
         hasData: true,
         messageCount: todayMessages.length,
         moodCount: todayMoods.length,
-        profile: dynamicProfile,
+        profile: { ...dynamicProfile, sleepQuality: realSleepScore ?? 0, sleepQualitySource: realSleepScore === null ? 'none' : 'manual_record' },
         updatedAt: new Date(),
       };
     }
@@ -333,8 +341,10 @@ class ProfileService {
 
   // 计算心情分数
   private calculateMoodScores(moodRecords: any[]) {
+    // ⚠️ 这里不再返回 sleepQuality：
+    // 由心情自评分数反推"睡眠质量"是编造数据，睡眠只能来自用户手动记录。
     if (moodRecords.length === 0) {
-      return { anxiety: 50, depression: 50, stress: 50, sleepQuality: 50, socialActivity: 50, emotionalStability: 50, overall: 50 };
+      return { anxiety: 50, depression: 50, stress: 50, socialActivity: 50, emotionalStability: 50, overall: 50 };
     }
 
     const avgScore = moodRecords.reduce((sum, r) => sum + r.score, 0) / moodRecords.length;
@@ -349,11 +359,28 @@ class ProfileService {
       anxiety: Math.max(0, Math.min(100, 100 - avgMood)),
       depression: Math.max(0, Math.min(100, 100 - avgScore * 10)),
       stress: Math.max(0, Math.min(100, 100 - avgMood * 0.8)),
-      sleepQuality: Math.max(0, Math.min(100, avgScore * 10)),
       socialActivity: Math.max(0, Math.min(100, avgMood)),
       emotionalStability: Math.max(0, Math.min(100, avgMood)),
       overall: Math.round(avgMood),
     };
+  }
+
+  /**
+   * 由用户真实睡眠记录换算 0-100 的睡眠质量分。
+   * 没有任何记录时返回 null —— 表示"未采集"，绝不用其它信号代替。
+   */
+  private async calculateRealSleepQuality(userId: string): Promise<number | null> {
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - 30);
+    const records = await prisma.sleepRecord.findMany({
+      where: { userId, recordDate: { gte: startDate } },
+      orderBy: { recordDate: 'desc' },
+      take: 30,
+    });
+    if (records.length === 0) return null;
+    // 主观质量 1-10 → 0-100
+    const avgQuality = records.reduce((s: number, r: any) => s + (r.quality || 0), 0) / records.length;
+    return Math.max(0, Math.min(100, Math.round(avgQuality * 10)));
   }
 
   // 计算风险等级
@@ -494,7 +521,9 @@ class ProfileService {
         anxiety: latestProfile.anxiety,
         depression: latestProfile.depression,
         stress: latestProfile.stress,
+        // 0 表示患者未手动记录过睡眠（平台无法自动检测）
         sleepQuality: latestProfile.sleepQuality,
+        sleepQualitySource: latestProfile.sleepQuality > 0 ? 'manual_record' : 'none',
         socialActivity: latestProfile.socialActivity,
         emotionalStability: latestProfile.emotionalStability,
         overallScore: latestProfile.overallScore,

@@ -98,3 +98,29 @@ screenshots/
 *.jpeg
 *.gif
 *.bmp
+
+# ===== C2D2 模型产物（显式放行）=====
+# 上面第 64 行 *.safetensors 与第 76 行 *.npz 会把这两个产物一并挡掉，
+# 这里只对 algorithm/artifacts/ 开洞。
+#
+# ⚠️ cognitive_distortion_ckpt/model.safetensors 约 409 MB，
+#    远超 GitHub 单文件 100 MB 硬上限 —— 不配 Git LFS 会被 push 直接拒绝。
+#    见 .gitattributes。若要放弃入库，删掉本段并把 artifacts 加回忽略即可。
+!algorithm/artifacts/
+!algorithm/artifacts/**
+
+# ===== TTS benchmark 试听产物 =====
+# algorithm/tools/benchmark_tts.py 导出的 WAV，脚本可重跑，不入库。
+# 注意：报告 docs/tts_benchmark.md 与原始数据 docs/tts_benchmark*.json **要入库**，
+# 它们是 S0 那道 go/no-go 闸门的结论载体。
+_tts_bench/
+
+# ===== 眨眼「每眼睁开/闭合」第二判定模型（显式放行）=====
+# 上面第 67 行 `*.onnx` 与第 82 行 `models/` 会把下面这个文件一并挡掉。
+# 它只有 46 164 B（Apache-2.0，出处与 SHA-384 见同目录 NOTICE 文件），
+# 并且是运行时按 `/models/open_closed_eye.onnx` 加载的**静态资源** ——
+# 不入库就等于部署后该功能直接失效（加载失败会静默降级回 blendshape）。
+# 注意顺序：必须先把父目录放行，否则后面的 `!文件` 不生效。
+!client/public/models/
+!client/public/models/open_closed_eye.onnx
+!client/public/models/NOTICE-open-closed-eye-0001.txt

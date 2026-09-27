@@ -1,10 +1,13 @@
 /**
  * 多模态情感感知上下文
  *
- * 整合 11 模态感知：
+ * 整合模态感知（当前真实可用 9 项）：
  * 1. 键盘动力学  2. 文本语义分析  3. 声音声学  4. 面部微表情
- * 5. 昼夜节律    6. 认知扭曲      7. rPPG心率  8. 呼吸模式
- * 9. 行为激活    10. 眼动模式     11. 语音深层语义
+ * 5. 昼夜活动    6. 认知扭曲      7. 行为激活  8. 眨眼/头姿
+ * 9. 语音深层语义
+ *
+ * ⚠️ rPPG 心率、呼吸模式、睡眠三项本设备无可靠采集能力，
+ * 一律不产出数值、不参与融合、不进入报告（见 hooks/perceptionCapabilities.ts）。
  *
  * 所有模态均按初中/高中/大学三阶段做年龄差异化校准。
  * 融合策略：基于置信度的动态加权 (Dynamic Confidence Weighting)
@@ -16,11 +19,18 @@ import { useLocation } from 'react-router-dom';
 import { useKeyboardDynamics } from '../hooks/useKeyboardDynamics';
 import { useTextAnalysis } from '../hooks/useTextAnalysis';
 import { useVoiceAnalysis } from '../hooks/useVoiceAnalysis';
-import { useFacialAnalysis } from '../hooks/useFacialAnalysis';
+import { useFacialAnalysis, type FacialFrameSignal } from '../hooks/useFacialAnalysis';
+import { useEyeStateModel, isBlendshapeClosed, type EyeStateModelReport } from '../hooks/useEyeStateModel';
+import type { EyePatchPixels } from '../hooks/eyePatchCanvas';
 import { useCircadianRhythm } from '../hooks/useCircadianRhythm';
 import { useCognitiveDistortion } from '../hooks/useCognitiveDistortion';
 import { useRPPG } from '../hooks/useRPPG';
 import { useBreathing } from '../hooks/useBreathing';
+import {
+  RPPG_AVAILABLE,
+  BREATHING_AVAILABLE,
+  EYE_STATE_MODEL_AVAILABLE,
+} from '../hooks/perceptionCapabilities';
 import { useBehavioralActivation } from '../hooks/useBehavioralActivation';
 import { useEyeTracking } from '../hooks/useEyeTracking';
 import { useVoiceSemantics } from '../hooks/useVoiceSemantics';
@@ -50,10 +60,22 @@ const CARING_MESSAGES = [
   '你的感受很重要，我一直在这里陪着你 🤗',
 ];
 
+// ===== 当前不具备采集能力的模态（诚实披露，禁止编造数值） =====
+const UNAVAILABLE_MODALITIES: string[] = [
+  ...(RPPG_AVAILABLE ? [] : ['心率/HRV（rPPG）']),
+  ...(BREATHING_AVAILABLE ? [] : ['呼吸频率']),
+  '睡眠（无夜间传感器）',
+];
+
+const AVAILABILITY_NOTE =
+  '本报告仅使用真实采集到的信号：键盘动力学、文字语义、语音声学、面部微表情、'
+  + '语音语义、认知扭曲、昼夜活动记录、行为互动、眨眼（眼睑闭合度）。'
+  + '心率、呼吸频率与睡眠本设备无法自动检测，因此不给出任何数值，也不纳入焦虑指数计算。';
+
 // ===== 叙事性多模态分析生成器 =====
-// 将 11 模态数据转化为温暖的心理咨询师式观察报告
+// 将真实可采集的模态数据转化为温暖的心理咨询师式观察报告
 function generateNarrativeAnalysis(state: ComprehensiveEmotionState): string {
-  const { keyboard, text, voice, facial, circadian, cognitiveDistortion, hrv, breathing, behavioralActivation, eyeMovement, voiceSemantics, dominantEmotion, emotionProbs } = state;
+  const { keyboard, text, voice, facial, circadian, cognitiveDistortion, behavioralActivation, eyeMovement, voiceSemantics, dominantEmotion, emotionProbs } = state;
   const paragraphs: string[] = [];
 
   // --- 开场：整体情绪氛围 ---
@@ -162,7 +184,9 @@ function generateNarrativeAnalysis(state: ComprehensiveEmotionState): string {
   }
 
   // --- 面部微表情：表情描述 ---
-  if (facial.isDetecting && facial.frameCount >= 2) {
+  // `facePresent` 是硬门槛：没人脸就不该生成任何关于表情的描述
+  // （否则人离开画面后会继续拿上一帧的读数说话）。
+  if (facial.isDetecting && facial.facePresent && facial.frameCount >= 2) {
     const faceParts: string[] = [];
     if (facial.dominantExpression && facial.dominantExpression !== '平静') {
       const exprDesc: Record<string, string> = {
@@ -177,7 +201,9 @@ function generateNarrativeAnalysis(state: ComprehensiveEmotionState): string {
       faceParts.push(exprDesc[facial.dominantExpression] || `你的主导表情是${facial.dominantExpression}`);
     }
     if (facial.microExpressions.count > 3) {
-      faceParts.push(`我们还捕捉到了${facial.microExpressions.count}次微表情——那些持续时间不到半秒的、你自己可能都没意识到的表情变化`);
+      // 只说**次数**。改造前这里还断言"持续时间不到半秒"，但那个时长是一个
+      // 写死的常量（`avgDuration = 200`），不是测出来的 —— 我们拿不出这个结论。
+      faceParts.push(`我们还捕捉到了${facial.microExpressions.count}次一闪而过的表情变化，那些你自己可能都没意识到`);
     }
     if (facial.expressionIntensity > 0.5) {
       faceParts.push('表情强度比较高，情绪表达很充分');
@@ -188,13 +214,13 @@ function generateNarrativeAnalysis(state: ComprehensiveEmotionState): string {
   }
 
   // --- 新增 7 模态描述 ---
-  // 昼夜节律
+  // 昼夜活动（只描述 App 内活动时间，不推断睡眠）
   if (circadian.isActive && circadian.riskScore > 0.2) {
     if (circadian.lateNightRisk > 0.3) {
-      paragraphs.push(`我们注意到你最近几天深夜还在活动（最近一次在${Math.round(circadian.lastActivityHour)}点左右）。充足的睡眠对心理健康非常重要，试着早点休息好吗？`);
+      paragraphs.push(`我们注意到你最近在深夜（最近一次约${Math.round(circadian.lastActivityHour)}点）还在使用这个平台。深夜时段情绪更容易被放大，如果那段时间你正觉得难受，试着把想说的话留到白天再说，或者找信任的人聊聊。`);
     }
-    if (circadian.regularityScore < 0.4) {
-      paragraphs.push('你的作息时间不太规律，时早时晚。稳定的生物钟有助于情绪稳定，尽量在固定的时间入睡和起床。');
+    if (circadian.activitySampleCount >= 10 && circadian.regularityScore < 0.4) {
+      paragraphs.push('你使用平台的时间比较分散，时早时晚。相对固定的作息节奏有助于情绪稳定——这一点我们只能从你的使用时间观察到，真实的睡眠情况还是以你自己的记录和感受为准。');
     }
   }
 
@@ -211,44 +237,26 @@ function generateNarrativeAnalysis(state: ComprehensiveEmotionState): string {
     }
   }
 
-  // 心率变异性
-  if (hrv.isMeasuring && hrv.signalQuality > 0.3) {
-    const hrvParts: string[] = [];
-    if (hrv.heartRate > 90) hrvParts.push(`你的心率偏高（${hrv.heartRate}bpm），身体可能处于比较紧张的状态`);
-    if (hrv.hrvRmssd < 20) hrvParts.push('心率变异性偏低，身体的自我调节能力可能在下降');
-    if (hrvParts.length > 0) {
-      paragraphs.push(`从生理信号来看，${hrvParts.join('，')}。试试深呼吸放松，帮助身体恢复平静。`);
-    }
-  }
+  // ⚠️ 心率 / 呼吸 / 睡眠：本平台不具备可信采集能力（见 perceptionCapabilities.ts），
+  // 因此报告里不生成任何相关段落，也不做任何数值推算。
+  // 原实现会输出"心率偏高（180bpm）""呼吸频率偏快（xx次/分）"这类凭空数字，已移除。
 
-  // 呼吸模式
-  if (breathing.isMeasuring && breathing.signalQuality > 0.3) {
-    const breathParts: string[] = [];
-    if (breathing.breathingRate > 20) breathParts.push(`呼吸频率偏快（${breathing.breathingRate}次/分），这是焦虑时常见的反应`);
-    if (breathing.breathingRate > 0 && breathing.breathingRate < 10) breathParts.push('呼吸频率偏慢，身体可能处于低唤醒状态');
-    if (breathing.sighCount > 2) breathParts.push(`有${breathing.sighCount}次叹气，这通常是身体在尝试自我调节`);
-    if (breathParts.length > 0) {
-      paragraphs.push(`从呼吸来看，${breathParts.join('，')}。`);
-    }
-  }
-
-  // 行为激活
+  // 行为激活（只能观察到平台内互动，不能替代真实社交状况）
   if (behavioralActivation.isActive) {
     if (behavioralActivation.trendDirection === 'declining') {
-      paragraphs.push(`我们注意到你最近的互动比之前少了不少（趋势：下降）。社交退缩是抑郁的一个常见信号，试着每天做一些小事，哪怕只是出门走走。`);
-    }
-    if (behavioralActivation.socialWithdrawalScore > 0.5) {
-      paragraphs.push('你的社交互动明显减少，但请记住，与他人连接是心理健康的重要保护因素。');
+      paragraphs.push('我们观察到你这几天在这个平台上的互动比之前少了一些。这可能只是最近比较忙，但如果你同时也觉得不太想和人说话，试着从一件很小的社交开始，比如给朋友发一条消息。');
+    } else if (behavioralActivation.socialWithdrawalScore > 0.5) {
+      paragraphs.push('今天你在平台里的互动次数偏少。这本身说明不了什么，但如果这种"不想打开、不想说话"的感觉持续存在，与他人保持连接会是很有帮助的保护因素。');
     }
   }
 
-  // 眼动模式
+  // 头部姿态（⚠️ 不是眼球注视：本平台未接入虹膜跟踪，此处是头部俯仰代理指标）
   if (eyeMovement.isMeasuring && eyeMovement.signalQuality > 0.3) {
     if (eyeMovement.downwardGazeRatio > 0.5) {
-      paragraphs.push(`你的视线频繁向下（${Math.round(eyeMovement.downwardGazeRatio * 100)}%的时向下注视），这通常与低落情绪或回避有关。`);
+      paragraphs.push(`摄像头画面中你较多处于低头姿态（占 ${Math.round(eyeMovement.downwardGazeRatio * 100)}% 的面部帧），这通常与低落情绪或回避有关。`);
     }
     if (eyeMovement.blinkRate > 25) {
-      paragraphs.push('眨眼频率偏高，可能是眼睛疲劳或紧张的信号。');
+      paragraphs.push(`眨眼频率偏高（约 ${eyeMovement.blinkRate} 次/分），可能是眼睛疲劳或紧张的信号。`);
     }
   }
 
@@ -275,12 +283,31 @@ function generateNarrativeAnalysis(state: ComprehensiveEmotionState): string {
     }
   }
 
+  // --- 数据来源说明：如实告知哪些指标并没有被测量 ---
+  if (UNAVAILABLE_MODALITIES.length > 0) {
+    paragraphs.push(`（说明：以上分析仅基于真实采集到的文字、语音、键盘、面部、互动与使用时间信号。`
+      + `以下指标未在本设备上采集，报告中不含它们的任何数值：${UNAVAILABLE_MODALITIES.join('、')}。）`);
+  }
+
   return paragraphs.join('\n\n');
 }
 
 interface AnxietyContextType {
   comprehensiveState: ComprehensiveEmotionState;
   cameraEnabled: boolean;
+  /**
+   * 最近一次媒体启动失败的原因（中文，可直接上屏）；空串表示没有错误。
+   *
+   * 存在的理由：改造前摄像头启动失败会被 `useFacialAnalysis.start()` 静默吞掉，
+   * 于是"用户拒了摄像头权限"的表现是界面显示"摄像头已开启"、实际一个数据都没有。
+   * 失败必须能被看见。
+   */
+  mediaNotice: string;
+  /**
+   * 摄像头 + 麦克风总开关。
+   * @returns 是否真的打开了（关闭操作返回 true）。失败时返回 false 并设置 `mediaNotice`。
+   */
+  toggleCamera: () => Promise<boolean>;
   modalityStatus: {
     keyboardStarted: boolean;
     voiceStarted: boolean;
@@ -299,8 +326,22 @@ interface AnxietyContextType {
   behavioralMetrics: typeof defaultBehavioralActivation;
   eyeMetrics: typeof defaultEyeMovement;
   voiceSemanticsMetrics: typeof defaultVoiceSemantics;
-  toggleCamera: () => void;
   analyzeText: (text: string) => void;
+  // 纯语音输入（只开麦克风，不开摄像头）—— 供聊天页"语音录入"用。
+  // 与 toggleCamera 分开是刻意的：聊天时不该强制打开摄像头。
+  voiceInputActive: boolean;
+  startVoiceInput: () => Promise<void>;
+  /**
+   * 结束语音输入。
+   *
+   * 返回 **最后一段定稿文本**：撤销端点检测 + 离线复识别要 ~600ms，
+   * 调用方必须 await 才能拿到"点结束前刚说的那句"，不能只靠订阅 state。
+   */
+  stopVoiceInput: () => Promise<string>;
+  /** 语音定稿序号：每次有新的一段定稿就自增，供页面区分"新的一段" */
+  voiceFinalSeq: number;
+  /** 最近一段定稿的文本（与 `voiceFinalSeq` 配套使用） */
+  voiceFinalText: string;
   reportToServer: (context?: string) => Promise<void>;
   realityTask: any;
   showTaskModal: boolean;
@@ -340,6 +381,8 @@ const defaultComprehensive: ComprehensiveEmotionState = {
   fusionWeights: { text: 0, voice: 0, facial: 0, keyboard: 0, circadian: 0, cognitive: 0, hrv: 0, breathing: 0, behavioralAct: 0, eye: 0, voiceSemantics: 0 },
   activeModalities: [],
   lastUpdated: 0,
+  unavailableModalities: UNAVAILABLE_MODALITIES,
+  availabilityNote: AVAILABILITY_NOTE,
   caringMessage: CARING_MESSAGES[0],
   evidence: [],
   narrativeAnalysis: '',
@@ -356,15 +399,25 @@ export function AnxietyProvider({ children }: { children: ReactNode }) {
   const userGender: Gender | null = ((user as any)?.gender as Gender) ?? null;
   const genderModifiers = getGenderModifiers(userGender);
 
-  // 硬件信号回调：面部帧 → rPPG + 眼动
-  const onFrameSignalRef = useRef<(greenMean: number, eyeAspect: number, headPitch: number) => void>();
-  onFrameSignalRef.current = (greenMean, eyeAspect, headPitch) => {
-    rppg.updateFromFrame(greenMean, Date.now());
-    eyeTracking.updateFromFacialFrame(eyeAspect, headPitch);
+  // 硬件信号回调：面部帧 → rPPG + 眨眼/头姿（复用同一帧的 MediaPipe 推理结果）
+  const onFrameSignalRef = useRef<(signal: FacialFrameSignal) => void>();
+  onFrameSignalRef.current = (signal) => {
+    rppg.updateFromFrame(signal.greenMean, Date.now());
+    eyeTracking.updateFromFacialFrame(signal);
+    // 把同帧的 blendshape 判定留给第二判定通道做一致率比较（不参与风险）
+    eyeStateRef.current?.observeBlendshape(isBlendshapeClosed(signal.blinkScore));
   };
-  const onFrameSignal = useCallback((g: number, e: number, h: number) => {
-    onFrameSignalRef.current?.(g, e, h);
+  const onFrameSignal = useCallback((signal: FacialFrameSignal) => {
+    onFrameSignalRef.current?.(signal);
   }, []);
+
+  // 硬件信号回调：眼 patch → 浏览器内 ONNX 每眼二次判定（**只上报，不进风险**）
+  // 用 ref 转发，避免 useFacialAnalysis 与 useEyeStateModel 的创建顺序互相牵制
+  const onEyePatchRef = useRef<((patches: EyePatchPixels) => void) | null>(null);
+  const onEyePatchFrame = useCallback((patches: EyePatchPixels) => {
+    onEyePatchRef.current?.(patches);
+  }, []);
+  const onEyeStateReportRef = useRef<((r: EyeStateModelReport) => void) | null>(null);
 
   // 硬件信号回调：音频能量 → 呼吸
   const onAudioEnergyRef = useRef<(rms: number) => void>();
@@ -375,11 +428,26 @@ export function AnxietyProvider({ children }: { children: ReactNode }) {
     onAudioEnergyRef.current?.(rms);
   }, []);
 
+  // 语音定稿回调：把"定稿那一刻"转发给订阅页（聊天页靠它把最后一句落进输入框）。
+  // 只靠订阅 voiceMetrics 会漏 —— 点"结束"之后 isRecording 先变 false，
+  // 而最后一段定稿还要等撤销端点检测 + 离线复识别（约 600ms）才到。
+  const [voiceFinalSeq, setVoiceFinalSeq] = useState(0);
+  const voiceFinalRef = useRef<{ text: string; seq: number }>({ text: '', seq: 0 });
+  const handleVoiceFinal = useCallback((text: string, seq: number) => {
+    voiceFinalRef.current = { text, seq };
+    setVoiceFinalSeq(seq);
+  }, []);
+
   // 将年龄分组传递给各 Hook
   const keyboard = useKeyboardDynamics(ageGroup);
   const textAnalysis = useTextAnalysis(ageGroup);
-  const voice = useVoiceAnalysis(ageGroup, onAudioEnergy);
-  const facial = useFacialAnalysis(ageGroup, onFrameSignal);
+  // 聊天页的语音录入走**整段录入**模式：说话停顿不定稿，用户点"结束"才把整段
+  // 音频交给离线大模型识别。原先的"停顿几秒自动截断定稿"会让每一段都缺上下文
+  // （实测 12s、句间停顿 1.2s 的音频：端点切段后"重点呢"→"重点来"、"动荡"→"动量"，
+  // 整段识别则全对），所以那次截断既不准、也不是用户想要的交互。
+  // 通话页用的是另一个 hook 实例（`useVoiceCall`），仍保持"停顿即定稿"。
+  const voice = useVoiceAnalysis(ageGroup, onAudioEnergy, handleVoiceFinal, null, 'utterance');
+  const facial = useFacialAnalysis(ageGroup, onFrameSignal, onEyePatchFrame);
   // 新增 7 模态 Hook（均传入 ageGroup 做年龄差异化校准）
   const circadian = useCircadianRhythm(ageGroup);
   const cognitiveDistortion = useCognitiveDistortion(ageGroup);
@@ -387,6 +455,21 @@ export function AnxietyProvider({ children }: { children: ReactNode }) {
   const breathingHook = useBreathing(ageGroup);
   const behavioralActivation = useBehavioralActivation(ageGroup);
   const eyeTracking = useEyeTracking(ageGroup);
+
+  // ── 每眼「睁闭眼」第二判定通道（默认关闭，见 perceptionCapabilities 的说明）──
+  // 默认关闭时不加载任何 ONNX 资源、不产生任何推理；开启后也只上报不进风险。
+  const eyeState = useEyeStateModel(EYE_STATE_MODEL_AVAILABLE, (r) => onEyeStateReportRef.current?.(r));
+  const eyeStateRef = useRef<ReturnType<typeof useEyeStateModel> | null>(null);
+  eyeStateRef.current = eyeState;
+  onEyePatchRef.current = eyeState.onEyePatches;
+  onEyeStateReportRef.current = (r) => {
+    eyeTracking.updateFromEyeStateModel({ ...r, status: eyeState.status });
+  };
+  useEffect(() => {
+    eyeTracking.setEyeStateStatus(eyeState.status);
+    // 只依赖 status：eyeTracking 的 setter 是稳定引用
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [eyeState.status]);
   const voiceSemantics = useVoiceSemantics(ageGroup);
   // 干预效果闭环
   const interventionFeedback = useInterventionFeedback();
@@ -448,6 +531,8 @@ export function AnxietyProvider({ children }: { children: ReactNode }) {
 
   const [comprehensiveState, setComprehensiveState] = useState<ComprehensiveEmotionState>({ ...defaultComprehensive });
   const [cameraEnabled, setCameraEnabled] = useState(false);
+  /** 最近一次媒体启动失败的原因（中文，可上屏）。空串 = 没有错误。 */
+  const [mediaNotice, setMediaNotice] = useState('');
   const [realityTask, setRealityTask] = useState<any>(null);
   const [showTaskModal, setShowTaskModal] = useState(false);
   const [modalityStatus, setModalityStatus] = useState({
@@ -460,6 +545,14 @@ export function AnxietyProvider({ children }: { children: ReactNode }) {
   const lastReportRef = useRef(0);
   const hasTriggeredRef = useRef(false);
   const fusionIntervalRef = useRef(0);
+  /**
+   * 媒体启动的重入锁。
+   *
+   * 摄像头/麦克风的所有启动入口（手动事件、开关按钮）共用这一把锁：
+   * `cameraEnabled` 这个 state 要等 `await` 之后才更新，挡不住"await 期间又点一次"，
+   * 而那一次会真的再开一路设备 —— 这是改造前 4 次点击泄漏出 5 路麦克风的直接原因。
+   */
+  const startingMediaRef = useRef(false);
 
   // 自动启动键盘分析（组件完全挂载后）
   useEffect(() => {
@@ -477,46 +570,62 @@ export function AnxietyProvider({ children }: { children: ReactNode }) {
 
   // 监听手动启动事件
   useEffect(() => {
+    /**
+     * 处理「启动多模态感知」事件。
+     *
+     * 改造要点（这三条以前都是错的）：
+     * 1. **重入守卫**：以前完全没有守卫，每次事件都真的再开一路摄像头 + 麦克风
+     *    （实测连点 4 次 → 5 条 live 麦克风轨道）。
+     * 2. **不提前撒谎**：以前先乐观地把 `isRecording / isDetecting` 置 true 再去启动，
+     *    启动失败时界面已经显示"采集正常"了。现在只在**成功之后**才置位。
+     * 3. **await**：`voice.start() / facial.start()` 是 async 的，以前不 await，
+     *    于是那两层 `try/catch` 根本抓不到它们的失败（会变成 unhandled rejection）。
+     */
     const handleStart = () => {
-      console.log('[多模态] 收到手动启动事件');
-      
-      // 直接更新本地指标状态（不依赖 hook 的内部状态）
-      setKeyboardMetrics(prev => ({ ...prev, isCollecting: true }));
-      setVoiceMetrics(prev => ({ ...prev, isRecording: true }));
-      setFacialMetrics(prev => ({ ...prev, isDetecting: true }));
-      setTextMetrics(prev => ({ ...prev, timestamp: Date.now() }));
-      
-      setModalityStatus({
-        keyboardStarted: true,
-        voiceStarted: true,
-        facialStarted: true,
-        textListenerRegistered: true,
-      });
-      
-      // 调用 hook 的 start()（用于启动实际的采集逻辑）
-      try {
-        keyboard.start();
-        console.log('[多模态] 键盘启动完成');
-      } catch (err) {
-        console.error('[多模态] 键盘启动失败:', err);
-      }
-      try {
-        voice.start();
-        console.log('[多模态] 声音启动完成');
-      } catch (err) {
-        console.error('[多模态] 声音启动失败:', err);
-      }
-      try {
-        facial.start();
-        console.log('[多模态] 面部启动完成');
-      } catch (err) {
-        console.error('[多模态] 面部启动失败:', err);
-      }
-      
-      setCameraEnabled(true);
-      setComprehensiveState(prev => ({ ...prev, lastUpdated: Date.now() }));
-      setUpdateCounter(prev => prev + 1); // 递增计数器，验证状态更新
-      console.log('[多模态] 所有模态已启动，本地状态已更新，updateCounter:', updateCounter + 1);
+      if (startingMediaRef.current) return;
+      if (voice.metrics.isRecording || facial.metrics.isDetecting) return;
+      startingMediaRef.current = true;
+      void (async () => {
+        try {
+          try {
+            keyboard.start();
+            setKeyboardMetrics(prev => ({ ...prev, isCollecting: true }));
+          } catch (err) {
+            console.error('[多模态] 键盘启动失败:', err);
+          }
+
+          // 麦克风和摄像头**分别**记录结果：只给麦克风权限是很常见的情况，
+          // 不该因为摄像头失败就把已经开好的麦克风也当成失败。
+          const [voiceOk, facialOk] = await Promise.all([
+            voice.start().then(
+              () => true,
+              (err) => { console.error('[多模态] 声音启动失败:', err); return false; },
+            ),
+            facial.start().then(
+              () => true,
+              (err) => { console.error('[多模态] 面部启动失败:', err); return false; },
+            ),
+          ]);
+
+          setVoiceMetrics(prev => ({ ...prev, isRecording: voiceOk }));
+          setFacialMetrics(prev => ({ ...prev, isDetecting: facialOk }));
+          setTextMetrics(prev => ({ ...prev, timestamp: Date.now() }));
+          setModalityStatus({
+            keyboardStarted: true,
+            voiceStarted: voiceOk,
+            facialStarted: facialOk,
+            textListenerRegistered: true,
+          });
+          // 只有真的有设备启动成功才置总开关。以前无条件置 true，
+          // 于是"摄像头权限被拒"时界面依然显示已开启、而一个数据都没有。
+          setCameraEnabled(voiceOk || facialOk);
+          setComprehensiveState(prev => ({ ...prev, lastUpdated: Date.now() }));
+          setUpdateCounter(prev => prev + 1);
+          console.log(`[多模态] 启动结果 voice=${voiceOk} facial=${facialOk}`);
+        } finally {
+          startingMediaRef.current = false;
+        }
+      })();
     };
     window.addEventListener('start-multimodal-analysis', handleStart);
     return () => window.removeEventListener('start-multimodal-analysis', handleStart);
@@ -597,7 +706,12 @@ export function AnxietyProvider({ children }: { children: ReactNode }) {
       activeModalities.push('voice');
       weights.voice = fusionConfig.voice;
     }
-    if (facialMetrics.isDetecting) {
+    // ⚠️ 面部模态的可信度必须来自**真实信号质量**。
+    //    `confidence === null` 表示"本帧没有可信读数"（没检测到人脸 / MediaPipe 不可用 /
+    //    脸太小 / 侧脸太偏），此时**不能**把该模态算进融合。
+    //    改造前这里用的是帧计数常量 `min(0.95, 0.7 + frameCount*0.005)` ——
+    //    人已经离开画面，系统还在按 0.95 的置信度读他的情绪。
+    if (facialMetrics.isDetecting && facialMetrics.confidence !== null) {
       activeModalities.push('facial');
       weights.facial = Math.min(fusionConfig.facial, Math.max(fusionConfig.facial * 0.5, facialMetrics.confidence * fusionConfig.facial));
     }
@@ -606,10 +720,12 @@ export function AnxietyProvider({ children }: { children: ReactNode }) {
       weights.keyboard = fusionConfig.keyboard;
     }
     // 新增 7 模态活跃判定
+    // ⚠️ 本设备不具备心率/呼吸采集能力，这两个模态永不参与融合，
+    // 否则噪声数据会污染焦虑指数（详见 hooks/perceptionCapabilities.ts）
     if (circadianMetrics.isActive) { activeModalities.push('circadian'); weights.circadian = fusionConfig.circadian; }
     if (cognitiveMetrics.riskScore > 0 || cognitiveMetrics.timestamp > 0) { activeModalities.push('cognitive'); weights.cognitive = fusionConfig.cognitive; }
-    if (hrvMetrics.isMeasuring) { activeModalities.push('hrv'); weights.hrv = fusionConfig.hrv; }
-    if (breathingMetrics.isMeasuring) { activeModalities.push('breathing'); weights.breathing = fusionConfig.breathing; }
+    if (RPPG_AVAILABLE && hrvMetrics.isMeasuring) { activeModalities.push('hrv'); weights.hrv = fusionConfig.hrv; }
+    if (BREATHING_AVAILABLE && breathingMetrics.isMeasuring) { activeModalities.push('breathing'); weights.breathing = fusionConfig.breathing; }
     if (behavioralMetrics.isActive) { activeModalities.push('behavioralAct'); weights.behavioralAct = fusionConfig.behavioralAct; }
     if (eyeMetrics.isMeasuring) { activeModalities.push('eye'); weights.eye = fusionConfig.eye; }
     if (voiceSemanticsMetrics.timestamp > 0) { activeModalities.push('voiceSemantics'); weights.voiceSemantics = fusionConfig.voiceSemantics; }
@@ -634,7 +750,7 @@ export function AnxietyProvider({ children }: { children: ReactNode }) {
     const signalQualities: Record<string, number> = {
       text: 1.0,
       voice: 1.0,
-      facial: facialMetrics.confidence,
+      facial: facialMetrics.confidence ?? 0,
       keyboard: 1.0,
       circadian: 1.0,
       cognitive: 1.0,
@@ -800,22 +916,18 @@ export function AnxietyProvider({ children }: { children: ReactNode }) {
       evidence.push(`键盘动力学：${keyboardMetrics.typingSpeed}字/分，焦虑指数=${keyboardMetrics.anxietyIndex}`);
     }
     if (activeModalities.includes('circadian')) {
-      evidence.push(`昼夜节律：风险=${circadianMetrics.riskScore}，规律性=${circadianMetrics.regularityScore}，最近活动${circadianMetrics.lastActivityHour}时`);
+      evidence.push(`昼夜活动：深夜活动风险=${circadianMetrics.lateNightRisk}，最近活动${circadianMetrics.lastActivityHour}时，样本${circadianMetrics.activitySampleCount}条`);
     }
     if (activeModalities.includes('cognitive')) {
       evidence.push(`认知扭曲：风险=${cognitiveMetrics.riskScore}，${cognitiveMetrics.totalDistortionCount}类扭曲`);
     }
-    if (activeModalities.includes('hrv')) {
-      evidence.push(`心率变异性：HR=${hrvMetrics.heartRate}bpm，HRV=${hrvMetrics.hrvRmssd}ms，质量=${hrvMetrics.signalQuality}`);
-    }
-    if (activeModalities.includes('breathing')) {
-      evidence.push(`呼吸模式：频率=${breathingMetrics.breathingRate}次/分，叹气=${breathingMetrics.sighCount}次`);
-    }
+    // 心率/呼吸不具备采集能力：不写入 evidence，避免下游把噪声当成生理指标
     if (activeModalities.includes('behavioralAct')) {
       evidence.push(`行为激活：互动=${behavioralMetrics.dailyInteractionCount}次，趋势=${behavioralMetrics.trendDirection}`);
     }
     if (activeModalities.includes('eye')) {
-      evidence.push(`眼动模式：眨眼=${eyeMetrics.blinkRate}次/分，向下注视=${Math.round(eyeMetrics.downwardGazeRatio * 100)}%`);
+      const blinkSrc = eyeMetrics.blinkMethod === 'ear' ? '（EAR 降级）' : '';
+      evidence.push(`眨眼${blinkSrc}：${eyeMetrics.blinkRate}次/分，低头帧占比=${Math.round(eyeMetrics.downwardGazeRatio * 100)}%（头部姿态代理）`);
     }
     if (activeModalities.includes('voiceSemantics')) {
       evidence.push(`语音语义：风险=${voiceSemanticsMetrics.riskScore}，消极词比=${Math.round(voiceSemanticsMetrics.negativeAffectRatio * 100)}%`);
@@ -844,6 +956,8 @@ export function AnxietyProvider({ children }: { children: ReactNode }) {
       fusionWeights: normalizedWeights,
       activeModalities,
       lastUpdated: Date.now(),
+      unavailableModalities: UNAVAILABLE_MODALITIES,
+      availabilityNote: AVAILABILITY_NOTE,
       caringMessage,
       evidence,
       narrativeAnalysis: '',
@@ -856,9 +970,8 @@ export function AnxietyProvider({ children }: { children: ReactNode }) {
     });
 
     // === 个人基线更新 ===
+    // 只对真实可采集的指标建立基线；心率/呼吸无采集能力，不写入基线
     personalBaseline.updateBaseline({
-      heartRate: hrvMetrics.heartRate || undefined,
-      breathingRate: breathingMetrics.breathingRate || undefined,
       typingSpeed: keyboardMetrics.typingSpeed || undefined,
       blinkRate: eyeMetrics.blinkRate || undefined,
       voiceF0: voiceMetrics.pitch?.mean || undefined,
@@ -916,6 +1029,8 @@ export function AnxietyProvider({ children }: { children: ReactNode }) {
   // 摄像头自动重启：如果开关是开的但面部检测停止了，尝试重启
   useEffect(() => {
     if (!cameraEnabled) return;
+    // `facePresent` 不作为重启条件：人暂时离开画面是正常情况，
+    // 用"检测不到"去触发重启会让摄像头反复开关。
     if (facial.metrics.isDetecting) return; // 还在检测，不需要重启
     if (facial.metrics.frameCount === 0) return; // 还没启动过，不需要重启
 
@@ -925,8 +1040,8 @@ export function AnxietyProvider({ children }: { children: ReactNode }) {
       try {
         await facial.start();
         console.log('[多模态] 摄像头重启成功');
-      } catch {
-        console.log('[多模态] 摄像头重启失败');
+      } catch (err) {
+        console.log('[多模态] 摄像头重启失败:', err);
       }
     }, 2000);
 
@@ -934,24 +1049,82 @@ export function AnxietyProvider({ children }: { children: ReactNode }) {
   }, [cameraEnabled, facial.metrics.isDetecting, facial.metrics.frameCount, facial.start]);
 
   // 统一摄像头开关（键盘已自动启动，只需控制 voice 和 facial）
-  const toggleCamera = useCallback(async () => {
-    console.log('[多模态] toggleCamera 被调用，当前 cameraEnabled:', cameraEnabled);
-    if (cameraEnabled) {
-      console.log('[多模态] 关闭摄像头/麦克风...');
-      voice.stop();
-      facial.stop();
-      setCameraEnabled(false);
-    } else {
-      console.log('[多模态] 开启摄像头/麦克风...');
-      try {
-        await Promise.all([voice.start(), facial.start()]);
-        console.log('[多模态] 摄像头/麦克风启动成功');
-        setCameraEnabled(true);
-      } catch (err) {
-        console.error('[多模态] 摄像头/麦克风启动失败:', err);
+  const toggleCamera = useCallback(async (): Promise<boolean> => {
+    // 重入锁：`cameraEnabled` 要等 await 之后才更新，挡不住"await 期间又点一次"。
+    // 改造前正是这个窗口让 4 次点击开出 5 路麦克风。
+    if (startingMediaRef.current) return false;
+    startingMediaRef.current = true;
+    try {
+      if (cameraEnabled) {
+        console.log('[多模态] 关闭摄像头/麦克风...');
+        // 等语音会话把最后一段冲刷完；否则残余音频的定稿会在拆图之后才回来，
+        // 既可能丢字，也会与重新开启的下一段混在一起。
+        await voice.stop();
+        facial.stop();
+        // ⚠️ 采集停止后，帧/音频驱动的模态必须显式重置。
+        // 它们的 isMeasuring 是在 updateFromFrame()/updateFromAudioEnergy() 里置 true 的，
+        // 停止采集后不会再有任何更新把它置回 false，于是会以「冻结的最后一帧读数」
+        // 继续留在活跃模态里参与多模态融合（表现为关掉摄像头后仍显示「N 个模态采集中」）。
+        eyeTracking.reset();    // 眨眼 / 眼动（帧驱动）
+        rppg.reset();           // 心率 / HRV（帧驱动）
+        breathingHook.reset();  // 呼吸（音频驱动）
+        setCameraEnabled(false);
+        setMediaNotice('');
+        return true;
       }
+
+      console.log('[多模态] 开启摄像头/麦克风...');
+      // 分别记录结果：只给麦克风权限是常见情况，不该因为摄像头失败就丢掉麦克风。
+      const [voiceOk, facialOk] = await Promise.all([
+        voice.start().then(
+          () => true,
+          (err: unknown) => { console.error('[多模态] 麦克风启动失败:', err); return false; },
+        ),
+        facial.start().then(
+          () => true,
+          (err: unknown) => { console.error('[多模态] 摄像头启动失败:', err); return false; },
+        ),
+      ]);
+
+      if (voiceOk || facialOk) {
+        setCameraEnabled(true);
+      }
+      // 失败原因直接上屏。摄像头单独失败时给出明确提示，而不是让界面
+      // 停在"看起来一切正常"的状态（改造前 start() 把异常吞了，界面显示已开启）。
+      if (!voiceOk && !facialOk) {
+        setMediaNotice('麦克风和摄像头都无法启动，请检查浏览器权限设置');
+      } else if (!facialOk) {
+        setMediaNotice('摄像头不可用（可能没有授权或被其他程序占用）· 已仅启用麦克风');
+      } else if (!voiceOk) {
+        setMediaNotice('麦克风不可用（可能没有授权）· 已仅启用摄像头');
+      } else {
+        setMediaNotice('');
+      }
+      console.log(`[多模态] 启动结果 voice=${voiceOk} facial=${facialOk}`);
+      return voiceOk || facialOk;
+    } finally {
+      startingMediaRef.current = false;
     }
-  }, [cameraEnabled, voice, facial]);
+  }, [cameraEnabled, voice, facial, eyeTracking, rppg, breathingHook]);
+
+  // 纯语音输入：只启动麦克风（不含摄像头），用于聊天页的"语音录入"。
+  // 如果多模态开关已经启动了录音，这里直接复用，避免同时开两路麦克风。
+  const startVoiceInput = useCallback(async () => {
+    if (voice.metrics.isRecording) return;
+    try {
+      await voice.start();
+      console.log('[多模态] 语音输入已启动（仅麦克风）');
+    } catch (err) {
+      console.error('[多模态] 语音输入启动失败:', err);
+    }
+  }, [voice]);
+
+  const stopVoiceInput = useCallback(async (): Promise<string> => {
+    // 内部会等最后一段定稿（撤销端点检测 + 离线复识别）落地再把文本交出来
+    const finalText = await voice.stop();
+    console.log('[多模态] 语音输入已停止，最后一段:', finalText || '(无)');
+    return finalText;
+  }, [voice]);
 
   // 全局文本分析入口
   const analyzeTextGlobal = useCallback((text: string) => {
@@ -1076,8 +1249,14 @@ export function AnxietyProvider({ children }: { children: ReactNode }) {
     behavioralMetrics,
     eyeMetrics,
     voiceSemanticsMetrics,
+    mediaNotice,
     toggleCamera,
     analyzeText: analyzeTextGlobal,
+    voiceInputActive: voiceMetrics.isRecording,
+    startVoiceInput,
+    stopVoiceInput,
+    voiceFinalSeq,
+    voiceFinalText: voiceFinalRef.current.text,
     reportToServer,
     realityTask,
     showTaskModal,

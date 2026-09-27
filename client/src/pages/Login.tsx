@@ -4,6 +4,7 @@ import { Form, Input, Button, Card, message, Typography } from 'antd';
 import { UserOutlined, LockOutlined, HeartFilled } from '@ant-design/icons';
 import { authApi } from '../services';
 import { useAuthStore } from '../store/authStore';
+import { SPLASH_EVENT } from '../components/SplashScreen';
 
 const { Title, Text } = Typography;
 
@@ -20,6 +21,7 @@ export default function Login() {
         const { user, accessToken, refreshToken } = res.data;
         setAuth(user, accessToken, refreshToken);
         message.success('欢迎回来 ');
+        window.dispatchEvent(new Event(SPLASH_EVENT));
         navigate(user.role === 'ADMIN' ? '/admin' : '/');
       }
     } catch (err: any) {

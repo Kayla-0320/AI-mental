@@ -78,11 +78,13 @@ export default function ConsultantProfiles() {
   const profile = selected ? profileData[selected.userId] : null;
   const anxiety = selected ? anxietyData[selected.userId] : null;
 
+  // 睡眠维度只在患者手动记录过睡眠时才出现（0 = 未采集，平台无法自动检测）
+  const hasSleepRecord = (profile?.profile?.sleepQuality || 0) > 0;
   const radarData = profile?.profile ? [
     { subject: '焦虑', value: profile.profile.anxiety },
     { subject: '抑郁', value: profile.profile.depression },
     { subject: '压力', value: profile.profile.stress },
-    { subject: '睡眠', value: profile.profile.sleepQuality },
+    ...(hasSleepRecord ? [{ subject: '睡眠(手动)', value: profile.profile.sleepQuality }] : []),
     { subject: '社交', value: profile.profile.socialActivity },
     { subject: '情绪稳定', value: profile.profile.emotionalStability },
   ] : [];

@@ -8,12 +8,20 @@ import unittest
 from dataclasses import fields
 
 from shared.dataclasses import (
+    AsrEngine,
+    AsrEventType,
+    AsrResult,
+    ChatStreamEvent,
+    ChatStreamEventType,
     CrisisAlert,
     EmotionResult,
     EvidenceItem,
     FeatureSummary,
     RiskAssessment,
     RiskLevel,
+    StreamingAsrUpdate,
+    TtsEngine,
+    TtsSynthesisResult,
 )
 
 
@@ -300,6 +308,336 @@ class TestFeatureSummary(unittest.TestCase):
     def test_field_count(self):
         """字段数量必须为 5"""
         self.assertEqual(len(fields(FeatureSummary)), 5)
+
+
+class TestAsrResult(unittest.TestCase):
+    """AsrResult / AsrEngine 数据类测试（本地语音转文字的跨模块接口）"""
+
+    def test_engine_enum_values(self):
+        """引擎枚举必须为 paraformer / unavailable"""
+        self.assertEqual(AsrEngine.PARAFORMER, "sherpa-onnx-paraformer")
+        self.assertEqual(AsrEngine.UNAVAILABLE, "unavailable")
+
+    def test_engine_has_no_browser_option(self):
+        """不得提供浏览器 Web Speech API 选项（那条路径会把音频送到厂商云）"""
+        for member in AsrEngine:
+            self.assertNotIn("web", member.value.lower())
+            self.assertNotIn("speech-api", member.value.lower())
+
+    def test_engine_is_str(self):
+        """枚举值必须是 str 子类"""
+        for member in AsrEngine:
+            self.assertIsInstance(member, str)
+
+    def test_text_type(self):
+        """text 必须为 str"""
+        self.assertIsInstance(AsrResult(text="你好").text, str)
+
+    def test_defaults(self):
+        """默认值：引擎 paraformer、时长为 0、无错误"""
+        r = AsrResult(text="你好")
+        self.assertIs(r.engine, AsrEngine.PARAFORMER)
+        self.assertEqual(r.duration_ms, 0.0)
+        self.assertEqual(r.latency_ms, 0.0)
+        self.assertEqual(r.error, "")
+
+    def test_field_count(self):
+        """字段数量必须为 5"""
+        self.assertEqual(len(fields(AsrResult)), 5)
+
+    def test_is_empty(self):
+        """空白文本视为空"""
+        self.assertTrue(AsrResult(text="").is_empty)
+        self.assertTrue(AsrResult(text="   ").is_empty)
+        self.assertFalse(AsrResult(text="你好").is_empty)
+
+    def test_ok_true_on_success(self):
+        """正常识别（哪怕没识别出文本）也算成功"""
+        self.assertTrue(AsrResult(text="你好").ok)
+        self.assertTrue(AsrResult(text="").ok)
+
+    def test_ok_false_on_error(self):
+        """带错误信息时不算成功"""
+        self.assertFalse(AsrResult(text="", error="模型缺失").ok)
+
+    def test_ok_false_when_unavailable(self):
+        """引擎不可用时不算成功"""
+        self.assertFalse(AsrResult(text="", engine=AsrEngine.UNAVAILABLE).ok)
+
+    def test_result_is_constructible_positionally(self):
+        """必须支持位置参数构造（与其它数据类保持一致）"""
+        r = AsrResult("识别文本", AsrEngine.PARAFORMER, 1234.0, 45.6, "")
+        self.assertEqual(r.text, "识别文本")
+        self.assertEqual(r.duration_ms, 1234.0)
+
+
+class TestStreamingAsrUpdate(unittest.TestCase):
+    """StreamingAsrUpdate / AsrEventType 测试（流式识别的跨模块接口）"""
+
+    def test_event_type_values(self):
+        """事件类型必须为 partial / final"""
+        self.assertEqual(AsrEventType.PARTIAL, "partial")
+        self.assertEqual(AsrEventType.FINAL, "final")
+
+    def test_event_type_count(self):
+        """事件类型只有两种"""
+        self.assertEqual(len(AsrEventType), 2)
+
+    def test_event_type_is_str(self):
+        """枚举值必须是 str 子类"""
+        for member in AsrEventType:
+            self.assertIsInstance(member, str)
+
+    def test_defaults(self):
+        """默认：流式 zipformer 引擎、时长与耗时均为 0、无 reason"""
+        u = StreamingAsrUpdate(event=AsrEventType.PARTIAL, text="你好")
+        self.assertIs(u.engine, AsrEngine.ZIPFORMER_STREAMING)
+        self.assertEqual(u.elapsed_ms, 0.0)
+        self.assertEqual(u.latency_ms, 0.0)
+        self.assertEqual(u.reason, "")
+
+    def test_field_count(self):
+        """字段数量必须为 7（含 refined 纠错标记）"""
+        self.assertEqual(len(fields(StreamingAsrUpdate)), 7)
+
+    def test_refined_defaults_false(self):
+        """默认未纠错"""
+        self.assertFalse(StreamingAsrUpdate(AsrEventType.FINAL, "你好").refined)
+
+    def test_refined_flag(self):
+        """定稿若经离线大模型纠错，必须能标记出来且引擎随之改变"""
+        u = StreamingAsrUpdate(
+            AsrEventType.FINAL,
+            "你好。",
+            reason="endpoint",
+            engine=AsrEngine.PARAFORMER,
+            refined=True,
+        )
+        self.assertTrue(u.refined)
+        self.assertIs(u.engine, AsrEngine.PARAFORMER)
+
+    def test_is_final(self):
+        """is_final 只在 FINAL 事件为真"""
+        self.assertFalse(StreamingAsrUpdate(AsrEventType.PARTIAL, "你").is_final)
+        self.assertTrue(StreamingAsrUpdate(AsrEventType.FINAL, "你").is_final)
+
+    def test_is_empty(self):
+        """空白文本视为空"""
+        self.assertTrue(StreamingAsrUpdate(AsrEventType.PARTIAL, "").is_empty)
+        self.assertTrue(StreamingAsrUpdate(AsrEventType.PARTIAL, "  ").is_empty)
+        self.assertFalse(StreamingAsrUpdate(AsrEventType.PARTIAL, "你").is_empty)
+
+    def test_final_reason(self):
+        """定稿必须能区分是端点检测还是用户主动结束"""
+        self.assertEqual(
+            StreamingAsrUpdate(AsrEventType.FINAL, "你", reason="endpoint").reason, "endpoint"
+        )
+        self.assertEqual(
+            StreamingAsrUpdate(AsrEventType.FINAL, "你", reason="finalize").reason, "finalize"
+        )
+
+    def test_engine_has_streaming_value(self):
+        """引擎枚举必须含流式 zipformer，且仍不含任何浏览器方案"""
+        self.assertEqual(AsrEngine.ZIPFORMER_STREAMING, "sherpa-onnx-streaming-zipformer")
+        for member in AsrEngine:
+            self.assertNotIn("web", member.value.lower())
+
+
+class TestChatStreamEventType(unittest.TestCase):
+    """ChatStreamEventType 枚举测试 —— 跨语言契约，取值不得随意改动"""
+
+    def test_enum_values(self):
+        """五个事件取值必须与 Node 中转层、浏览器消费端一致"""
+        self.assertEqual(ChatStreamEventType.META, "meta")
+        self.assertEqual(ChatStreamEventType.DELTA, "delta")
+        self.assertEqual(ChatStreamEventType.REVISE, "revise")
+        self.assertEqual(ChatStreamEventType.DONE, "done")
+        self.assertEqual(ChatStreamEventType.ERROR, "error")
+
+    def test_exactly_five_members(self):
+        """事件类型数量固定；新增事件必须同步改三端，这里刻意做成会失败的护栏"""
+        self.assertEqual(len(list(ChatStreamEventType)), 5)
+
+    def test_is_str_enum(self):
+        """必须能被 json.dumps 直接序列化（SSE 载荷依赖这一点）"""
+        self.assertIsInstance(ChatStreamEventType.DELTA, str)
+        self.assertEqual(ChatStreamEventType.DELTA, "delta")
+
+
+class TestChatStreamEvent(unittest.TestCase):
+    """ChatStreamEvent 数据类测试"""
+
+    def test_defaults_are_inert(self):
+        """默认值必须是「什么都没说」的中性态，不能默认已通过审计"""
+        e = ChatStreamEvent(ChatStreamEventType.META)
+        self.assertEqual(e.text, "")
+        self.assertEqual(e.risk_level, "")
+        self.assertEqual(e.emotion_probs, [])
+        self.assertFalse(e.streaming)
+        self.assertTrue(e.audit_passed)
+        self.assertFalse(e.requires_escalation)
+        self.assertFalse(e.fallback)
+        self.assertEqual(e.error, "")
+
+    def test_is_terminal(self):
+        """只有 DONE / ERROR 是终结事件"""
+        self.assertTrue(ChatStreamEvent(ChatStreamEventType.DONE).is_terminal)
+        self.assertTrue(ChatStreamEvent(ChatStreamEventType.ERROR).is_terminal)
+        for t in (
+            ChatStreamEventType.META,
+            ChatStreamEventType.DELTA,
+            ChatStreamEventType.REVISE,
+        ):
+            self.assertFalse(ChatStreamEvent(t).is_terminal, t)
+
+    def test_replaces_bubble_only_for_revise(self):
+        """只有 REVISE 是整体替换语义；DELTA 必须是追加语义。
+
+        这条是流式路径安全性的关键：把权威改稿当增量拼上去，会得到
+        「不安全原文 + 安全改稿」这种最坏结果。
+        """
+        self.assertTrue(ChatStreamEvent(ChatStreamEventType.REVISE, "改稿").replaces_bubble)
+        for t in (
+            ChatStreamEventType.META,
+            ChatStreamEventType.DELTA,
+            ChatStreamEventType.DONE,
+            ChatStreamEventType.ERROR,
+        ):
+            self.assertFalse(ChatStreamEvent(t).replaces_bubble, t)
+
+    def test_emotion_probs_not_shared_between_instances(self):
+        """可变默认值不得在实例间共享"""
+        a = ChatStreamEvent(ChatStreamEventType.META)
+        b = ChatStreamEvent(ChatStreamEventType.META)
+        a.emotion_probs.append(0.5)
+        self.assertEqual(b.emotion_probs, [])
+
+    def test_done_payload_carries_audit_verdict(self):
+        """DONE 必须能带上与非流式端点同构的审计结论"""
+        e = ChatStreamEvent(
+            ChatStreamEventType.DONE,
+            text="我在这里。",
+            risk_level="high",
+            dialogue_mode="EMPATHY",
+            emotion_probs=[0.1, 0.6, 0.2, 0.05, 0.05],
+            audit_passed=False,
+            requires_escalation=True,
+        )
+        self.assertEqual(e.text, "我在这里。")
+        self.assertFalse(e.audit_passed)
+        self.assertTrue(e.requires_escalation)
+
+    def test_field_names_are_the_wire_contract(self):
+        """字段名会被序列化进 SSE 载荷，改名等于破坏协议"""
+        names = {f.name for f in fields(ChatStreamEvent)}
+        self.assertEqual(
+            names,
+            {
+                "event",
+                "text",
+                "risk_level",
+                "dialogue_mode",
+                "emotion_probs",
+                "streaming",
+                "audit_passed",
+                "requires_escalation",
+                "fallback",
+                "error",
+            },
+        )
+
+
+class TestTtsEngine(unittest.TestCase):
+    """TtsEngine 枚举测试"""
+
+    def test_enum_values(self):
+        """枚举值必须为 sherpa-onnx-vits / unavailable"""
+        self.assertEqual(TtsEngine.VITS, "sherpa-onnx-vits")
+        self.assertEqual(TtsEngine.UNAVAILABLE, "unavailable")
+
+    def test_enum_is_str(self):
+        """枚举值必须是 str 子类（要直接进 JSON）"""
+        for member in TtsEngine:
+            self.assertIsInstance(member, str)
+
+    def test_no_browser_speech_synthesis_option(self):
+        """刻意不提供浏览器 speechSynthesis
+
+        它的音频不经过 Web Audio，拿不到 AudioNode，因此既不能作为回声消除的
+        参考信号，也做不了文本级自回声过滤（docs/voice_call_plan.md §6.3）。
+        这条断言是防止有人"顺手加一个省事的引擎"。
+        """
+        self.assertEqual(len(TtsEngine), 2)
+        self.assertNotIn("speech-synthesis", {e.value for e in TtsEngine})
+
+
+class TestTtsSynthesisResult(unittest.TestCase):
+    """TtsSynthesisResult 数据类测试"""
+
+    def test_field_names_are_the_wire_contract(self):
+        """字段名会进 WS 的 end 帧，改名等于破坏协议"""
+        names = {f.name for f in fields(TtsSynthesisResult)}
+        self.assertEqual(
+            names,
+            {
+                "seq",
+                "engine",
+                "spoken_text",
+                "sample_rate",
+                "audio_ms",
+                "first_chunk_ms",
+                "synth_ms",
+                "cancelled",
+                "error",
+            },
+        )
+
+    def test_defaults(self):
+        """默认值必须是"未合成"的诚实状态，不能假装成功"""
+        r = TtsSynthesisResult(seq=1)
+        self.assertEqual(r.engine, TtsEngine.VITS)
+        self.assertEqual(r.audio_ms, 0.0)
+        self.assertEqual(r.error, "")
+        self.assertFalse(r.cancelled)
+
+    def test_rtf(self):
+        """RTF = 合成耗时 / 音频时长"""
+        r = TtsSynthesisResult(seq=1, audio_ms=4000.0, synth_ms=600.0)
+        self.assertAlmostEqual(r.rtf, 0.15, places=6)
+
+    def test_rtf_zero_audio_is_zero_not_inf(self):
+        """没产出音频时 RTF 必须返回 0.0（表示"无从判断"），不能除零
+
+        不能返回 inf 或抛异常：调用方会拿它跟 0.4 比较，inf 会被误判成"很慢"，
+        而真实语义是"这一句根本没合成出东西"。
+        """
+        self.assertEqual(TtsSynthesisResult(seq=1, audio_ms=0.0, synth_ms=100.0).rtf, 0.0)
+
+    def test_vits_callback_fires_once_so_first_chunk_equals_synth(self):
+        """实测：VITS 每句只回调一次，所以 first_chunk_ms 与 synth_ms 相等
+
+        这条断言把 docs/tts_benchmark.md §1 发现一钉在类型层：
+        任何人若开始假设"首块比整句快"，都必须先推翻这条测试。
+        """
+        r = TtsSynthesisResult(seq=1, audio_ms=4000.0, first_chunk_ms=443.4, synth_ms=443.4)
+        self.assertEqual(r.first_chunk_ms, r.synth_ms)
+
+    def test_ok_semantics(self):
+        """可用引擎 + 无错误 = 成功；被取消也算成功（取消是正常路径，不是故障）"""
+        self.assertTrue(TtsSynthesisResult(seq=1).ok)
+        self.assertTrue(TtsSynthesisResult(seq=1, cancelled=True).ok)
+        self.assertFalse(TtsSynthesisResult(seq=1, error="模型缺失").ok)
+        self.assertFalse(TtsSynthesisResult(seq=1, engine=TtsEngine.UNAVAILABLE).ok)
+
+    def test_is_silent_exposes_the_truncation_failure_mode(self):
+        """`is_silent` 存在的意义：让"合成成功但没声音"能被上游发现
+
+        这正是 max_num_sentences=1 那类静默失效的形状 —— 引擎正常返回、
+        error 为空，只是音频是空的或短得离谱。没有这个字段，上游只能看到
+        "成功"，无从察觉内容被丢了。
+        """
+        self.assertTrue(TtsSynthesisResult(seq=1, audio_ms=0.0).is_silent)
+        self.assertFalse(TtsSynthesisResult(seq=1, audio_ms=4101.0).is_silent)
 
 
 if __name__ == "__main__":

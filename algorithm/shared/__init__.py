@@ -1,9 +1,14 @@
-﻿"""共享数据类模块 —— 导出统一数据接口"""
+"""共享数据类模块 —— 导出统一数据接口"""
 from shared.dataclasses import (
+    AsrEngine,
+    AsrEventType,
+    AsrResult,
     AuditAction,
     AuditAxis,
     AuditResult,
     AuditVerdict,
+    ChatStreamEvent,
+    ChatStreamEventType,
     CrisisAlert,
     EmotionResult,
     EscalationChannel,
@@ -15,6 +20,9 @@ from shared.dataclasses import (
     PhenotypeVector,
     RiskAssessment,
     RiskLevel,
+    StreamingAsrUpdate,
+    TtsEngine,
+    TtsSynthesisResult,
 )
 
 __all__ = [
@@ -33,4 +41,12 @@ __all__ = [
     "EscalationChannel",
     "EscalationResult",
     "EscalationStatus",
+    "AsrEngine",
+    "AsrEventType",
+    "AsrResult",
+    "StreamingAsrUpdate",
+    "TtsEngine",
+    "TtsSynthesisResult",
+    "ChatStreamEventType",
+    "ChatStreamEvent",
 ]
