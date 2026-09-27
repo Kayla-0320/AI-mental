@@ -242,6 +242,7 @@ def transition(
     risk_level: RiskLevel,
     turn_count: int,
     emotion_trend: Optional[str] = None,
+    crisis_turns: int = 0,
 ) -> DialogState:
     """状态转移函数
 
@@ -252,6 +253,7 @@ def transition(
         risk_level: 当前风险评估等级（来自 assessment 模块）
         turn_count: 当前对话轮次计数
         emotion_trend: 情感趋势（"improving" / "stable" / "worsening" / None）
+        crisis_turns: 在 CRISIS 状态持续的轮次数（用于自动降级）
 
     Returns:
         下一个对话状态
@@ -276,15 +278,27 @@ def transition(
         return DialogState.CRISIS
 
     # --------------------------------------------------------
-    # 规则 3：CRISIS 状态只在风险降至 LOW 后允许转移到 CLOSE
-    # 设计理由：危机解除后不能直接回到干预阶段，需要经过总结确认。
-    #          如果风险仍为 MEDIUM/HIGH，保持在 CRISIS 等待升级层处理。
+    # 规则 3：CRISIS 状态退出机制
+    # 设计理由：CRISIS 是临时安全检查状态，不应永久锁定。
+    #          连续 2 轮无新危机信号 → 降级到 EXPLORE 继续探索
+    #          风险降至 LOW → 进入 CLOSE 做安全确认总结
     # --------------------------------------------------------
     if current_state == DialogState.CRISIS:
+        # 风险降至 LOW → 危机解除，进入结束阶段
         if risk_level == RiskLevel.LOW:
-            # 危机解除 → 进入结束阶段做安全确认总结
             return DialogState.CLOSE
-        # 风险未降至 LOW → 保持在 CRISIS，等待升级层介入
+
+        # 风险为 MEDIUM 且已在 CRISIS 持续 2 轮以上 → 安全确认后降级到 EXPLORE
+        # 临床依据：C-SSRS 协议中，安全确认后应继续探索而非停留在危机模式
+        if risk_level == RiskLevel.MEDIUM and crisis_turns >= 2:
+            return DialogState.EXPLORE
+
+        # 风险仍为 HIGH 但已持续 3 轮且趋势稳定/改善 → 降级到 EXPLORE
+        if risk_level == RiskLevel.HIGH and crisis_turns >= 3:
+            if emotion_trend in ("stable", "improving", None):
+                return DialogState.EXPLORE
+
+        # 其他情况 → 保持在 CRISIS，等待升级层介入
         return DialogState.CRISIS
 
     # --------------------------------------------------------
@@ -726,6 +740,8 @@ class DialogEngine:
         self.current_depth: SocraticDepth = SocraticDepth.SHALLOW
         self.consecutive_exploration_turns: int = 0  # 连续主动探索轮次
         self.depth_frozen_turns: int = 0  # 深度冻结剩余轮次（回避后降级冻结）
+        # CRISIS 状态持续轮次（用于自动降级）
+        self.crisis_turns: int = 0
 
     def start(self, risk_level: RiskLevel = RiskLevel.LOW) -> Action:
         """启动对话引擎
@@ -877,18 +893,28 @@ class DialogEngine:
         Returns:
             本轮动作
         """
-        # 状态转移
+        # 状态转移（传入 crisis_turns 用于自动降级判断）
         next_state = transition(
             self.current_state,
             risk_level,
             self.turn_count,
             emotion_trend,
+            crisis_turns=self.crisis_turns,
         )
 
-        # 记录状态变化
+        # 记录状态变化并更新 crisis_turns 计数器
         if next_state != self.current_state:
             self.current_state = next_state
             self.state_history.append((self.turn_count, next_state))
+            # 进入 CRISIS → 重置计数器
+            if next_state == DialogState.CRISIS:
+                self.crisis_turns = 0
+            # 离开 CRISIS → 重置计数器
+            elif self.crisis_turns > 0:
+                self.crisis_turns = 0
+        elif next_state == DialogState.CRISIS:
+            # 保持在 CRISIS → 递增计数器
+            self.crisis_turns += 1
 
         # 选择动作
         action = select_action(self.current_state, self.turn_count, risk_level)
