@@ -1128,10 +1128,9 @@ def _used_openings(conversation_history: list) -> list[str]:
     return used
 
 
-# 反复出现的"陪伴/鼓励"套话。它们单说一次是好的，但模型爱每轮都堆一句，
-# 于是"我会一直陪着你""慢慢来""你已经很棒了"变成新的机械感来源
-# （2026-09-27 用户截图：连续两轮都出现"我会一直在这里陪着你"+"慢慢来"）。
-# 与 _STALE_OPENINGS 的区别：开场只看句首，这些要扫**整段正文**。
+# 反复出现的"陪伴/鼓励"套话。它们单说一次是暖的，但连着每轮都堆同一句，
+# 就变成机械感来源（2026-09-27 用户截图：连续两轮都出现"我会一直在这里
+# 陪着你"+"慢慢来"）。与 _STALE_OPENINGS 的区别：开场只看句首，这些扫正文。
 _CLICHE_SENTENCES = (
     "我会一直在这里", "我会一直陪", "我在这里陪着你", "在这里陪着你", "会一直在这里",
     "慢慢来", "不着急", "按你的节奏",
@@ -1140,27 +1139,33 @@ _CLICHE_SENTENCES = (
     "不会评判你", "不评判你", "认真听你说", "愿意说就说", "想说的时候随时说",
 )
 
+# 套话只算"最近几轮"的即时重复。⚠️ 不能扫整段历史 —— 那样一句暖话说过一次
+# 就永久进黑名单，模型没有陪伴表达可用，会退化成"嗯，怎么了？"这种光秃秃的
+# 语气词+提问（2026-09-27 用户第二轮反馈：矫枉过正、太没人情味）。
+# 隔了几轮再自然说一句同样的陪伴话，是合理的，不该拦。
+_CLICHE_RECENCY_TURNS = 2
+
 
 def _used_cliches(conversation_history: list) -> list[str]:
-    """本段对话里 AI **正文中**已经出现过的陪伴/鼓励套话。
+    """**最近 _CLICHE_RECENCY_TURNS 条 assistant 发言**里出现过的陪伴/鼓励套话。
 
-    扫全部 assistant 消息的完整内容（不是只看开场），因为"我会一直陪着你"
-    这类话通常出现在句中/句尾。返回命中集合，供 prompt 硬禁用 + 定稿删除共用。
+    只看最近的回复，目的是拦"连着每轮重复同一句"，而不是永久封杀温暖表达。
 
     Args:
         conversation_history: 对话历史 ``[{role, content}]``。
 
     Returns:
-        list[str]: 已经说过的套话（按定义顺序，去重）。
+        list[str]: 最近说过的套话（按定义顺序，去重）。
     """
+    recent = [
+        str(m.get("content", ""))
+        for m in conversation_history
+        if m.get("role") == "assistant"
+    ][-_CLICHE_RECENCY_TURNS:]
     used: list[str] = []
     for phrase in _CLICHE_SENTENCES:
-        for msg in conversation_history:
-            if msg.get("role") != "assistant":
-                continue
-            if phrase in str(msg.get("content", "")):
-                used.append(phrase)
-                break
+        if any(phrase in body for body in recent):
+            used.append(phrase)
     return used
 
 
@@ -1187,11 +1192,12 @@ def _trim_reply(text: str, used_cliches: list[str]) -> str:
     if not parts:
         return text.strip()
 
-    # 1) 删除含"已用过套话"的句子（本轮若自己也重复，同样只保留首次出现）
+    # 1) 删除含"最近说过套话"的句子。⚠️ 只有删完还剩 ≥2 句才删 —— 短回复
+    #    （本就一两句）若被删到只剩个光杆，会比留着套话更没人情味，宁可留。
     if used_cliches:
         kept = [p for p in parts if not any(c in p for c in used_cliches)]
-        # 全被删光说明整段都是套话 —— 保留原句避免空回复
-        parts = kept if kept else parts
+        if len(kept) >= 2:
+            parts = kept
 
     # 2) 长度截断：按整句累加，超过上限就停在上一句，至少保留第一句
     result = ""
@@ -1423,8 +1429,8 @@ def _build_llm_messages(
         beat_no_question = True
     elif beat_no_question:
         ask_rule = (
-            "这一轮**先不往下问**：接住 ta 刚说的，给一句你自己的感受、"
-            "或点出 ta 没说出口的那层，就够了。老是以问题收尾会像在做笔录。"
+            "这一轮**先不往下问**：把 ta 接住 —— 给一两句你自己的感受、"
+            "或点出 ta 没说出口的那层。不提问不等于敷衍，别只回一个语气词。"
         )
     else:
         ask_rule = (
@@ -1438,12 +1444,12 @@ def _build_llm_messages(
     # 但仍是概率性的 —— 真正的不变量由 :func:`_finalize_reply` 保证。
     if beat_no_question:
         final_reminder = (
-            "这一轮：只说回应，不要提问。"
-            "接住 ta 刚说的内容，用陈述句说出来就够了。"
+            "这一轮：不提问，但要把 ta 接住 —— 用一两句陈述把 ta 说的东西"
+            "回应到位（你的感受、或点出 ta 没说出口的那层），别只丢个语气词。"
         )
     else:
         final_reminder = (
-            "这一轮：先接住 ta 说的具体内容（提到 ta 说的人或事），"
+            "这一轮：先用一句实打实的话接住 ta 说的具体内容（提到 ta 说的人或事），"
             "再顺着往下问**一个**问题，让 ta 有话可接。"
         )
 
@@ -1461,9 +1467,9 @@ def _build_llm_messages(
         )
     if used_cliches:
         ban_lines.append(
-            "禁止再说的**陪伴/鼓励套话**（上几轮已经说过，本轮一个字都别再出现）："
+            "这几句陪伴/鼓励话**上一轮刚说过，本轮别再原样重复**："
             + "、".join(f"「{c}」" for c in used_cliches) + "。"
-            "要传达陪伴，就用**这一轮独有的、指着 ta 刚说的那件事**的说法，别用万能句。"
+            "该给的温暖继续给，只是换个说法、或落到 ta 这件具体的事上，别复制粘贴。"
         )
     if ban_lines:
         openings_ban = "# 本轮硬性禁用\n" + "\n".join(ban_lines)
@@ -1511,10 +1517,13 @@ def _build_llm_messages(
 3. 被问身份时说明：我是 AI 陪伴者，**不能替代线下持证心理咨询师与精神科医生**。
 
 # 怎么说话
-- **先接住 ta 刚说的具体东西**（提到的人、事、ta 的原话），再往下走一句。
+- **每一轮都必须先用一句实打实的话接住 ta**（指着 ta 刚说的人/事/原话，
+  让 ta 知道你在听、你懂那是怎么回事），然后才谈要不要往下问。
+  ⚠️ 不许只丢一个语气词加提问就交差 —— "嗯，怎么了？"这种没有承接的短问，
+  比长一点的套话更让人心凉。至少先有一句真正接住 ta 的话。
 - 共情要**指着那件事说**，不是贴情绪标签：与其"你很伤心"，不如"被当着全班说那种话，谁也受不了"。
-- 不是每轮都要提问收尾。有时就接一句、停一下，让 ta 自己往下说。
-- 一次 1~3 句、20~100 字，按 ta 给的信息量定；别写一大段，别分点。口语、可以停顿。
+- 温暖的话该说就说，只是**别连着每轮都复制同一句**；这轮陪一句、下轮换个说法或落到 ta 这件具体的事上。
+- 长度：一般 2~3 句、30~90 字，把温度和承接说够；ta 说得少你可以短一点，但**不能短到敷衍**。别写成一大段、别分点。口语、可以停顿。
 
 # 两段示范（学这个**感觉和节奏**，句子不要照抄）
 【示范一 · 学业压力】

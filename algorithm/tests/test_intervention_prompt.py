@@ -253,7 +253,7 @@ class TestPromptBansTemplatedReplies:
         assert "今天想说点什么" in prompt
         assert "问了就是硬造" in prompt
         assert "本轮**要追问**" not in prompt
-        assert "只说回应，不要提问" in prompt
+        assert "不提问" in prompt
 
     def test_second_greeting_does_not_greet_again(self, captured_prompt):
         """同一段对话里第二次说"你好"，不能又问一次好。"""
@@ -276,7 +276,7 @@ class TestPromptBansTemplatedReplies:
         """回应必须碰到用户说的具体人/事/原话。"""
         iv._call_llm("老师骂我了", [], SAD_PROBS, "low", style=UserStyle.CALM)
         prompt = captured_prompt["messages"][0]["content"]
-        assert "先接住 ta 说的具体内容" in prompt
+        assert "接住 ta 说的具体内容" in prompt
 
     def test_bans_bare_acknowledgement_as_default(self, captured_prompt):
         """「嗯，我在」这类留白句不能变成新的万能回复。
