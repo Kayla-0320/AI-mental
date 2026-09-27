@@ -1782,8 +1782,13 @@ def _detect_crisis(text: str) -> bool:
 # 例如「中度抑郁」「重度焦虑」「高压力」「轻度焦虑」「中等压力」「无抑郁」。
 # ⚠️ 此前用英文 ("moderate","severe","mild") 比较，恒不命中 —— 除危机关键词
 # 外风险永远算成 low，既漏报了该升级的高风险，也让流式增量在高危轮关不掉。
-_HIGH_SEVERITY_MARKERS = ("中度", "中重度", "重度", "高压力", "严重")
-_MEDIUM_SEVERITY_MARKERS = ("轻度", "中等压力")
+#
+# 分级要贴合临床阈值：只有**中重度及以上**（PHQ-9≥15、GAD-7 重度、PSS 高压力）
+# 才算 high（该升级、关增量流式）；中度/轻度是"该关注"的 medium。
+# 否则一句"我好难受"（悲伤概率高→PHQ-9 中度抑郁）就被判成 high，既误触发升级、
+# 又不该关掉的流式也被关掉。注意"中重度"含子串"重度"，两者都落在 high。
+_HIGH_SEVERITY_MARKERS = ("中重度", "重度", "严重", "高压力")
+_MEDIUM_SEVERITY_MARKERS = ("中度", "轻度", "中等压力")
 
 
 def _severity_to_risk(severity: str) -> str:

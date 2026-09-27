@@ -938,13 +938,13 @@ class TestSeverityToRisk:
     def test_phq9_chinese_levels(self):
         assert iv._severity_to_risk("无抑郁") == "low"
         assert iv._severity_to_risk("轻度抑郁") == "medium"
-        assert iv._severity_to_risk("中度抑郁") == "high"
+        assert iv._severity_to_risk("中度抑郁") == "medium"
         assert iv._severity_to_risk("中重度抑郁") == "high"
         assert iv._severity_to_risk("重度抑郁") == "high"
 
     def test_gad7_and_pss10_levels(self):
         assert iv._severity_to_risk("轻度焦虑") == "medium"
-        assert iv._severity_to_risk("中度焦虑") == "high"
+        assert iv._severity_to_risk("中度焦虑") == "medium"
         assert iv._severity_to_risk("重度焦虑") == "high"
         assert iv._severity_to_risk("低压力") == "low"
         assert iv._severity_to_risk("中等压力") == "medium"
