@@ -287,12 +287,17 @@ def build_memory_context(
     if not memories:
         return ""
 
-    lines = ["[关于这个用户，你之前了解到的信息：]"]
+    lines = ["[关于这个用户的**背景**（你以前听 ta 提过的，仅供你理解这个人）：]"]
     for mem in memories:
         category_label = _category_label(mem.category)
         lines.append(f"- ({category_label}) {mem.fact}")
 
-    lines.append("[请在对话中自然地引用这些信息，让用户感到被记住。不要直接说'我记得你说过'。]")
+    lines.append(
+        "[⚠️ 这些是**过去**的背景，不代表 ta 现在遇到的事。"
+        "只有在 ta **本轮自己主动提到**相关话题时，才可以顺着接一句；"
+        "ta 没提，就**绝对不要**把这些背景当成 ta 刚说的话去回应、去点破、去追问，"
+        "也不要说'我记得你说过'。宁可当作不知道。]"
+    )
 
     return "\n".join(lines)
 

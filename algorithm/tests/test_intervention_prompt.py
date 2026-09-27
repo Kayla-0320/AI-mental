@@ -220,8 +220,8 @@ class TestPromptBansTemplatedReplies:
         iv._call_llm("我考试没考好", [], SAD_PROBS, "low", style=UserStyle.CALM)
         prompt = captured_prompt["messages"][0]["content"]
         assert "共情是每个情绪轮次的必做动作" in prompt
-        # 共情要落到具体那件事上，并给出示范句，否则模型只能回到复读情绪标签
-        assert "共情要" in prompt and "指着那件事说" in prompt
+        # 共情要落到 ta 真说过的话上，并给出示范句，否则模型只能回到复读情绪标签
+        assert "共情要" in prompt and "指着 ta 说过的话说" in prompt
         assert "谁也受不了" in prompt  # 示范里的指着事说的共情
 
     def test_bans_empathy_plus_question_formula(self, captured_prompt):
@@ -244,6 +244,20 @@ class TestPromptBansTemplatedReplies:
         prompt = captured_prompt["messages"][0]["content"]
         assert "只回应 ta 说的话，不要替 ta 编话" in prompt
         assert "你今天看起来有点没精神" in prompt  # 必须作为反例出现
+
+    def test_prompt_does_not_smuggle_a_copyable_scenario(self, captured_prompt):
+        """提示词里不能出现可被照抄的**具体情节**。
+
+        回归：截图里用户只说"我现在有点难受"，模型却回"被当着全班说那种话"——
+        因为旧 prompt 的 ✅ 示范句直接写了这个场景，模型把它当成 ta 说的话搬了出来。
+        """
+        iv._call_llm("我现在有点难受", [], SAD_PROBS, "low", style=UserStyle.CALM)
+        prompt = captured_prompt["messages"][0]["content"]
+        assert "被当着全班" not in prompt
+        assert "搁谁都得缓半天" not in prompt
+        # 明确禁止把示范/旧背景当成 ta 本轮说的话
+        assert "绝不要把示范中出现过的情节当成 ta 说的话" in prompt
+        assert "先接住情绪，再问发生了什么" in prompt
 
     def test_greeting_gets_its_own_playbook(self, captured_prompt):
         """打招呼时只回招呼，不提情绪、不追问。"""
