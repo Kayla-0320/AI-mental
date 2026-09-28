@@ -124,3 +124,12 @@ _tts_bench/
 !client/public/models/
 !client/public/models/open_closed_eye.onnx
 !client/public/models/NOTICE-open-closed-eye-0001.txt
+
+# ===== CosyVoice3 零样本克隆参考音（显式放行）=====
+# 上面第 89 行 `*.wav` 会把这个文件挡掉，但它是**音色这一交付物的定义本身**，
+# 不是可重跑的中间产物：README 明确要求它入库以保证音色可复现、可版本管理，
+# server.py 也按 COSYVOICE_PROMPT_WAV 默认指向它。不入库 = 克隆后该引擎没音色。
+# 只有 262 KB（由 Qwen3-TTS 生成音频裁出的前两句，0–5.6 s），走普通 git 即可。
+# 注意顺序：必须先把父目录放行，否则后面的 `!文件` 不生效。
+!algorithm/tts/cosyvoice_service/
+!algorithm/tts/cosyvoice_service/prompt_qwen3_voice.wav

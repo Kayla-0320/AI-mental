@@ -559,8 +559,10 @@ class TestTtsEngine(unittest.TestCase):
     """TtsEngine 枚举测试"""
 
     def test_enum_values(self):
-        """枚举值必须为 sherpa-onnx-vits / unavailable"""
+        """枚举值必须为 sherpa-onnx-vits / qwen3-tts / cosyvoice3 / unavailable"""
         self.assertEqual(TtsEngine.VITS, "sherpa-onnx-vits")
+        self.assertEqual(TtsEngine.QWEN3, "qwen3-tts")
+        self.assertEqual(TtsEngine.COSYVOICE, "cosyvoice3")
         self.assertEqual(TtsEngine.UNAVAILABLE, "unavailable")
 
     def test_enum_is_str(self):
@@ -575,7 +577,8 @@ class TestTtsEngine(unittest.TestCase):
         参考信号，也做不了文本级自回声过滤（docs/voice_call_plan.md §6.3）。
         这条断言是防止有人"顺手加一个省事的引擎"。
         """
-        self.assertEqual(len(TtsEngine), 2)
+        # 3 个真引擎（vits / qwen3 / cosyvoice）+ 1 个 UNAVAILABLE
+        self.assertEqual(len(TtsEngine), 4)
         self.assertNotIn("speech-synthesis", {e.value for e in TtsEngine})
 
 

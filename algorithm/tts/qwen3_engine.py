@@ -527,15 +527,27 @@ def create_engine(backend: Optional[str] = None):
     """根据 ``TTS_BACKEND`` 环境变量（或显式参数）创建 TTS 引擎单例。
 
     可选值：
-        ``vits``  —— 本地离线 sherpa-onnx VITS（默认，零 GPU 占用）
-        ``qwen3`` —— Qwen3-TTS VoiceDesign（对话级韵律，需 GPU 显存）
+        ``vits``      —— 本地离线 sherpa-onnx VITS（默认，零 GPU 占用）
+        ``qwen3``     —— Qwen3-TTS VoiceDesign（对话级韵律，需 GPU 显存）
+        ``cosyvoice`` —— CosyVoice3 零样本克隆（独立微服务，HTTP 流式）
 
     未知值记 warning 后回落 ``vits``。本函数**不**缓存结果（引擎自己带单例）。
+
+    ⚠️ 已知的静默降级风险：本项目此前踩过"``TTS_BACKEND`` 拼错 → 只打一条
+    warning → 实际跑的是 vits"的坑（现场表现为"换引擎没生效"，日志里毫不知情）。
+    所以这里对未知值**同时**记 warning 与 info，且 ``/tts/status`` 会如实报出
+    实际生效的引擎名，便于一眼核对。
     """
     choice = (backend or os.environ.get("TTS_BACKEND") or "vits").strip().lower()
     if choice == "qwen3":
         return Qwen3TtsEngine.instance()
+    if choice == "cosyvoice":
+        from tts.cosyvoice_engine import CosyVoiceTtsEngine  # noqa: PLC0415 —— 懒导入
+        return CosyVoiceTtsEngine.instance()
     if choice not in ("", "vits"):
-        logger.warning("[TTS] 未知的 TTS_BACKEND=%r，回落到 vits", choice)
+        logger.warning(
+            "[TTS] 未知的 TTS_BACKEND=%r（可选 vits/qwen3/cosyvoice），回落到 vits",
+            choice,
+        )
     from tts.engine import VitsTtsEngine  # noqa: PLC0415 —— 懒导入避免循环
     return VitsTtsEngine.instance()

@@ -381,9 +381,15 @@ class StreamingAsrUpdate:
 class TtsEngine(str, Enum):
     """语音合成引擎枚举
 
-    两条本地路径，通过环境变量 ``TTS_BACKEND`` 切换：
-        * ``vits``  —— sherpa-onnx VITS 离线合成（16 kHz，零 GPU 占用）
-        * ``qwen3`` —— Qwen3-TTS 0.6B 对话级合成（24 kHz，需 GPU 显存）
+    三条路径，通过环境变量 ``TTS_BACKEND`` 切换：
+        * ``vits``      —— sherpa-onnx VITS 离线合成（16 kHz，零 GPU 占用）
+        * ``qwen3``     —— Qwen3-TTS 1.7B 对话级合成（24 kHz，需 GPU 显存）
+        * ``cosyvoice`` —— CosyVoice3 零样本克隆（24 kHz，独立微服务 + GPU）
+
+    前两条跑在算法服务进程内；``cosyvoice`` 走**独立微服务**
+    （``tts/cosyvoice_service/``），因为它的 ``torch==2.7`` + ``numpy<2``
+    与本进程的 ``torch==2.11`` + ``numpy==2.5`` 直接冲突，放不进同一解释器。
+    这与算法侧既有的"ASR 与 TTS 依赖/失败模式独立"是同一条原则。
 
     刻意不提供浏览器 ``speechSynthesis``：它的音频**不经过 Web Audio**，
     拿不到 ``MediaStream`` / ``AudioNode``，因此既不能作为回声消除的参考信号，
@@ -394,6 +400,7 @@ class TtsEngine(str, Enum):
     """
     VITS = "sherpa-onnx-vits"     # 本地离线合成（/tts/ws）
     QWEN3 = "qwen3-tts"           # 本地对话级合成（/tts/ws，voice design）
+    COSYVOICE = "cosyvoice3"      # 独立微服务零样本克隆（HTTP 流式，1.2× 加速）
     UNAVAILABLE = "unavailable"   # 模型缺失或加载失败
 
 

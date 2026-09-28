@@ -124,6 +124,14 @@ class TtsStatusResponse(BaseModel):
         default=None,
         description="Qwen3-TTS 的 voice design 描述（仅 qwen3 引擎返回）",
     )
+    speed: float | None = Field(
+        default=None,
+        description=(
+            "引擎的默认语速倍率。VITS 下来自 TTS_SPEED；"
+            "cosyvoice 下来自微服务自述（默认 1.2，逐块保音高加速）。"
+            "换语速最怕的就是「改了没生效还看不出来」，所以必须如实上报"
+        ),
+    )
     error: str = Field(default="", description="失败原因；非空表示不可用")
 
 
@@ -480,5 +488,7 @@ def status() -> TtsStatusResponse:
         num_threads=int(info["num_threads"]),  # type: ignore[arg-type]
         max_num_sentences=int(info["max_num_sentences"]),  # type: ignore[arg-type]
         voice_prompt=info.get("voice_prompt"),  # type: ignore[arg-type]
+        # Qwen3 从不报 speed（它没这个参数），这里用 get 保持三条引擎都安全
+        speed=info.get("speed"),  # type: ignore[arg-type]
         error=str(info["error"]),
     )
