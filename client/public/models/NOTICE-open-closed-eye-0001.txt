@@ -1,0 +1,38 @@
+open_closed_eye.onnx —— 第三方模型许可证与出处
+=================================================
+
+文件：client/public/models/open_closed_eye.onnx
+大小：46 164 字节
+SHA-384：2615bce53b55620c629db21b043057600ccc53466f053c0a8277c43577c2db21e48f330cf9b15213016d17cddb8cba27
+（与 Open Model Zoo 的 model.yml 声明值逐字节一致，已实测校验）
+
+出处
+----
+OpenVINO™ Open Model Zoo — 模型 `open-closed-eye-0001`
+  https://github.com/openvinotoolkit/open_model_zoo/tree/master/models/public/open-closed-eye-0001
+下载地址
+  https://storage.openvinotoolkit.org/repositories/open_model_zoo/public/2022.1/open-closed-eye-0001/open_closed_eye.onnx
+原始训练/发布来源
+  https://github.com/opencv/openvino_training_extensions
+  （model.yml 中 `license` 字段即指向该仓库的 LICENSE）
+
+许可证
+------
+Apache License, Version 2.0
+  http://www.apache.org/licenses/LICENSE-2.0
+Copyright (c) 2022-2024 Intel Corporation
+
+按 Apache-2.0 第 4 条，分发时保留本说明与上述版权/许可声明。
+本文件不修改模型本体；本项目仅将其作为「每眼睁闭眼」的独立第二判定信号使用。
+
+训练数据（用于理解适用范围，非许可条款）
+----------------------------------------
+MRL Eye Dataset（近红外灰度眼部图像）。因此该模型在本平台的 RGB 摄像头画面上存在
+域偏移：实测在 RT-BENE（RGB）标注 patch 上 AUC 0.92–0.97，但**没有**任何阈值能同时
+满足"闭眼召回 ≥ 0.9"。详见 docs/blink_signal_source_selection.md §3.2 / §6。
+
+使用约定
+--------
+- 类别顺序按**实测**取 index 0 = 闭眼（官方 model card 标注为 [open, closed]，实测相反）。
+- 推理全程在浏览器内完成，不上传任何图像。
+- 当前默认**不参与风险计算**（只上报），启用前需按文档完成阈值标定。

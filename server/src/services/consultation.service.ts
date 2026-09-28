@@ -514,6 +514,52 @@ class ConsultationService {
     });
   }
 
+  /**
+   * 批量删除对话（列表页「全选并删除」用）。
+   *
+   * 与单条删除同一条语义：**软删除**（isActive = false），消息记录保留。
+   * 因此这里也复用 update 语义，而不是 delete —— 两者混用会让
+   * 「删掉的对话还能不能被审计/回溯」这个问题变得没法回答。
+   *
+   * ⚠️ 必须是**真事务**，不能图省事写成"先 updateMany 再比 count"：
+   * updateMany 是单条 SQL，写完就落库了；等它返回再发现 count 对不上、
+   * 抛 404 时，那些合法 id 已经被删掉了 —— 用户看到"删除失败"，
+   * 刷新却发现少了几条（本次实测确实如此：5 条里被删掉 1 条）。
+   * 这里用一段交互式事务把「先查后改」包起来，任一步抛出都整体回滚。
+   *
+   * 传入的 id 里只要有**不属于当前用户或已被删除**的，就整体拒绝：
+   * 静默跳过会让前端以为「全删掉了」，而列表里还留着几条，用户只能反复点。
+   */
+  async deleteConversations(conversationIds: string[], userId: string) {
+    // 去重：前端可能因为重复点击把同一个 id 发两遍
+    const uniqueIds = Array.from(new Set(conversationIds));
+
+    if (uniqueIds.length === 0) {
+      throw new AppError('请选择要删除的对话', 400);
+    }
+
+    const deleted = await prisma.$transaction(async (tx) => {
+      // 条件里同时带 userId，越权 id 会自然落空，不会误删别人的会话
+      const owned = await tx.conversation.findMany({
+        where: { id: { in: uniqueIds }, userId, isActive: true },
+        select: { id: true },
+      });
+
+      if (owned.length !== uniqueIds.length) {
+        throw new AppError('部分对话不存在或已被删除，请刷新后重试', 404);
+      }
+
+      const { count } = await tx.conversation.updateMany({
+        where: { id: { in: uniqueIds }, userId, isActive: true },
+        data: { isActive: false },
+      });
+
+      return count;
+    });
+
+    return { deleted };
+  }
+
   //  创建危机记录（使用 raw SQL，因 CrisisRecord 模型刚添加）
   private async createCrisisRecord(userId: string, sourceText: string, crisisResult: any) {
     try {

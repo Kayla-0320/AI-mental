@@ -476,19 +476,31 @@ class ChatStreamEventType(str, Enum):
         3. 浏览器消费端 ``client/src/services/index.ts``
 
     事件顺序约定：
+        meta → (delta*) → speak → done         # 低/中风险：文本流完后给合成计划
         meta → (delta*) → done
-        meta → (delta*) → revise → done      # 安全审计改写了回复
-        meta → error                          # 前处理失败，未产生任何 delta
-        meta → (delta*) → revise → error      # 流中断，revise 携带已审计的兜底文本
+        meta → (delta*) → revise → done        # 安全审计改写了回复
+        meta → error                            # 前处理失败，未产生任何 delta
+        meta → (delta*) → revise → error        # 流中断，revise 携带已审计的兜底文本
+
+    ⚠️ 关于 `SPEAK` 的位置：它**必须在文本流完之后**才能算出来（定稿要看全文），
+    所以事件顺序上排在 `delta*` 之后。这不是"定稿晚于产出"—— 定稿不改动一个字，
+    它是**用同一份文本**给出"按句怎么合成、按句怎么上屏"的计划；`delta` 拼接与
+    `speak.text` 与 `done.text` 三者**逐字相等**（由 `_plan_streamed_reply` 保证）。
+    旧行为的问题不是顺序，而是 `done.text` 会比已流出的字**短**（问句上限在音频
+    已经合成之后才生效 → 声音念到一半被掐断）。
 
     Attributes:
         META: 前处理完成，携带风险等级、对话模式与情绪概率；此时还没有任何回复文本
+        SPEAK: **定稿文本的合成计划**（按句切好的 ``segments`` + 全文 ``text``）。
+            语音端据此合成与上屏，保证"听到的"与"看到的"同源；**纯文字端可忽略**。
+            只有低/中风险会下发；`segments.join('')` 恒等于 `text`。
         DELTA: 回复的增量片段，消费端应**追加**到当前气泡
         REVISE: 权威改稿，消费端应**整体替换**当前气泡（安全审计否掉了已生成的内容）
         DONE: 本轮结束，携带与非流式 /smart-chat 完全一致的审计结论
         ERROR: 出错，本轮作废；消费端应回退到非流式路径
     """
     META = "meta"
+    SPEAK = "speak"
     DELTA = "delta"
     REVISE = "revise"
     DONE = "done"

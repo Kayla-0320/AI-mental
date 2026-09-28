@@ -23,6 +23,9 @@ export const consultationApi = {
     api.post(`/consultation/conversations/${conversationId}/socratic`, { content }),
   deleteConversation: (conversationId: string) =>
     api.delete(`/consultation/conversations/${conversationId}`),
+  // 批量删除（对话历史「全选删除」）。后端同一条语义：软删除。
+  deleteConversations: (conversationIds: string[]) =>
+    api.delete('/consultation/conversations', { data: { conversationIds } }),
 };
 
 // 心理画像相关

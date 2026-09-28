@@ -541,6 +541,130 @@ def _negative_emotion_intensity(emotion_probs: list[float]) -> float:
     return max(0.0, min(1.0, total))
 
 
+# ============================================================
+# 情绪锚点（问题① 的核心改动）
+# ============================================================
+#
+# 用户反馈（2026-09-27）："考试没考好，它没接住那份失落感，回复很假、很模板。"
+#
+# 根因不是模板代码 —— 回复由 qwen 生成，:func:`_build_llm_messages` 里也早就禁用了
+# "我能感受到…"这类套路开场。根因是 **prompt 里刻意不喂情绪标签**：感知层算出了
+# `dominant_emotion`，但只把"负性强度百分比"给了模型（见 _build_llm_messages 的
+# 原注释），于是"该接哪一种情绪"全靠模型从字面猜 —— 接不住就是这么来的。
+#
+# 现在改成：把主导情绪映射成**更细腻的内部词**（"悲伤" → "失落/没劲"），
+# 作为**只给模型看、严禁说出口**的一行注入 prompt。既保留"不许复读情绪标签"
+# 的原意（模型复述的是"失落"这个词，而不是"悲伤"那个分类名），又让"先接哪一种
+# 情绪"从瞎猜变成有据可依。
+#
+# 标签顺序与 perception.TextEmotionResult 一致：[快乐, 悲伤, 焦虑, 愤怒, 中性]
+_DOMINANT_EMOTION_CUES: dict[int, tuple[str, str]] = {
+    1: ("失落/难过", "刚经历了一件让 ta 失望或挫败的事（考砸、被否定、努力没结果）"),
+    2: ("悬着的/不踏实", "ta 在担心还没发生或控制不了的事，心里放不下来"),
+    3: ("委屈/憋着火", "ta 觉得被不公平地对待了，或对某个人有火没处发"),
+}
+
+# 主导情绪的判定阈值：五分类里最高那一类的概率。取 0.45 是因为探针实测
+# "我这次考试没考好" 的悲伤概率为 0.96，而"你好"这类中性输入的中性概率约 0.80
+# —— 阈值放低了会把中性轮次也判成负面情绪。
+_DOMINANT_EMOTION_MIN_PROB = 0.45
+
+
+def _dominant_emotion_cue(emotion_probs: list[float]) -> str:
+    """把主导情绪映射成"只给模型看"的内部线索行。
+
+    返回空串表示**本轮不适合给情绪锚点**（中性/快乐占主导，或输入异常）。
+    调用方据此决定要不要把这行注入 prompt —— 空串时必须不注入，
+    否则模型会在用户什么都没说的时候凭空共情。
+
+    Args:
+        emotion_probs: ``[快乐, 悲伤, 焦虑, 愤怒, 中性]`` 概率。
+
+    Returns:
+        str: 形如 ``失落/难过 —— <说明>`` 的线索；无可用线索时为 ``""``。
+    """
+    try:
+        probs = [float(p) for p in emotion_probs]
+    except (TypeError, ValueError):
+        return ""
+    if not probs:
+        return ""
+    dominant = max(range(len(probs)), key=lambda i: probs[i])
+    if dominant not in _DOMINANT_EMOTION_CUES:
+        return ""
+    if probs[dominant] < _DOMINANT_EMOTION_MIN_PROB:
+        return ""
+    word, why = _DOMINANT_EMOTION_CUES[dominant]
+    return f"{word} —— {why}"
+
+
+def _narrative_thread(
+    user_message: str,
+    conversation_history: list,
+    scene_context: str = "",
+) -> str:
+    """提取"用户这一段正在讲的那条线"（问题③ 的锚点）。
+
+    用户反馈（2026-09-27）："你说考试没考好，它没顺着这个点回应，反而生硬跳问
+    哪门课压力大，上下文关联弱。"
+
+    历史**是**带进 prompt 的（最近 8 条），也确实有场景检索，但缺一个显式约束：
+    没有任何地方要求"本轮回复必须扣住 ta 刚说的那条线"。这个函数就是那条约束的输入。
+
+    ⚠️ 锚点优先取**用户上一句的原话**，而不是场景检索的名字。理由：
+    场景检索的语料只决定"措辞贴合度"，把用户的处境替换成语料库里的近似场景，
+    等于用别人的处境给 ta 定性 —— 那正是"凭空捏造"最容易发生的地方
+    （`:func:`_scene_headline`` 只能在拿不到用户原话时兜底）。
+
+    ⚠️ 刻意**不做**新的关键词抽取：那会引入一份与 scene_retrieval 平行、且更容易
+    出错的"主题判定"，两个判定打架时更难排查。
+
+    Args:
+        user_message: 用户本轮发言。
+        conversation_history: 对话历史（取上一条用户消息作为"上一句"）。
+        scene_context: C2D2 场景检索上下文（仅在无历史时作为兜底）。
+
+    Returns:
+        str: 一条线的简短描述；无可锚定时返回 ``""``（此时不注入）。
+    """
+    prev_user = ""
+    for msg in reversed(conversation_history or []):
+        if msg.get("role") == "user" and str(msg.get("content", "")).strip():
+            prev_user = str(msg["content"]).strip()
+            break
+    if prev_user:
+        return f"「{prev_user[:40]}」"
+    scene = _scene_headline(scene_context)
+    if scene:
+        return f"「{scene}」"
+    return ""
+
+
+def _scene_headline(scene_context: str) -> str:
+    """从场景检索上下文里取回一条情境描述（拿不到就返回空串）。
+
+    ``build_scene_context`` 的实际输出里每条是 ``- 情境：<处境描述>``
+    （见 ``scene_retrieval/index.py``）。只认这一种最简形态；取不到就不锚定，
+    宁可少一条约束，也不要凭模糊匹配给模型一个错误的主题。
+
+    Args:
+        scene_context: ``build_scene_context`` 生成的上下文。
+
+    Returns:
+        str: 情境描述（截断到 30 字）；无则为 ``""``。
+    """
+    if not scene_context:
+        return ""
+    for line in scene_context.splitlines():
+        text = line.strip().lstrip("-•* ").strip()
+        for prefix in ("情境：", "情境:", "场景：", "场景:"):
+            if text.startswith(prefix):
+                name = text[len(prefix):].strip()
+                if name:
+                    return name[:30]
+    return ""
+
+
 def _is_avoidance_or_refusal(text: str) -> bool:
     """用户是否明确表示不想继续谈（对应提示词"往下走"一节的留白要求）。
 
@@ -1101,7 +1225,13 @@ def _edit_distance(a: str, b: str) -> int:
 
 # 被反复判定为"套路"的开场短语。模型每次都能"理解"禁止，但换一轮就忘；
 # 所以除了 prompt 里的负面清单，还在**用过后**点名提醒它换说法。
-_STALE_OPENINGS = ("我能感受到", "听起来你", "我理解你", "我懂你")
+#
+# ⚠️ 「我听着是」是 2026-09-27 加进来的：它和「我能感受到」一样是**逐字照抄示范**
+# 的开场（实测 5 个场景里 3 个这么开头），而且质量更差 —— 「我能感受到」至少还带着
+# 情绪，它连情绪都没有，只是个接话语气词。挂在 `_used_openings` 上有一个额外好处：
+# 只用过一次之后就进"本轮硬性禁用"，靠的是**候选短语的精确匹配**，比让模型自己
+# 数"这句话我说过没有"可靠得多。
+_STALE_OPENINGS = ("我能感受到", "听起来你", "我理解你", "我懂你", "我听着是")
 
 
 def _used_openings(conversation_history: list) -> list[str]:
@@ -1211,6 +1341,26 @@ def _trim_reply(text: str, used_cliches: list[str]) -> str:
     if len(result) != len(text.strip()):
         logger.info("回复去套话/压长度：%r → %r", text[:40], result[:40])
     return result
+
+
+# 提示词里作为**示范**出现、却被模型整句照抄的短开场。
+#
+# 实测（`_probe_chat_quality.py`，2026-09-27）：5 个场景里 3 个以「我听着是」开头、
+# 2 个以「这话太重了」开头 —— 两者都是 prompt 示范里的原话。
+#
+# ⚠️ 这里**刻意不做代码级删除**（曾经删过，已回退）。理由是一条实测教训：
+# 「这话太重了。」本身就是一句**合格的共情**（原句「这话太重了。你这么说，是心里
+# 真的特别难受吧？」）；把它当"照抄示范"删掉，会连共情一起删掉，回复退化成
+# 「你这么说，是遇到什么事了？」这种干巴巴的追问 —— 正好又踩回用户反馈的"太假/没人情味"。
+# 删除规则**无法区分"填充语气词"与"内容本身"**，所以这类"说一次是暖、轮轮说才是模板"
+# 的问题，按本文件既有的口径处理：由 prompt 刻度约束（见 `# 要避免` 第 6 条）。
+# 这个常量保留为**记录与测试用**：它列出的是"已经在示范里出现过、模型最容易照抄"的句子。
+_DEMO_SENTENCES = (
+    "我听着是",
+    "这话太重了",
+    "这话搁谁身上都受不了",
+    "不怪你",
+)
 
 
 def _is_bare_echo(text: str, user_message: str) -> bool:
@@ -1328,6 +1478,79 @@ def _finalize_reply(
     return _trim_reply(capped, used_cliches)
 
 
+def _split_speak_units(text: str) -> list[str]:
+    """把定稿文本拆成**送合成的最小单位**（按句末标点，保留标点）。
+
+    与客户端 `splitSpeakable` 的 36 字上限**无关**：这里只决定"一句话说到哪儿
+    算一段"，字数打包仍由客户端按显存上限做。之所以按句而不是整段：一段音频
+    越长，首声越慢。
+
+    Args:
+        text: 定稿后的回复全文。
+
+    Returns:
+        list[str]: 非空的句子片段；`text` 为空时返回空列表。
+    """
+    if not text.strip():
+        return []
+    parts = [p.strip() for p in _split_sentences(text) if p.strip()]
+    return parts or [text.strip()]
+
+
+def _plan_streamed_reply(
+    text: str,
+    allow_question: bool,
+    user_message: str = "",
+    conversation_history: Optional[list] = None,
+    risk_level: str = "low",
+    max_questions: int = 1,
+) -> tuple[str, Optional[list[str]]]:
+    """流式路径的定稿：**在流出任何字与合成任何音频之前**把文本定死。
+
+    为什么需要它（2026-09-27 端到端实测 `_probe_call_e2e.js` + `_probe_stream_mutation.py`）：
+
+    流式路径原先只对**上屏的帧**做闸门，不做定稿；定稿是等模型生成完才跑，而那时
+    **前几段早就送进 TTS 了**。第 2 轮实测：
+
+        模型原文 62 字（两句 + 一个追问）
+        → A 层 `_finalize_reply` 的**问句上限**删掉尾部整句 → 37 字
+        → 用户听到声音在句子中间被硬掐断，字幕同时被整体换掉
+
+    也就是说：**"一轮只问一个"这条规则是在音频已经发出去之后才生效的**，
+    听感就是"一句话念到一半重来"。
+
+    这里把顺序倒过来：先压问句数（纯删除、不改写），再定稿。返回的
+    ``segments`` 就是送合成的最小单位，由消费端**按它合成、也按它上屏**，
+    于是"听到的"与"看到的"从源头同源。
+
+    Args:
+        text: 模型原始回复（流式拼接结果）。
+        allow_question: 本轮是否允许以问句结尾。
+        user_message: 用户本轮发言。
+        conversation_history: 对话历史。
+        risk_level: 本轮风险等级。
+        max_questions: 单轮问句数上限。
+
+    Returns:
+        tuple[str, Optional[list[str]]]: ``(定稿文本, 合成计划)``。
+        ``segments`` 为 ``None`` 表示**计划不可信**（定稿改动了文本），
+        消费端应退回"按 delta 自行切分"的旧行为 —— 宁可不给计划，
+        也不能给出与 ``text`` 对不上的计划。
+    """
+    planned = _cap_questions(text.strip(), max_questions=max_questions)
+    final_text = _finalize_reply(
+        planned, allow_question, user_message=user_message,
+        conversation_history=conversation_history, risk_level=risk_level,
+    )
+    if final_text != planned:
+        logger.info(
+            "流式定稿改动了文本（%d → %d 字），不下发合成计划",
+            len(planned), len(final_text),
+        )
+        return final_text, None
+    return final_text, _split_speak_units(final_text)
+
+
 def _build_llm_messages(
     user_message: str,
     conversation_history: list,
@@ -1361,11 +1584,36 @@ def _build_llm_messages(
     Returns:
         list[dict]: OpenAI 兼容的 messages 列表。
     """
-    # ⚠️ 刻意**不把情绪标签的字面值喂进 prompt**。过去注入「主导情绪=焦虑」，
-    # 模型会忍不住复述这个词（"听起来你很焦虑"）—— 这恰恰是"复读情绪标签"
-    # 这一死板来源。这里只保留**负性强度数值**与风险等级：够模型把握分量，
-    # 又不会被某个具体情绪词锚定。
+    # ⚠️ 刻意**不把情绪标签的字面值喂进 prompt**（"悲伤/焦虑"这类分类名）。
+    # 过去注入「主导情绪=焦虑」，模型会忍不住复述这个词（"听起来你很焦虑"）——
+    # 这恰恰是"复读情绪标签"这一死板来源。这里给的是两样别的东西：
+    #   1. **负性强度数值**与风险等级：够模型把握分量，又不会被某个词锚定；
+    #   2. **细腻化的内部线索**（"失落/难过"而不是"悲伤"），且明令禁止说出口 ——
+    #      让"先接住哪一种情绪"从让模型瞎猜变成有据可依（问题①的修复点）。
+    # 线索为空串时**不注入**：用户什么都没说时凭空共情是最伤人的。
     neg_intensity = _negative_emotion_intensity(emotion_probs)
+    emotion_cue = _dominant_emotion_cue(emotion_probs)
+    if emotion_cue:
+        emotion_cue_line = (
+            "ta 这一轮最可能是在**" + emotion_cue + "**。\n"
+            "怎么用：先用一句自己的话**接住**这份情绪（可以说事、说你的感受，"
+            "就是**不许出现上面那个词**，也不许说「你很失落」「听起来你很难过」"
+            "这类把情绪贴到 ta 脸上的句子），再决定要不要往下问。\n"
+            "⚠️ 这只帮你选「先接哪一种情绪」。ta 具体讲了什么，仍以 ta 自己说的为准 —— "
+            "不许拿它来替 ta 编事情。"
+        )
+    else:
+        emotion_cue_line = ""
+
+    # 连贯性锚点（问题③）：把"ta 这一段正在讲的那条线"显式写进 prompt。
+    # 只在**已经有历史**时注入 —— 第一轮没有"上一句"可扣，硬造一个锚点
+    # 反而会让模型对着寒暄去接不存在的内容。
+    # ⚠️ `social_only` 在下面才计算，这里只能先算出 `thread`，成行留到那之后。
+    thread = (
+        _narrative_thread(user_message, conversation_history, scene_context)
+        if conversation_history
+        else ""
+    )
     # 节拍轮次：对话已进行的轮数（决定本轮"接一句"还是"往下问"）。
     turn_count = len(conversation_history) // 2
 
@@ -1400,6 +1648,20 @@ def _build_llm_messages(
         )
     else:
         social_rule = ""
+
+    # 连贯性锚点成行（`thread` 在 social_only 之前算好，见上）。
+    # 寒暄轮次没有"线"可扣，注入锚点只会让模型对着"你好"去接不存在的内容。
+    if thread and not social_only:
+        thread_line = (
+            "# 必须扣住的那条线（连贯性）\n"
+            f"ta 正在讲的这条线是：{thread}\n"
+            "你的回复**必须**落在这条线上：先接住这条线上的具体内容，"
+            "追问也只能顺着它往深里问。\n"
+            "⚠️ **禁止跳题**：不要另起一个跟这条线无关的问题（例如 ta 在讲一段关系，"
+            "你却去问「哪门课」「什么时候考试」）。宁可只接住不提问，也不许换话题。"
+        )
+    else:
+        thread_line = ""
 
     # 连续追问：**允许连着两轮**（用户明确要求"追问要回来"），
     # 只拦"连着三轮都在问" —— 那时对话就变成审问了。
@@ -1457,9 +1719,20 @@ def _build_llm_messages(
     # 放在最靠近"这一轮"的位置。开场只看句首，套话扫整段正文：
     # 模型爱每轮补一句"我会一直陪着你/慢慢来/你已经很棒了"，说一次是暖，
     # 轮轮说就是机械。这里点名 + 定稿处 :func:`_trim_reply` 兜底删除。
+    #
+    # ⚠️ 这段还负责拦"把示范句/情绪线索当模板抄"（问题①的第二个来源）：
+    # 实测（`_probe_chat_quality.py`，2026-09-27）不同轮次里反复出现
+    # 「我听着是」「这话太重了」—— 它们都是 prompt 里的示范句。模型对
+    # few-shot 句子的模仿是**字面级**的，所以必须点名禁止，光说"学语气别抄句子"拦不住。
     used_openings = _used_openings(conversation_history)
     used_cliches = _used_cliches(conversation_history)
-    ban_lines = []
+    ban_lines = [
+        "禁止把本文档里的示范句当自己的话**反复**用。下面这几句是示范、不是你的台词，"
+        "**全篇最多出现一次**，第二次开始必须换成你自己的说法："
+        "「我听着是」「这话太重了」「这话搁谁身上都受不了」「不怪你」。\n"
+        "⚠️ 注意：不是不许共情，是**不许用同一句共情**。"
+        "第一次说「这话太重了」是暖的，第三次就是模板 —— 换个说法把同样的分量递过去。",
+    ]
     if used_openings:
         ban_lines.append(
             "禁止用作**开场**（已用过，含近义改写也不行）："
@@ -1509,6 +1782,9 @@ def _build_llm_messages(
    也可以是「我听出来了」「这事儿换谁也受不了」。
    ⚠️ 共情只能落在 **ta 本轮真的说过**的内容上。ta 只说「难受」没说原因，
    就**不要**替 ta 编一个场景（被批评、考试、吵架都不行）——先接住情绪，再问发生了什么。
+   ⚠️ **只有一句共情是不够的**：接住情绪之后还要①落到 ta 说的具体那件事上，
+   或②往前推一步（问发生了什么 / 那一刻想了什么）。只把情绪念一遍就停，
+   正是"显得假"的来源 —— 情绪要被**接着往下走**，不是被复述。
 3. **追问是默认动作。** ta 给出了内容，你就顺着问一个开放式问题，
    把话头往下递。连着两轮都追问是可以的，但**不要连着三轮都在问**。
 4. 不讲道理、不给建议、不灌鸡汤、不替 ta 下结论。ta 自己的答案才算数。
@@ -1534,6 +1810,7 @@ def _build_llm_messages(
 # 两段示范（只学**语气和节奏**，句子和场景都不要照抄）
 ⚠️ 示范里的「作业堆成山」「老师当众骂」都是**举例**，跟眼前这个来访者毫无关系。
 绝不要把示范中出现过的情节当成 ta 说的话——ta 没讲的就是没说。
+**也不要把下面任何一句示范台词照搬进你的回复**（它们已经出现过很多次了）。
 【示范一 · 学业压力】
 ta：作业堆成山了，我怎么写都写不完，好烦。
 你：怎么写都写不完这种感觉，是真的能把人磨没脾气。是今天特别多，还是一直这么堆着？
@@ -1541,7 +1818,8 @@ ta：一直这样，快一个月了，晚上都睡不好。
 你：连着快一个月，白天硬撑、晚上还睡不成——这哪是矫情，是真扛久了。
 ta：反正没人觉得这算个事。
 你：我听着是。这么重的日子一个人顶着，本身就不轻。是哪件事最先压上来的？
-（注意节奏：问、问、**第三句不急着问**，先陪一句；也从不重复同一句开场。）
+（注意节奏：①每一句**先接住上一条的具体内容**（"连着快一个月，白天硬撑、晚上还睡不成"），
+②问、问、**第三句不急着问**先陪一句 ③从不重复同一句开场。）
 
 【示范二 · 被老师当众批评】
 ta：老师当着全班的面骂我，说我什么都做不好。
@@ -1550,8 +1828,9 @@ ta：嗯，我可能就真的很差。
 你：他一句话就给你整个人判了分？我不认。气归气，先别拿他的话往自己身上贴。
 ta：其实我也没气，就是难受。
 你：那就是伤着你了，跟气不气没关系。被信任的大人那样说，最扎人。
-（注意：ta 自我贬低时**不跟着复读**——不说"你觉得你很差"，而是挡回去。）
-
+（注意两点：① ta 自我贬低时**不跟着复读**——不说"你觉得你很差"，而是挡回去；
+② ta 改口说"其实我也没气"时，**接住这个改口本身**（"那就是伤着你了，跟气不气没关系"），
+而不是继续按"他在生气"往下推。这就是"情绪先接住、再延伸"的节奏。）
 # 要避免（这几条最伤"活人感"）
 1. 每轮同一句式开头（"我能感受到…""听起来你…""我理解你…"），或每轮都走"复述情绪→发生了什么？"这个固定节拍。
 2. 把 ta 的原话加个问号抛回去（"老师骂你了？"）——等于没说；也别把 ta 原话直接当你自己的句子（人称都串了）。
@@ -1559,6 +1838,10 @@ ta：其实我也没气，就是难受。
 4. 猜测 ta 没说的状态、或替 ta 编处境。ta 没讲的，你就是不知道——**尤其不许**把示范里的情节、
    或"旧背景"里记的东西，当成 ta 本轮说的话来回应。
 5. 跟着 ta 贬低自己的话复读。ta 说"他说我很废物"，你接"他那样说你，听着确实难受"，别回"你觉得你是废物"。
+6. **把上面示范里的话原样搬过来。**「我听着是」「这话太重了」这类句子在示范里出现过，
+   所以最容易被你反复搬用 —— 实测就是这样：5 个不同场景里有 3 个以「我听着是」开头。
+   它们本身没错，错在**每轮都用同一句**。判断标准很简单：这句话你本轮已经说过、
+   或上一轮说过，就**必须**换一个说法，不许复制。
 
 # 追问方向（要问时挑一个，别每轮都是"什么感觉"）
 - **探事件**：发生了什么？当时是什么情况？—— ta 只说"难受"时往往自己也没头绪，事件类问题最好接。
@@ -1569,8 +1852,9 @@ ta：其实我也没气，就是难受。
 # 当前轮次信息（内部参考，别把这些词或分析过程说出来）
 当下负面情绪强度约 {neg_intensity:.0%}；风险等级={risk_level}。
 （强度只用来把握回应分量，**不要**据此点名 ta 的情绪，也不要输出"焦虑/悲伤"这类标签。）
-{style_desc}
+{emotion_cue_line}{style_desc}
 {persona_line}
+{thread_line}
 {ask_rule}
 {social_rule}
 {openings_ban}
@@ -2147,6 +2431,8 @@ def _chat_stream_events(request: SmartChatRequest) -> Iterator[str]:
             logger.warning("流式生成中断，改用已生成内容走审计: %s", e)
 
     raw_reply = ''.join(raw_parts).strip()
+    #: 定稿文本的合成计划（仅低/中风险下发；见 `_plan_streamed_reply`）
+    speak_segments: Optional[list[str]] = None
 
     if not raw_reply:
         # 与 _call_llm 的兜底完全同源：没有 key、或流一个字都没拿到。
@@ -2161,13 +2447,23 @@ def _chat_stream_events(request: SmartChatRequest) -> Iterator[str]:
                 shown_parts.append(unit)
                 yield _sse_pack(ChatStreamEventType.DELTA, {'text': unit})
     else:
-        # 与非流式路径用同一个定稿函数：本轮不许提问时删掉结尾问句，
-        # 并做去套话/压长度（危机/高风险内部会跳过裁剪）。
-        raw_reply = _finalize_reply(
+        # 与非流式路径同源定稿，但**顺序反过来了**：先定稿，再决定吐什么字、
+        # 送什么给 TTS。原因见 `_plan_streamed_reply` 的文档 —— 原先定稿在
+        # 全流之后才跑，而"一轮只问一个"这条规则会把**已经送去合成的整句**删掉，
+        # 用户听到声音在句子中间被硬掐断（端到端实测）。
+        raw_reply, speak_segments = _plan_streamed_reply(
             raw_reply, allow_question, user_message=request.message,
             conversation_history=request.conversation_history,
             risk_level=prep.risk_level,
         )
+        if streaming_allowed and speak_segments:
+            # 合成计划先于向量：消费端按它合成**也按它上屏**，"听到的"="看到的"。
+            # 只对低/中风险下发 —— high/crisis 不做增量上屏（`streaming_allowed`
+            # 已保证），安全文本必须原子下发。
+            yield _sse_pack(ChatStreamEventType.SPEAK, {
+                'text': raw_reply,
+                'segments': speak_segments,
+            })
         if streaming_allowed and not gate.tripped:
             # 取出缓冲里的残句（闸门已拦下时不得再放行）。
             for unit in gate.flush():
@@ -2184,8 +2480,9 @@ def _chat_stream_events(request: SmartChatRequest) -> Iterator[str]:
         return
 
     # 审计是最终权威：只要它给出的文本与已上屏的内容不一致，就整体改稿。
-    # 两种情形会走到这里：(1) 闸门拦下后审计给出了安全的替代文本；
-    # (2) 五轴审计（谄媚/漂移/污名化等）判定需要重写。
+    # 走到这里有三种情形：(1) 定稿已改过（上面的 REVISE，此处文本一致、不会再发）；
+    # (2) 闸门拦下后审计给出了安全的替代文本；(3) 五轴审计（谄媚/漂移/污名化等）
+    # 判定需要重写。
     shown = ''.join(shown_parts)
     if final.reply.strip() != shown.strip():
         yield _sse_pack(ChatStreamEventType.REVISE, {'text': final.reply})

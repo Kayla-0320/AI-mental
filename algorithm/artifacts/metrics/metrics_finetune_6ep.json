@@ -1,0 +1,180 @@
+{
+  "dataset": "D:\\Develop\\AIC\\data\\c2d2\\c2d2_clean.csv",
+  "encoder": "D:\\ai\\models\\encoders\\chinese-roberta-wwm-ext",
+  "n_rows": 7404,
+  "n_scenes": 276,
+  "num_classes": 8,
+  "id2label_zh": {
+    "0": "非黑即白",
+    "1": "情绪化推理",
+    "2": "算命",
+    "3": "乱贴标签",
+    "4": "读心术",
+    "5": "过度泛化",
+    "6": "个人化归责",
+    "7": "非扭曲"
+  },
+  "id2yaml": {
+    "0": "BLACK_AND_WHITE_THINKING",
+    "1": "EMOTIONAL_REASONING",
+    "2": "FORTUNE_TELLING",
+    "3": "LABELING",
+    "4": "MINDREADING",
+    "5": "OVERGENERALIZATION",
+    "6": "PERSONALIZATION",
+    "7": "NON_DISTORTED"
+  },
+  "protocol": "官方划分按场景分组；CV = StratifiedGroupKFold(group=场景)",
+  "config": {
+    "mode": "finetune",
+    "epochs": 6,
+    "batch_size": 16,
+    "lr": 3e-05,
+    "max_len": 160,
+    "folds": 5,
+    "cv_seed": 42,
+    "threads": 10,
+    "limit": 0
+  },
+  "finetune": {
+    "best_epoch": 3,
+    "official_test": {
+      "n": 1076,
+      "accuracy": 0.6831,
+      "macro_f1": 0.6477,
+      "per_class": {
+        "非黑即白": {
+          "precision": 0.5888,
+          "recall": 0.6429,
+          "f1": 0.6146,
+          "support": 98
+        },
+        "情绪化推理": {
+          "precision": 0.6596,
+          "recall": 0.3974,
+          "f1": 0.496,
+          "support": 156
+        },
+        "算命": {
+          "precision": 0.55,
+          "recall": 0.2797,
+          "f1": 0.3708,
+          "support": 118
+        },
+        "乱贴标签": {
+          "precision": 0.7812,
+          "recall": 0.8197,
+          "f1": 0.8,
+          "support": 122
+        },
+        "读心术": {
+          "precision": 0.7347,
+          "recall": 0.812,
+          "f1": 0.7714,
+          "support": 133
+        },
+        "过度泛化": {
+          "precision": 0.4244,
+          "recall": 0.6636,
+          "f1": 0.5177,
+          "support": 110
+        },
+        "个人化归责": {
+          "precision": 0.7053,
+          "recall": 0.7791,
+          "f1": 0.7403,
+          "support": 86
+        },
+        "非扭曲": {
+          "precision": 0.8388,
+          "recall": 0.9051,
+          "f1": 0.8707,
+          "support": 253
+        }
+      },
+      "confusion_matrix": [
+        [
+          63,
+          11,
+          2,
+          10,
+          1,
+          6,
+          3,
+          2
+        ],
+        [
+          9,
+          62,
+          12,
+          8,
+          5,
+          33,
+          7,
+          20
+        ],
+        [
+          14,
+          8,
+          33,
+          0,
+          21,
+          32,
+          3,
+          7
+        ],
+        [
+          4,
+          0,
+          0,
+          100,
+          1,
+          15,
+          1,
+          1
+        ],
+        [
+          4,
+          0,
+          4,
+          1,
+          108,
+          8,
+          3,
+          5
+        ],
+        [
+          11,
+          7,
+          5,
+          5,
+          4,
+          73,
+          3,
+          2
+        ],
+        [
+          2,
+          1,
+          1,
+          4,
+          3,
+          1,
+          67,
+          7
+        ],
+        [
+          0,
+          5,
+          3,
+          0,
+          4,
+          4,
+          8,
+          229
+        ]
+      ]
+    },
+    "seconds": 2628.3
+  }
+}

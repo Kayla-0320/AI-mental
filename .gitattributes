@@ -1,0 +1,24 @@
+# ============================================================
+# Git LFS —— C2D2 模型产物
+# ============================================================
+# 背景：
+#   algorithm/artifacts/cognitive_distortion_ckpt/model.safetensors 约 409 MB，
+#   远超 GitHub 单文件 100 MB 硬上限。**不装 LFS，git push 会被直接拒绝**，
+#   而且一旦以普通 blob 提交，409 MB 会永久留在 git 历史里（无法靠删文件回收）。
+#
+# 配额提醒：
+#   GitHub 免费账号 LFS 额度为 1 GB 存储 + 1 GB 带宽/月。
+#   本仓库产物合计约 413 MB（检查点 390 MB + 索引 22 MB），
+#   即单次 clone/fetch 就会消耗约 0.4 GB 带宽。若额度紧张，
+#   建议只对 *.safetensors 启用 LFS，或干脆让产物不入库、
+#   改用 tools/export_model_artifacts.py 在部署机上重建。
+#
+# 若不使用 LFS：直接删除本文件中的两行 filter 配置，
+# 然后从 .gitignore 中移除 "C2D2 模型产物（显式放行）" 那一段。
+# ============================================================
+
+algorithm/artifacts/**/*.safetensors filter=lfs diff=lfs merge=lfs -text
+algorithm/artifacts/**/*.npz         filter=lfs diff=lfs merge=lfs -text
+
+# 文本类产物（config.json / label_map.json / manifest.json / metrics_*.json）
+# 体积很小（合计 < 3 MB），走普通 git，便于直接 diff 查看。

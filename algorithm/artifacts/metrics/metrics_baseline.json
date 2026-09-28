@@ -1,0 +1,336 @@
+{
+  "dataset": "D:\\Develop\\AIC\\data\\c2d2\\c2d2_clean.csv",
+  "encoder": "D:\\ai\\models\\encoders\\chinese-roberta-wwm-ext",
+  "n_rows": 7404,
+  "n_scenes": 276,
+  "num_classes": 8,
+  "id2label_zh": {
+    "0": "非黑即白",
+    "1": "情绪化推理",
+    "2": "算命",
+    "3": "乱贴标签",
+    "4": "读心术",
+    "5": "过度泛化",
+    "6": "个人化归责",
+    "7": "非扭曲"
+  },
+  "id2yaml": {
+    "0": "BLACK_AND_WHITE_THINKING",
+    "1": "EMOTIONAL_REASONING",
+    "2": "FORTUNE_TELLING",
+    "3": "LABELING",
+    "4": "MINDREADING",
+    "5": "OVERGENERALIZATION",
+    "6": "PERSONALIZATION",
+    "7": "NON_DISTORTED"
+  },
+  "protocol": "官方划分按场景分组；CV = StratifiedGroupKFold(group=场景)",
+  "config": {
+    "mode": "baseline",
+    "epochs": 3,
+    "batch_size": 16,
+    "lr": 2e-05,
+    "max_len": 160,
+    "folds": 5,
+    "cv_seed": 42,
+    "threads": 4,
+    "limit": 0
+  },
+  "baseline": {
+    "majority_class": {
+      "n": 1076,
+      "accuracy": 0.2351,
+      "macro_f1": 0.0476,
+      "per_class": {
+        "非黑即白": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "support": 98
+        },
+        "情绪化推理": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "support": 156
+        },
+        "算命": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "support": 118
+        },
+        "乱贴标签": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "support": 122
+        },
+        "读心术": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "support": 133
+        },
+        "过度泛化": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "support": 110
+        },
+        "个人化归责": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "support": 86
+        },
+        "非扭曲": {
+          "precision": 0.2351,
+          "recall": 1.0,
+          "f1": 0.3807,
+          "support": 253
+        }
+      },
+      "confusion_matrix": [
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          98
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          156
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          118
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          122
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          133
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          110
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          86
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          253
+        ]
+      ]
+    },
+    "tfidf_char_lr_official": {
+      "n": 1076,
+      "accuracy": 0.6245,
+      "macro_f1": 0.5977,
+      "per_class": {
+        "非黑即白": {
+          "precision": 0.5,
+          "recall": 0.5408,
+          "f1": 0.5196,
+          "support": 98
+        },
+        "情绪化推理": {
+          "precision": 0.5962,
+          "recall": 0.3974,
+          "f1": 0.4769,
+          "support": 156
+        },
+        "算命": {
+          "precision": 0.4783,
+          "recall": 0.3729,
+          "f1": 0.419,
+          "support": 118
+        },
+        "乱贴标签": {
+          "precision": 0.7007,
+          "recall": 0.7869,
+          "f1": 0.7413,
+          "support": 122
+        },
+        "读心术": {
+          "precision": 0.6538,
+          "recall": 0.7669,
+          "f1": 0.7059,
+          "support": 133
+        },
+        "过度泛化": {
+          "precision": 0.3955,
+          "recall": 0.4818,
+          "f1": 0.4344,
+          "support": 110
+        },
+        "个人化归责": {
+          "precision": 0.6739,
+          "recall": 0.7209,
+          "f1": 0.6966,
+          "support": 86
+        },
+        "非扭曲": {
+          "precision": 0.7843,
+          "recall": 0.7905,
+          "f1": 0.7874,
+          "support": 253
+        }
+      },
+      "confusion_matrix": [
+        [
+          53,
+          13,
+          6,
+          8,
+          1,
+          9,
+          3,
+          5
+        ],
+        [
+          11,
+          62,
+          15,
+          13,
+          6,
+          20,
+          6,
+          23
+        ],
+        [
+          17,
+          6,
+          44,
+          3,
+          22,
+          21,
+          1,
+          4
+        ],
+        [
+          3,
+          3,
+          0,
+          96,
+          4,
+          10,
+          2,
+          4
+        ],
+        [
+          2,
+          1,
+          10,
+          0,
+          102,
+          8,
+          4,
+          6
+        ],
+        [
+          15,
+          10,
+          6,
+          8,
+          7,
+          53,
+          3,
+          8
+        ],
+        [
+          3,
+          0,
+          2,
+          6,
+          5,
+          3,
+          62,
+          5
+        ],
+        [
+          2,
+          9,
+          9,
+          3,
+          9,
+          10,
+          11,
+          200
+        ]
+      ]
+    },
+    "tfidf_char_lr_group_cv": {
+      "n_splits": 5,
+      "accuracy_mean": 0.645,
+      "accuracy_std": 0.011,
+      "macro_f1_mean": 0.6074,
+      "macro_f1_std": 0.0135,
+      "fold_accuracy": [
+        0.6552,
+        0.6429,
+        0.6529,
+        0.6247,
+        0.6491
+      ],
+      "fold_macro_f1": [
+        0.6205,
+        0.5985,
+        0.6202,
+        0.5856,
+        0.612
+      ]
+    }
+  }
+}

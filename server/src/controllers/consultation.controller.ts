@@ -124,6 +124,30 @@ class ConsultationController {
     }
   }
 
+  /**
+   * 批量删除对话。请求体 `{ conversationIds: string[] }`。
+   *
+   * 挂在集合路径上（DELETE /consultation/conversations）而不是
+   * /conversations/batch —— 后者会和 /conversations/:conversationId 抢路由，
+   * 将来若新增一个 id 恰好叫 batch 的会话就会静默删错东西。
+   */
+  async deleteConversations(req: AuthRequest, res: Response) {
+    try {
+      const { conversationIds } = req.body as { conversationIds?: unknown };
+      if (!Array.isArray(conversationIds)) {
+        res.status(400).json({ code: 400, message: 'conversationIds 必须为数组' });
+        return;
+      }
+      const result = await consultationService.deleteConversations(
+        conversationIds as string[],
+        req.userId!,
+      );
+      res.json({ code: 0, message: '删除成功', data: result });
+    } catch (error: any) {
+      res.status(error.statusCode || 500).json({ code: error.code || 500, message: error.message });
+    }
+  }
+
   async sendSocraticMessage(req: AuthRequest, res: Response) {
     try {
       const conversationId = req.params.conversationId as string;

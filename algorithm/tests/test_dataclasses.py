@@ -447,16 +447,24 @@ class TestChatStreamEventType(unittest.TestCase):
     """ChatStreamEventType 枚举测试 —— 跨语言契约，取值不得随意改动"""
 
     def test_enum_values(self):
-        """五个事件取值必须与 Node 中转层、浏览器消费端一致"""
+        """六个事件取值必须与 Node 中转层、浏览器消费端一致"""
         self.assertEqual(ChatStreamEventType.META, "meta")
+        self.assertEqual(ChatStreamEventType.SPEAK, "speak")
         self.assertEqual(ChatStreamEventType.DELTA, "delta")
         self.assertEqual(ChatStreamEventType.REVISE, "revise")
         self.assertEqual(ChatStreamEventType.DONE, "done")
         self.assertEqual(ChatStreamEventType.ERROR, "error")
 
-    def test_exactly_five_members(self):
-        """事件类型数量固定；新增事件必须同步改三端，这里刻意做成会失败的护栏"""
-        self.assertEqual(len(list(ChatStreamEventType)), 5)
+    def test_exactly_six_members(self):
+        """事件类型数量固定；新增事件必须同步改三端，这里刻意做成会失败的护栏
+
+        2026-09-27 由 5 → 6：新增 ``SPEAK``（定稿合成计划）。
+        同步位置（缺一处就会静默丢事件）：
+            · ``algorithm/api/intervention.py``    产出端
+            · ``server/src/services/algorithm-bridge.ts``  白名单 + 类型
+            · ``client/src/services/chatStream.ts``        解析与回调
+        """
+        self.assertEqual(len(list(ChatStreamEventType)), 6)
 
     def test_is_str_enum(self):
         """必须能被 json.dumps 直接序列化（SSE 载荷依赖这一点）"""

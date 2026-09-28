@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Input, Button, List, Avatar, Typography, Spin, Empty, Card, Space, Tag, Tooltip, Popconfirm, Modal, Alert } from 'antd';
+import { Input, Button, List, Avatar, Typography, Spin, Empty, Card, Space, Tag, Tooltip, Popconfirm, Modal, Alert, Checkbox, message } from 'antd';
 import { SendOutlined, PlusOutlined, RobotOutlined, UserOutlined, ThunderboltOutlined, DeleteOutlined, PhoneOutlined, SmileOutlined, VideoCameraOutlined, SoundOutlined, AudioOutlined } from '@ant-design/icons';
 import { consultationApi } from '../../services';
 import { sendChatMessageStream, ChatStreamTransportError } from '../../services/chatStream';
@@ -29,9 +29,19 @@ function AIChatTab() {
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
   const [conversations, setConversations] = useState<any[]>([]);
+  // 对话历史的多选管理态。刻意不复用 conversations 里的某个字段：
+  // 勾选是**界面态**，不进网络，也不该影响会话数据本身。
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [batchDeleting, setBatchDeleting] = useState(false);
   const [crisisModalOpen, setCrisisModalOpen] = useState(false);
   const [lastFailed, setLastFailed] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  // 当前打开会话的实时值。Modal.confirm 的回调是在**点击那一刻**的闭包里跑的，
+  // 而弹窗可能开着好一会儿；这期间用户切到别的会话后，闭包里的 conversationId
+  // 已经过期，会漏掉"退回空态"这一步（中间栏于是继续挂着一个已删会话的消息）。
+  const activeConvRef = useRef<string | undefined>(conversationId);
+  activeConvRef.current = conversationId;
 
   // 流式回复的临时气泡。
   // 刻意**不**把增量写进 messages：流式内容随时可能被安全审计整体改稿
@@ -139,7 +149,12 @@ function AIChatTab() {
   const loadConversations = async () => {
     try {
       const res = await consultationApi.getConversations() as any;
-      setConversations(res.data?.conversations || []);
+      const list = res.data?.conversations || [];
+      setConversations(list);
+      // 列表刷新后丢弃已经不存在的勾选，否则"已选 N 项"会包含幽灵会话，
+      // 点删除时后端会因为对不上数而整体拒绝。
+      const aliveIds = new Set(list.map((c: any) => c.id));
+      setSelectedIds(prev => prev.filter(id => aliveIds.has(id)));
     } catch {}
   };
 
@@ -157,11 +172,76 @@ function AIChatTab() {
     try {
       await consultationApi.deleteConversation(convId);
       setConversations(prev => prev.filter(c => c.id !== convId));
+      setSelectedIds(prev => prev.filter(id => id !== convId));
       if (convId === conversationId) {
         navigate('/chat');
         setMessages([]);
       }
     } catch {}
+  };
+
+  // ---- 对话历史批量删除 ----
+
+  const exitSelectMode = () => {
+    setSelectMode(false);
+    setSelectedIds([]);
+  };
+
+  const toggleSelected = (convId: string) => {
+    setSelectedIds(prev =>
+      prev.includes(convId) ? prev.filter(id => id !== convId) : [...prev, convId],
+    );
+  };
+
+  // 只对**当前已加载列表**全选。后端列表是分页的（默认 20 条/页），
+  // 把"全选"说成"删掉全部历史"会超出用户看到的范围。
+  const toggleSelectAll = () => {
+    setSelectedIds(prev =>
+      prev.length === conversations.length ? [] : conversations.map((c: any) => c.id),
+    );
+  };
+
+  const handleBatchDelete = () => {
+    if (selectedIds.length === 0) return;
+    const count = selectedIds.length;
+    // 删除前先把 id 复制一份：确认弹窗还开着的时候，列表有可能被后台刷新改写，
+    // 用快照才能保证"弹窗里说的三条"和"实际删掉的三条"是同一批。
+    const ids = [...selectedIds];
+
+    Modal.confirm({
+      title: `删除选中的 ${count} 个对话？`,
+      content: '删除后这些对话将从列表中移除，且无法恢复。',
+      okText: '删除',
+      cancelText: '取消',
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        setBatchDeleting(true);
+        try {
+          await consultationApi.deleteConversations(ids);
+          setConversations(prev => prev.filter(c => !ids.includes(c.id)));
+          // 删掉的会话正开着：退回"未选中会话"的空态，否则中间栏会继续显示
+          // 一个已经不在列表里的对话的消息。查的是 ref 里的实时 id，不是闭包快照。
+          const openId = activeConvRef.current;
+          if (openId && ids.includes(openId)) {
+            navigate('/chat');
+            setMessages([]);
+          }
+          exitSelectMode();
+          message.success(`已删除 ${count} 个对话`);
+        } catch (e: any) {
+          // 服务端拒绝时（例如某一批里混进了别的设备已删掉的会话）列表可能
+          // 已经变了，这里重新拉一次让界面回到真实状态；用户勾好的选择保留，
+          // 直接再点一次删除即可。不关选择态是刻意的。
+          message.error(e?.message || '删除失败，请稍后重试');
+          void loadConversations();
+          // 抛出去让 Modal.confirm 知道失败，保持弹窗可重试（onOk 里 catch 掉
+          // 会被当成成功而关窗）。
+          throw e;
+        } finally {
+          setBatchDeleting(false);
+        }
+      },
+    });
   };
 
   const handleNewChat = async () => {
@@ -434,24 +514,69 @@ function AIChatTab() {
             <Tooltip title="和 AI 打电话（语音陪伴，整屏）">
               <Button type="text" icon={<PhoneOutlined />} onClick={handleStartCall} />
             </Tooltip>
+            {/* 管理入口只在有对话时出现：空列表下"批量删除"没有意义 */}
+            {conversations.length > 0 && (
+              <Tooltip title={selectMode ? '退出管理' : '管理（可全选后批量删除）'}>
+                <Button type="text" size="small" onClick={() => (selectMode ? exitSelectMode() : setSelectMode(true))}
+                  style={{ fontSize: 12, color: selectMode ? '#6366f1' : undefined, paddingInline: 4 }}>
+                  {selectMode ? '完成' : '管理'}
+                </Button>
+              </Tooltip>
+            )}
             <Button type="text" icon={<PlusOutlined />} onClick={handleNewChat} />
           </Space>
         }
         bodyStyle={{ padding: '8px 0', height: 'calc(100% - 57px)', overflowY: 'auto' }}>
+        {/* 批量操作条：只有进入管理模式才出现，平时完全不占位、不干扰单条删除 */}
+        {selectMode && conversations.length > 0 && (
+          <div style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            padding: '4px 12px 8px', marginBottom: 4, borderBottom: '1px solid #f0f0f0',
+          }}>
+            <Checkbox
+              checked={conversations.length > 0 && selectedIds.length === conversations.length}
+              indeterminate={selectedIds.length > 0 && selectedIds.length < conversations.length}
+              onChange={toggleSelectAll}
+            >
+              <span style={{ fontSize: 12 }}>
+                全选{selectedIds.length > 0 ? `（${selectedIds.length}）` : ''}
+              </span>
+            </Checkbox>
+            {/* 确认只有一处：点击后弹 Modal.confirm（见 handleBatchDelete）。
+                这里不再套 Popconfirm —— 两层确认框对同一个动作是纯负担。 */}
+            <Tooltip title={selectedIds.length === 0 ? '先勾选要删除的对话' : `删除选中的 ${selectedIds.length} 个对话`}>
+              <Button type="text" danger size="small" icon={<DeleteOutlined />}
+                disabled={selectedIds.length === 0}
+                loading={batchDeleting}
+                onClick={handleBatchDelete}
+                style={{ fontSize: 12, paddingInline: 4 }}>
+                删除
+              </Button>
+            </Tooltip>
+          </div>
+        )}
         <List
           dataSource={conversations}
           locale={{ emptyText: <Empty description="还没有对话，点击上方 + 开始" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
           renderItem={(item: any) => (
             <List.Item
-              onClick={() => navigate(`/chat/${item.id}`)}
+              onClick={() => (selectMode ? toggleSelected(item.id) : navigate(`/chat/${item.id}`))}
               style={{ cursor: 'pointer', padding: '10px 8px', borderRadius: 8, background: item.id === conversationId ? '#f5f3ff' : 'transparent' }}
-              actions={[
+              actions={selectMode ? undefined : [
                 <Popconfirm key="del" title="确定删除？" onConfirm={(e) => handleDeleteConversation(e as any, item.id)} onCancel={(e) => e?.stopPropagation()} okText="删除" cancelText="取消" okButtonProps={{ danger: true }}>
                   <DeleteOutlined onClick={(e) => e.stopPropagation()} style={{ color: '#ccc', fontSize: 14, cursor: 'pointer' }}
                     onMouseEnter={(e) => (e.currentTarget.style.color = '#ff4d4f')} onMouseLeave={(e) => (e.currentTarget.style.color = '#ccc')} />
                 </Popconfirm>,
               ]}
             >
+              {selectMode && (
+                <Checkbox
+                  checked={selectedIds.includes(item.id)}
+                  // 勾选框自己不再处理点击：整行点击已经能切换勾选，
+                  // 两处都挂 handler 会在冒泡时把状态切两次（等于没切）。
+                  style={{ marginRight: 8, pointerEvents: 'none' }}
+                />
+              )}
               <Text ellipsis style={{ fontSize: 13 }}>{item.title || '新对话'}</Text>
             </List.Item>
           )}

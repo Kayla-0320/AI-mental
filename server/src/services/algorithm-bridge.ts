@@ -110,8 +110,12 @@ export interface SmartChatResponse {
  * 本项目的安全审计是整段回复级的，无法在吐字之前拿到结论，因此采用
  * 「先说、后校」——审计一旦否掉已生成内容就发 `revise`。把改稿当增量拼上去
  * 会得到「不安全原文 + 安全改稿」，是最坏结果。
+ *
+ * `speak` 是**合成计划**（定稿全文 + 按句切好的片段），只在第一个 `delta` 之前
+ * 出现一次，由语音端消费以保证"听到的 = 看到的"；纯文字端忽略即可。本文件只做
+ * 透传，不解释语义。
  */
-export type ChatStreamEventName = 'meta' | 'delta' | 'revise' | 'done' | 'error';
+export type ChatStreamEventName = 'meta' | 'speak' | 'delta' | 'revise' | 'done' | 'error';
 
 /** 算法层推来的一次流式事件 */
 export interface ChatStreamChunk {
@@ -170,6 +174,7 @@ const ASR_TIMEOUT = 60000;
 /** 允许下发给浏览器的流式事件白名单（防止上游新增事件被无声透传） */
 const CHAT_STREAM_EVENTS: readonly ChatStreamEventName[] = [
   'meta',
+  'speak',
   'delta',
   'revise',
   'done',

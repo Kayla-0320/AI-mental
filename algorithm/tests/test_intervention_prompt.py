@@ -967,3 +967,159 @@ class TestSeverityToRisk:
     def test_empty_and_unknown_are_low(self):
         assert iv._severity_to_risk("") == "low"
         assert iv._severity_to_risk("未知") == "low"
+
+
+class TestDominantEmotionCue:
+    """问题①：把主导情绪映射成"只给模型看"的内部线索。
+
+    背景（2026-09-27 用户反馈）："考试没考好，它没接住那份失落感。"
+    根因不是模板代码 —— 回复由 qwen 生成、prompt 里早就禁了套路开场 ——
+    而是 prompt **刻意不喂情绪标签**，模型只能从字面猜"该接哪一种情绪"。
+    """
+
+    def test_sad_maps_to_finer_grained_word(self):
+        cue = iv._dominant_emotion_cue([0.01, 0.96, 0.0, 0.0, 0.03])
+        assert "失落" in cue
+        # 不能直接用分类名 —— 模型会把它当标签复述（"听起来你很悲伤"）
+        assert "悲伤" not in cue
+
+    def test_anxious_maps_to_anxiety_cue(self):
+        cue = iv._dominant_emotion_cue([0.0, 0.1, 0.8, 0.0, 0.1])
+        assert "悬" in cue or "不安" in cue
+
+    def test_angry_maps_to_anger_cue(self):
+        cue = iv._dominant_emotion_cue([0.0, 0.1, 0.1, 0.75, 0.05])
+        assert "委屈" in cue or "火" in cue
+
+    @pytest.mark.parametrize(
+        "probs",
+        [
+            [0.13, 0.07, 0.0, 0.0, 0.80],   # 中性占主导（"你好"）
+            [0.82, 0.05, 0.05, 0.03, 0.05],  # 快乐占主导
+        ],
+    )
+    def test_non_negative_turn_has_no_cue(self, probs):
+        """中性/快乐轮次**必须不给线索** —— 用户什么都没说时凭空共情最伤人。"""
+        assert iv._dominant_emotion_cue(probs) == ""
+
+    def test_below_threshold_has_no_cue(self):
+        """主导情绪概率不够高时不猜（阈值 0.45）。"""
+        assert iv._dominant_emotion_cue([0.2, 0.44, 0.16, 0.1, 0.1]) == ""
+
+    def test_bad_input_is_safe(self):
+        assert iv._dominant_emotion_cue([]) == ""
+        assert iv._dominant_emotion_cue([None, "x"]) == ""  # type: ignore[list-item]
+
+    def test_cue_injected_into_prompt(self, captured_prompt):
+        """有线索时必须出现在 prompt 里，且带"不许说出口"的硬约束。"""
+        iv._call_llm("我这次考试没考好", [], [0.01, 0.96, 0.0, 0.0, 0.03], "medium")
+        prompt = captured_prompt["messages"][0]["content"]
+        assert "失落" in prompt
+        assert "不许出现上面那个词" in prompt
+
+    def test_no_cue_for_neutral_prompt(self, captured_prompt):
+        iv._call_llm("你好", [], NEUTRAL_PROBS, "low")
+        prompt = captured_prompt["messages"][0]["content"]
+        assert "最可能是在" not in prompt
+
+
+class TestNarrativeThread:
+    """问题③：连贯性锚点 —— "ta 这一段正在讲的那条线"。"""
+
+    def test_prefers_previous_user_utterance(self):
+        """锚点必须优先取**用户上一句原话**，而不是场景检索的近似场景。"""
+        thread = iv._narrative_thread(
+            "数学。我复习了一个月还是这样。",
+            [
+                {"role": "user", "content": "我这次考试没考好"},
+                {"role": "assistant", "content": "是哪门课没考好？"},
+                {"role": "user", "content": "数学。我复习了整整一个月，结果还是这样。"},
+            ],
+            scene_context="- 情境：考试失利后被家长责备\n  相近想法：「我完了」→ 灾难化",
+        )
+        assert "复习了整整一个月" in thread
+        assert "家长责备" not in thread
+
+    def test_falls_back_to_scene_when_no_history(self):
+        thread = iv._narrative_thread(
+            "我很难受", [], scene_context="- 情境：考试没考好\n  相近想法：「我完了」→ 灾难化"
+        )
+        assert "考试没考好" in thread
+
+    def test_empty_when_nothing_available(self):
+        assert iv._narrative_thread("我很难受", []) == ""
+        assert iv._narrative_thread("我很难受", [], scene_context="") == ""
+
+    def test_no_anchor_on_first_turn(self, captured_prompt):
+        """第一轮没有"上一句"可扣，硬造锚点会让模型对着寒暄接不存在的内容。"""
+        iv._call_llm("我这次考试没考好", [], SAD_PROBS, "medium")
+        prompt = captured_prompt["messages"][0]["content"]
+        assert "# 必须扣住的那条线" not in prompt
+
+    def test_anchor_and_bans_injected_with_history(self, captured_prompt):
+        iv._call_llm(
+            "数学。我复习了整整一个月，结果还是这样。",
+            [
+                {"role": "user", "content": "我这次考试没考好"},
+                {"role": "assistant", "content": "考试没考好这种感觉确实挺让人难受的。"},
+            ],
+            SAD_PROBS,
+            "medium",
+        )
+        prompt = captured_prompt["messages"][0]["content"]
+        assert "# 必须扣住的那条线" in prompt
+        assert "禁止跳题" in prompt
+        # 锚点取自历史里最后一条**用户**消息（本轮消息由 `_call_llm` 追加在末尾）
+        assert "我这次考试没考好" in prompt
+        assert "我听着是" in prompt  # 示范句复用禁令
+
+    def test_no_anchor_on_social_only_turn(self, captured_prompt):
+        """寒暄轮没有"线"可扣：注入了只会让模型对着"你好"去接不存在的内容。"""
+        iv._call_llm(
+            "你好",
+            [{"role": "user", "content": "你好"}, {"role": "assistant", "content": "你好呀。"}],
+            NEUTRAL_PROBS,
+            "low",
+        )
+        prompt = captured_prompt["messages"][0]["content"]
+        assert "# 必须扣住的那条线" not in prompt
+
+
+class TestDemoSentenceReuse:
+    """照抄 prompt 示范句（「我听着是」）—— 实测 5 个场景里 3 个这么开头。
+
+    ⚠️ 这里**刻意不做代码级删除**（试过、已回退）：「这话太重了。」本身就是合格的
+    共情，删掉它会连共情一起删掉，回复退化成干巴巴的追问。所以只拦"跨轮复用"，
+    由 :func:`_used_openings` 精确匹配实现。
+    """
+
+    def test_opening_detected_after_first_use(self):
+        history = [
+            {"role": "user", "content": "我这次考试没考好"},
+            {"role": "assistant", "content": "我听着是，这事儿现在还压着你呢？"},
+        ]
+        assert "我听着是" in iv._used_openings(history)
+
+    def test_first_use_is_not_banned(self):
+        """第一次用不算复用 —— 不能第一轮就把它禁掉。"""
+        assert iv._used_openings([]) == []
+        assert iv._used_openings([{"role": "assistant", "content": "我在。"}]) == []
+
+    def test_banned_opening_appears_in_prompt(self, captured_prompt):
+        iv._call_llm(
+            "我还是觉得难受",
+            [
+                {"role": "user", "content": "我这次考试没考好"},
+                {"role": "assistant", "content": "我听着是，这事儿现在还压着你呢？"},
+            ],
+            SAD_PROBS,
+            "medium",
+        )
+        prompt = captured_prompt["messages"][0]["content"]
+        assert "# 本轮硬性禁用" in prompt
+        assert "禁止用作**开场**" in prompt
+
+    def test_demo_constant_records_copy_prone_sentences(self):
+        """常量是"已在示范里出现、最容易被照抄"的句子清单（记录 + 测试用）。"""
+        assert "我听着是" in iv._DEMO_SENTENCES
+        assert "这话太重了" in iv._DEMO_SENTENCES
