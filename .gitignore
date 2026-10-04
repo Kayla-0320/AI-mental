@@ -1,0 +1,135 @@
+# ===== 依赖与包管理 =====
+node_modules/
+.pnp
+.pnp.js
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# ===== 环境变量（禁止上传）=====
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+
+# ===== 构建产物 =====
+client/dist/
+server/dist/
+build/
+dist/
+*.tsbuildinfo
+
+# ===== IDE 与系统 =====
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ===== 日志 =====
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+# 算法层运行期日志：审计链、主动关怀同意记录、测试残留，均不入库
+algorithm/escalation/logs/
+
+# ===== Prisma 迁移（如需保留请删掉此行）=====
+server/prisma/migrations/
+
+# ===== 上传与临时文件 =====
+uploads/
+tmp/
+temp/
+
+# ===== Python 相关 =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# ===== 算法模型权重与数据集（关键！）=====
+*.bin
+*.safetensors
+*.h5
+*.pb
+*.onnx
+*.tflite
+*.joblib
+*.pkl
+*.pth
+*.pt
+*.ckpt
+*.model
+*.npy
+*.npz
+*.pandas
+*.feather
+*.parquet
+datasets/
+data/
+models/
+checkpoints/
+outputs/
+*.jsonl
+*.csv
+
+# ===== 音视频与图片 =====
+*.wav
+*.mp3
+*.mp4
+*.avi
+*.mov
+*.mkv
+screenshot-*.png
+screenshots/
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+
+# ===== C2D2 模型产物（显式放行）=====
+# 上面第 64 行 *.safetensors 与第 76 行 *.npz 会把这两个产物一并挡掉，
+# 这里只对 algorithm/artifacts/ 开洞。
+#
+# ⚠️ cognitive_distortion_ckpt/model.safetensors 约 409 MB，
+#    远超 GitHub 单文件 100 MB 硬上限 —— 不配 Git LFS 会被 push 直接拒绝。
+#    见 .gitattributes。若要放弃入库，删掉本段并把 artifacts 加回忽略即可。
+!algorithm/artifacts/
+!algorithm/artifacts/**
+
+# ===== TTS benchmark 试听产物 =====
+# algorithm/tools/benchmark_tts.py 导出的 WAV，脚本可重跑，不入库。
+# 注意：报告 docs/tts_benchmark.md 与原始数据 docs/tts_benchmark*.json **要入库**，
+# 它们是 S0 那道 go/no-go 闸门的结论载体。
+_tts_bench/
+
+# ===== 眨眼「每眼睁开/闭合」第二判定模型（显式放行）=====
+# 上面第 67 行 `*.onnx` 与第 82 行 `models/` 会把下面这个文件一并挡掉。
+# 它只有 46 164 B（Apache-2.0，出处与 SHA-384 见同目录 NOTICE 文件），
+# 并且是运行时按 `/models/open_closed_eye.onnx` 加载的**静态资源** ——
+# 不入库就等于部署后该功能直接失效（加载失败会静默降级回 blendshape）。
+# 注意顺序：必须先把父目录放行，否则后面的 `!文件` 不生效。
+!client/public/models/
+!client/public/models/open_closed_eye.onnx
+!client/public/models/NOTICE-open-closed-eye-0001.txt
+
+# ===== CosyVoice3 零样本克隆参考音（显式放行）=====
+# 上面第 89 行 `*.wav` 会把这个文件挡掉，但它是**音色这一交付物的定义本身**，
+# 不是可重跑的中间产物：README 明确要求它入库以保证音色可复现、可版本管理，
+# server.py 也按 COSYVOICE_PROMPT_WAV 默认指向它。不入库 = 克隆后该引擎没音色。
+# 只有 262 KB（由 Qwen3-TTS 生成音频裁出的前两句，0–5.6 s），走普通 git 即可。
+# 注意顺序：必须先把父目录放行，否则后面的 `!文件` 不生效。
+!algorithm/tts/cosyvoice_service/
+!algorithm/tts/cosyvoice_service/prompt_qwen3_voice.wav

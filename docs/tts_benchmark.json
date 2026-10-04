@@ -1,0 +1,171 @@
+{
+  "model_dir": "D:\\Develop\\AIC\\AI-mental-main (2)\\AI-mental-main\\AI-mental-main\\algorithm\\models\\tts\\vits-zh-hf-fanchen-C",
+  "sample_rate": 16000,
+  "load_ms": 607.7,
+  "cold_start": {
+    "first_chunk_ms": 635.1,
+    "synth_ms": 635.1,
+    "rtf": 0.143
+  },
+  "idle": [
+    {
+      "label": "10字",
+      "chars": 9,
+      "rtf": 0.156,
+      "first_chunk_ms": 362.6,
+      "synth_ms": 362.7,
+      "audio_ms": 2322.8,
+      "audio_min_ms": 2277.4,
+      "audio_max_ms": 2363.8,
+      "chunks": 1,
+      "sample_rate": 16000,
+      "wav": "_tts_bench\\idle_10字.wav"
+    },
+    {
+      "label": "20字",
+      "chars": 16,
+      "rtf": 0.177,
+      "first_chunk_ms": 732.0,
+      "synth_ms": 732.0,
+      "audio_ms": 4101.1,
+      "audio_min_ms": 3867.9,
+      "audio_max_ms": 4279.2,
+      "chunks": 1,
+      "sample_rate": 16000,
+      "wav": "_tts_bench\\idle_20字.wav"
+    },
+    {
+      "label": "40字",
+      "chars": 33,
+      "rtf": 0.18,
+      "first_chunk_ms": 1443.9,
+      "synth_ms": 1443.9,
+      "audio_ms": 8219.1,
+      "audio_min_ms": 7994.9,
+      "audio_max_ms": 8575.9,
+      "chunks": 1,
+      "sample_rate": 16000,
+      "wav": "_tts_bench\\idle_40字.wav"
+    },
+    {
+      "label": "80字",
+      "chars": 66,
+      "rtf": 0.162,
+      "first_chunk_ms": 2703.6,
+      "synth_ms": 2703.6,
+      "audio_ms": 16567.2,
+      "audio_min_ms": 16436.3,
+      "audio_max_ms": 17289.0,
+      "chunks": 1,
+      "sample_rate": 16000,
+      "wav": "_tts_bench\\idle_80字.wav"
+    },
+    {
+      "label": "含数字",
+      "chars": 36,
+      "rtf": 0.159,
+      "first_chunk_ms": 1565.7,
+      "synth_ms": 1565.7,
+      "audio_ms": 10086.7,
+      "audio_min_ms": 9173.9,
+      "audio_max_ms": 10227.1,
+      "chunks": 1,
+      "sample_rate": 16000,
+      "wav": "_tts_bench\\idle_含数字.wav"
+    },
+    {
+      "label": "含英文",
+      "chars": 26,
+      "rtf": 0.165,
+      "first_chunk_ms": 845.7,
+      "synth_ms": 845.7,
+      "audio_ms": 5096.9,
+      "audio_min_ms": 4977.9,
+      "audio_max_ms": 5264.5,
+      "chunks": 1,
+      "sample_rate": 16000,
+      "wav": "_tts_bench\\idle_含英文.wav"
+    }
+  ],
+  "contention": [
+    {
+      "label": "10字",
+      "chars": 9,
+      "rtf": 0.209,
+      "first_chunk_ms": 507.4,
+      "synth_ms": 507.4,
+      "audio_ms": 2358.8,
+      "audio_min_ms": 2152.2,
+      "audio_max_ms": 2875.1,
+      "chunks": 1,
+      "sample_rate": 16000,
+      "wav": "_tts_bench\\load_10字.wav"
+    },
+    {
+      "label": "20字",
+      "chars": 16,
+      "rtf": 0.189,
+      "first_chunk_ms": 798.8,
+      "synth_ms": 798.8,
+      "audio_ms": 4294.0,
+      "audio_min_ms": 3992.8,
+      "audio_max_ms": 4352.2,
+      "chunks": 1,
+      "sample_rate": 16000,
+      "wav": "_tts_bench\\load_20字.wav"
+    },
+    {
+      "label": "40字",
+      "chars": 33,
+      "rtf": 0.188,
+      "first_chunk_ms": 1506.1,
+      "synth_ms": 1506.2,
+      "audio_ms": 8018.2,
+      "audio_min_ms": 7847.3,
+      "audio_max_ms": 8044.1,
+      "chunks": 1,
+      "sample_rate": 16000,
+      "wav": "_tts_bench\\load_40字.wav"
+    },
+    {
+      "label": "80字",
+      "chars": 66,
+      "rtf": 0.177,
+      "first_chunk_ms": 2872.8,
+      "synth_ms": 2872.8,
+      "audio_ms": 16262.3,
+      "audio_min_ms": 15776.0,
+      "audio_max_ms": 16636.6,
+      "chunks": 1,
+      "sample_rate": 16000,
+      "wav": "_tts_bench\\load_80字.wav"
+    },
+    {
+      "label": "含数字",
+      "chars": 36,
+      "rtf": 0.176,
+      "first_chunk_ms": 1687.7,
+      "synth_ms": 1687.7,
+      "audio_ms": 9634.8,
+      "audio_min_ms": 9513.1,
+      "audio_max_ms": 10059.4,
+      "chunks": 1,
+      "sample_rate": 16000,
+      "wav": "_tts_bench\\load_含数字.wav"
+    },
+    {
+      "label": "含英文",
+      "chars": 26,
+      "rtf": 0.19,
+      "first_chunk_ms": 963.9,
+      "synth_ms": 964.0,
+      "audio_ms": 5083.8,
+      "audio_min_ms": 4879.1,
+      "audio_max_ms": 5351.1,
+      "chunks": 1,
+      "sample_rate": 16000,
+      "wav": "_tts_bench\\load_含英文.wav"
+    }
+  ],
+  "pass": false
+}

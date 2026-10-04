@@ -1,0 +1,1054 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>青少年AI心理健康平台 - 全站实测报告</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; color: #333; line-height: 1.6; }
+  .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
+  .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 40px; border-radius: 16px; margin-bottom: 24px; }
+  .header h1 { font-size: 28px; margin-bottom: 8px; }
+  .header p { opacity: 0.9; font-size: 14px; }
+  .summary-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; }
+  .summary-card { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); text-align: center; }
+  .summary-card .number { font-size: 36px; font-weight: bold; }
+  .summary-card .label { font-size: 13px; color: #888; margin-top: 4px; }
+  .section { background: white; border-radius: 12px; padding: 24px; margin-bottom: 24px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+  .section h2 { font-size: 20px; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 2px solid #f0f0f0; }
+  .module { border: 1px solid #f0f0f0; border-radius: 8px; margin-bottom: 12px; overflow: hidden; }
+  .module-header { padding: 12px 16px; display: flex; align-items: center; justify-content: space-between; cursor: pointer; }
+  .module-header:hover { background: #fafafa; }
+  .module-title { font-weight: 600; font-size: 15px; }
+  .module-body { padding: 16px; border-top: 1px solid #f0f0f0; }
+  .tag { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 12px; font-weight: 500; }
+  .tag-done { background: #f6ffed; color: #52c41a; border: 1px solid #b7eb8f; }
+  .tag-partial { background: #fff7e6; color: #fa8c16; border: 1px solid #ffd591; }
+  .tag-missing { background: #fff1f0; color: #ff4d4f; border: 1px solid #ffa39e; }
+  .tag-planned { background: #e6f7ff; color: #1890ff; border: 1px solid #91d5ff; }
+  .check-item { display: flex; align-items: flex-start; padding: 8px 0; border-bottom: 1px solid #f5f5f5; }
+  .check-item:last-child { border-bottom: none; }
+  .check-icon { width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin-right: 12px; margin-top: 2px; flex-shrink: 0; font-size: 12px; }
+  .check-icon.pass { background: #f6ffed; color: #52c41a; }
+  .check-icon.fail { background: #fff1f0; color: #ff4d4f; }
+  .check-icon.warn { background: #fff7e6; color: #fa8c16; }
+  .check-content { flex: 1; }
+  .check-title { font-weight: 500; font-size: 14px; }
+  .check-desc { font-size: 13px; color: #888; margin-top: 2px; }
+  .improvement { background: #fffbe6; border: 1px solid #ffe58f; border-radius: 8px; padding: 16px; margin-top: 16px; }
+  .improvement h4 { color: #d48806; margin-bottom: 8px; font-size: 14px; }
+  .improvement ul { padding-left: 20px; font-size: 13px; color: #666; }
+  .improvement li { margin-bottom: 4px; }
+  .priority { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 11px; margin-right: 6px; }
+  .priority-high { background: #ff4d4f; color: white; }
+  .priority-medium { background: #fa8c16; color: white; }
+  .priority-low { background: #1890ff; color: white; }
+  table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+  th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #f0f0f0; font-size: 13px; }
+  th { background: #fafafa; font-weight: 600; }
+  .flow-diagram { background: #f9f9f9; border-radius: 8px; padding: 20px; margin: 16px 0; font-family: monospace; font-size: 13px; line-height: 2; }
+  .flow-step { display: flex; align-items: center; margin-bottom: 8px; }
+  .flow-box { background: #667eea; color: white; padding: 6px 14px; border-radius: 6px; font-size: 13px; }
+  .flow-arrow { color: #999; margin: 0 12px; font-size: 18px; }
+  .flow-box.green { background: #52c41a; }
+  .flow-box.orange { background: #fa8c16; }
+  .flow-box.red { background: #ff4d4f; }
+  .flow-box.blue { background: #1890ff; }
+</style>
+</head>
+<body>
+<div class="container">
+
+<div class="header">
+  <h1>青少年AI心理健康平台 - 全站实测报告</h1>
+  <p>基于《青少年AI心理健康平台策划方案》逐项验证 | 生成时间: 2026-09-16</p>
+</div>
+
+<div class="summary-cards">
+  <div class="summary-card">
+    <div class="number" style="color:#52c41a">18</div>
+    <div class="label">已实现功能</div>
+  </div>
+  <div class="summary-card">
+    <div class="number" style="color:#fa8c16">7</div>
+    <div class="label">部分实现</div>
+  </div>
+  <div class="summary-card">
+    <div class="number" style="color:#ff4d4f">5</div>
+    <div class="label">未实现</div>
+  </div>
+  <div class="summary-card">
+    <div class="number" style="color:#1890ff">60%</div>
+    <div class="label">整体完成度</div>
+  </div>
+</div>
+
+<!-- ==================== 1. 感知层 ==================== -->
+<div class="section">
+  <h2>一、感知层（多模态情感识别）</h2>
+
+  <div class="module">
+    <div class="module-header">
+      <span class="module-title">1.1 统一感知接口</span>
+      <span class="tag tag-done">已实现</span>
+    </div>
+    <div class="module-body">
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">EmotionResult 统一数据类</div>
+          <div class="check-desc">algorithm/shared/dataclasses.py 中定义，整合文本/语音/面部/行为四模态</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">统一分析 API 端点</div>
+          <div class="check-desc">POST /api/v1/perception/analyze 支持四模态融合，自动降级</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">三种融合策略</div>
+          <div class="check-desc">weighted_average / stacking / dynamic 在 fusion/fusion.py 中实现</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="module">
+    <div class="module-header">
+      <span class="module-title">1.2 文本感知</span>
+      <span class="tag tag-partial">部分实现</span>
+    </div>
+    <div class="module-body">
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">NRC 情感词典分析</div>
+          <div class="check-desc">perception/text_emotion/ 中实现，覆盖8种基本情绪</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">CBT 认知扭曲检测</div>
+          <div class="check-desc">识别10种认知扭曲模式（全或无、灾难化等）</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">C-SSRS 危机信号检测</div>
+          <div class="check-desc">自伤/自杀关键词检测与风险分级</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon warn">⚠</div>
+        <div class="check-content">
+          <div class="check-title">SProp GNN 语义盲法去偏见</div>
+          <div class="check-desc">方案要求使用 SProp GNN 架构减少政治/性别偏见，当前使用传统 NRC 词典 + RoBERTa，未实现语义盲法</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="module">
+    <div class="module-header">
+      <span class="module-title">1.3 语音感知（三模态融合）</span>
+      <span class="tag tag-partial">部分实现</span>
+    </div>
+    <div class="module-body">
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">声学特征提取</div>
+          <div class="check-desc">基频(F0)、RMS能量、语速、停顿检测、频谱质心/滚降/平坦度</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">Web Speech API 语音识别</div>
+          <div class="check-desc">已集成中文语音转文字，转录文本送入文本分析管道</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon fail">✗</div>
+        <div class="check-content">
+          <div class="check-title">声音生物标记物</div>
+          <div class="check-desc">方案要求融合语音质量、共振峰等生物标记物，当前仅提取基础声学特征</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="module">
+    <div class="module-header">
+      <span class="module-title">1.4 微表情感知</span>
+      <span class="tag tag-partial">部分实现</span>
+    </div>
+    <div class="module-body">
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">FACS AU 动作单元检测</div>
+          <div class="check-desc">13个AU映射到7种情绪，支持微表情事件检测</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon warn">⚠</div>
+        <div class="check-content">
+          <div class="check-title">MediaPipe Face Mesh</div>
+          <div class="check-desc">方案要求使用 MediaPipe 提取面部关键点，当前使用六区域像素分析法，精度有限</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">知情同意采集</div>
+          <div class="check-desc">PatientRoom 中实现知情同意弹窗，用户可选择是否共享数据</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="improvement">
+    <h4> 改进措施</h4>
+    <ul>
+      <li><span class="priority priority-high">高优</span> 引入 MediaPipe Face Mesh 替代像素分析法，提升面部AU检测精度</li>
+      <li><span class="priority priority-medium">中优</span> 实现 SProp GNN 语义盲法文本分析，减少文化/性别偏见</li>
+      <li><span class="priority priority-medium">中优</span> 扩展声学特征，加入共振峰、语音质量（jitter/shimmer）等生物标记物</li>
+      <li><span class="priority priority-low">低优</span> 考虑端侧部署轻量级面部模型（如 MobileFaceNet）</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ==================== 2. 评估层 ==================== -->
+<div class="section">
+  <h2>二、评估层（风险研判）</h2>
+
+  <div class="module">
+    <div class="module-header">
+      <span class="module-title">2.1 临床量表映射引擎</span>
+      <span class="tag tag-partial">部分实现</span>
+    </div>
+    <div class="module-body">
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">PHQ-9 / GAD-7 量表支持</div>
+          <div class="check-desc">assessment/scale/ 中实现标准化量表评估</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon warn">⚠</div>
+        <div class="check-content">
+          <div class="check-title">多模态→量表分值自动映射</div>
+          <div class="check-desc">方案要求将多模态感知输出自动映射为量表分值估计区间并输出置信度和证据链，当前量表评估为独立模块，未与多模态融合</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="module">
+    <div class="module-header">
+      <span class="module-title">2.2 多任务ML模型</span>
+      <span class="tag tag-done">已实现</span>
+    </div>
+    <div class="module-body">
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">多任务学习架构</div>
+          <div class="check-desc">assessment/multi_task/ 实现共享编码器 + 三任务头（抑郁/焦虑/睡眠）</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">非对称损失权重</div>
+          <div class="check-desc">优先保障高风险样本召回率，β=6.0</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">VAE 数据增强</div>
+          <div class="check-desc">处理标注数据不足问题，尤其高风险样本</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="module">
+    <div class="module-header">
+      <span class="module-title">2.3 数字表型引擎（心理画像升级）</span>
+      <span class="tag tag-partial">部分实现</span>
+    </div>
+    <div class="module-body">
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">对话情感特征</div>
+          <div class="check-desc">情绪分布、波动性通过多模态融合实时计算</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">行为特征</div>
+          <div class="check-desc">键盘动力学（打字速度、停顿频率、删除率）</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">测评历史特征</div>
+          <div class="check-desc">量表分值纵向变化趋势</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon fail">✗</div>
+        <div class="check-content">
+          <div class="check-title">睡眠特征</div>
+          <div class="check-desc">方案要求整合入睡时间、时长、觉醒次数、节律稳定性，当前未实现睡眠监测模块</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon fail">✗</div>
+        <div class="check-content">
+          <div class="check-title">生理特征（手环）</div>
+          <div class="check-desc">方案要求整合心率变异性、活动量，当前未实现</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon fail">✗</div>
+        <div class="check-content">
+          <div class="check-title">同龄对比（Z-score）</div>
+          <div class="check-desc">方案要求 compute_baseline_deviation() 输出同龄基线Z-score，前端设置页有开关但Profile页未实现可视化</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="improvement">
+    <h4>🔧 改进措施</h4>
+    <ul>
+      <li><span class="priority priority-high">高优</span> 实现多模态→量表分值自动映射，输出置信区间和证据链</li>
+      <li><span class="priority priority-high">高优</span> 在 Profile 页实现"同龄对比"雷达图叠加可视化</li>
+      <li><span class="priority priority-medium">中优</span> 开发睡眠监测模块（可先做手动记录，后续对接手环API）</li>
+      <li><span class="priority priority-low">低优</span> 预留生理特征接口，待手环SDK可用后接入</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ==================== 3. 干预层 ==================== -->
+<div class="section">
+  <h2>三、干预层（动态对话策略）</h2>
+
+  <div class="module">
+    <div class="module-header">
+      <span class="module-title">3.1 对话状态机</span>
+      <span class="tag tag-done">已实现</span>
+    </div>
+    <div class="module-body">
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">五状态定义</div>
+          <div class="check-desc">INIT → EXPLORE → INTERVENE → CRISIS → CLOSE，状态转移基于风险等级、对话轮次和情感趋势</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">CRISIS 强制触发升级层</div>
+          <div class="check-desc">危机状态自动触发 escalation 模块</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="module">
+    <div class="module-header">
+      <span class="module-title">3.2 安全审计中间件</span>
+      <span class="tag tag-done">已实现</span>
+    </div>
+    <div class="module-body">
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">五轴安全审计</div>
+          <div class="check-desc">危机升级延迟 / 妄想强化 / 污名化与拒绝 / 谄媚倾向 / 轨迹漂移</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">配置驱动审计规则</div>
+          <div class="check-desc">从 config/audit_rules.yaml 加载，可动态调整阈值</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon warn">⚠</div>
+        <div class="check-content">
+          <div class="check-title">咨询师端安全审计面板</div>
+          <div class="check-desc">方案要求咨询师端展示AI被拦截的回复和触发的危机升级事件，当前未实现此面板</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="module">
+    <div class="module-header">
+      <span class="module-title">3.3 CBT 认知重构脚本</span>
+      <span class="tag tag-done">已实现</span>
+    </div>
+    <div class="module-body">
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">5步引导流程</div>
+          <div class="check-desc">识别自动思维 → 识别认知扭曲 → 检验证据 → 寻找替代解释 → 评估+行动计划</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">青少年语言适配</div>
+          <div class="check-desc">避免临床术语，使用青少年能理解的语言</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">退出机制</div>
+          <div class="check-desc">用户拒绝配合时可退出CBT流程</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="module">
+    <div class="module-header">
+      <span class="module-title">3.4 干预动作结构化</span>
+      <span class="tag tag-partial">部分实现</span>
+    </div>
+    <div class="module-body">
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">Action 对象定义</div>
+          <div class="check-desc">intervention/strategy/ 中定义结构化干预动作</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon warn">⚠</div>
+        <div class="check-content">
+          <div class="check-title">LLM→Action→回复 分离架构</div>
+          <div class="check-desc">方案要求LLM输出Action对象，由独立生成层转为回复。当前LLM直接生成回复，审计层事后检查</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="improvement">
+    <h4> 改进措施</h4>
+    <ul>
+      <li><span class="priority priority-high">高优</span> 在咨询师端添加安全审计面板，展示AI被拦截的回复和危机升级事件</li>
+      <li><span class="priority priority-medium">中优</span> 重构干预架构为 LLM→Action→回复 分离模式，确保干预策略可控可审计</li>
+      <li><span class="priority priority-low">低优</span> 增加更多干预策略模板（正念引导、情绪调节技巧等）</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ==================== 4. 升级层 ==================== -->
+<div class="section">
+  <h2>四、升级层（危机干预）</h2>
+
+  <div class="module">
+    <div class="module-header">
+      <span class="module-title">4.1 危机升级系统</span>
+      <span class="tag tag-done">已实现</span>
+    </div>
+    <div class="module-body">
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">CrisisAlert 数据类</div>
+          <div class="check-desc">包含触发证据和推荐动作</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">自伤/自杀检测器</div>
+          <div class="check-desc">escalation/self_harm/ 中实现多级风险检测</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">咨询师转介系统</div>
+          <div class="check-desc">escalation/referral/ 中实现自动匹配可用咨询师</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">不可删除审计日志</div>
+          <div class="check-desc">escalation/audit_log.py 实现只能追加的审计日志</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">咨询师端实时联动</div>
+          <div class="check-desc">升级触发后通过 Socket.IO 实时推送风险摘要给咨询师</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="improvement">
+    <h4>🔧 改进措施</h4>
+    <ul>
+      <li><span class="priority priority-medium">中优</span> 增加多通道升级：webhook（模拟）、站内通知、控制台告警</li>
+      <li><span class="priority priority-low">低优</span> 实现咨询师排班系统，根据时间自动选择可用咨询师</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ==================== 5. 文化适配 ==================== -->
+<div class="section">
+  <h2>五、文化适配</h2>
+
+  <div class="module">
+    <div class="module-header">
+      <span class="module-title">5.1 分组公平性审计</span>
+      <span class="tag tag-done">已实现</span>
+    </div>
+    <div class="module-body">
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">公平性审计模块</div>
+          <div class="check-desc">audit/fairness.py 按年龄/性别/地域分组，计算准确率、F1、TPR、FPR</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">公平性指标计算</div>
+          <div class="check-desc">demographic parity difference、equalized odds difference</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">管理员端公平性报告</div>
+          <div class="check-desc">Admin Dashboard 中展示分组公平性指标</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon warn">⚠</div>
+        <div class="check-content">
+          <div class="check-title">使用真实数据验证</div>
+          <div class="check-desc">当前使用模拟数据，需要用真实人口统计学数据验证</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="module">
+    <div class="module-header">
+      <span class="module-title">5.2 联邦学习模拟</span>
+      <span class="tag tag-done">已实现</span>
+    </div>
+    <div class="module-body">
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">Flower 框架联邦学习</div>
+          <div class="check-desc">federated/ 实现2客户端模拟，支持多轮聚合</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="improvement">
+    <h4> 改进措施</h4>
+    <ul>
+      <li><span class="priority priority-medium">中优</span> 用真实脱敏数据替换模拟数据，验证公平性指标</li>
+      <li><span class="priority priority-low">低优</span> 扩展联邦学习到3+客户端，模拟跨机构场景</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ==================== 6. 隐私保护 ==================== -->
+<div class="section">
+  <h2>六、隐私保护架构</h2>
+
+  <div class="module">
+    <div class="module-header">
+      <span class="module-title">6.1 端侧推理</span>
+      <span class="tag tag-done">已实现</span>
+    </div>
+    <div class="module-body">
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">DistilBERT 量化</div>
+          <div class="check-desc">privacy/on_device.py 实现 TFLite/PyTorch 动态范围量化</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">量化报告生成</div>
+          <div class="check-desc">输出模型大小、推理延迟、准确率对比报告</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="module">
+    <div class="module-header">
+      <span class="module-title">6.2 脱敏上传</span>
+      <span class="tag tag-done">已实现</span>
+    </div>
+    <div class="module-body">
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">FeatureSummary 数据类</div>
+          <div class="check-desc">只上传统计特征，不含原始文本或可识别信息</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">validate_no_raw_data() 检查</div>
+          <div class="check-desc">sanitizer.py 中实现正则检测，防止原始数据泄露</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">差分隐私噪声注入</div>
+          <div class="check-desc">可选 epsilon 参数控制噪声强度</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="module">
+    <div class="module-header">
+      <span class="module-title">6.3 端云协同决策</span>
+      <span class="tag tag-partial">部分实现</span>
+    </div>
+    <div class="module-body">
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">低风险：端侧完成</div>
+          <div class="check-desc">前端多模态分析在客户端完成，仅发送脱敏摘要</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">高风险：用户授权传递</div>
+          <div class="check-desc">知情同意机制，用户可选择共享哪些数据给咨询师</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon warn">⚠</div>
+        <div class="check-content">
+          <div class="check-title">中风险：云端深度分析</div>
+          <div class="check-desc">方案要求云端返回干预建议端侧执行，当前云端分析结果未回传端侧</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="module">
+    <div class="module-header">
+      <span class="module-title">6.4 咨询数据隐私（本次新增）</span>
+      <span class="tag tag-done">已实现</span>
+    </div>
+    <div class="module-body">
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">访问控制</div>
+          <div class="check-desc">只有预约的参与者（患者+对应咨询师）才能加入咨询房间</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">知情同意强制执行</div>
+          <div class="check-desc">未获得同意不发送任何多模态数据</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">细粒度 consent 控制</div>
+          <div class="check-desc">shareAnxiety / shareProfile / shareBehavior 独立开关</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">咨询结束数据清理</div>
+          <div class="check-desc">实时多模态数据立即清空，仅保留分析报告/回顾/笔记</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">数据过期自动清理</div>
+          <div class="check-desc">咨询师端10秒未收到新数据自动清空显示</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="improvement">
+    <h4> 改进措施</h4>
+    <ul>
+      <li><span class="priority priority-medium">中优</span> 实现中风险场景的云端深度分析→端侧执行闭环</li>
+      <li><span class="priority priority-low">低优</span> 将端侧推理真正部署到移动端（当前为算法模块，未集成到前端）</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ==================== 7. 患者-咨询师交互 ==================== -->
+<div class="section">
+  <h2>七、患者-咨询师真实交互场景</h2>
+
+  <div class="flow-diagram">
+    <div class="flow-step">
+      <div class="flow-box">患者预约咨询师</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-box green">TEXT / VOICE / VIDEO</div>
+    </div>
+    <div class="flow-step">
+      <div class="flow-box">双方进入咨询房间</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-box blue">Socket.IO 房间验证</div>
+    </div>
+    <div class="flow-step">
+      <div class="flow-box orange">患者知情同意</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-box green">细粒度 consent 选择</div>
+    </div>
+    <div class="flow-step">
+      <div class="flow-box">患者多模态采集</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-box blue">每5秒脱敏发送</div>
+    </div>
+    <div class="flow-step">
+      <div class="flow-box green">后端验证（身份+状态+角色）</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-box">转发给咨询师</div>
+    </div>
+    <div class="flow-step">
+      <div class="flow-box">咨询师实时查看心理画像</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-box red">10秒过期自动清理</div>
+    </div>
+    <div class="flow-step">
+      <div class="flow-box red">结束咨询</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-box green">实时数据清空 + 保留报告/笔记</div>
+    </div>
+  </div>
+
+  <div class="module">
+    <div class="module-header">
+      <span class="module-title">7.1 实时多模态同步</span>
+      <span class="tag tag-done">已实现</span>
+    </div>
+    <div class="module-body">
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">Socket.IO 实时通信</div>
+          <div class="check-desc">患者端每5秒发送，咨询师端实时接收显示</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">咨询师端心理画像面板</div>
+          <div class="check-desc">综合评分、主导情绪、活跃模态、情绪分布、叙事分析报告</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">后端多重验证</div>
+          <div class="check-desc">预约存在性 + 参与者身份 + 预约状态 + 发送者角色</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="module">
+    <div class="module-header">
+      <span class="module-title">7.2 咨询类型适配</span>
+      <span class="tag tag-done">已实现</span>
+    </div>
+    <div class="module-body">
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">TEXT 文字聊天</div>
+          <div class="check-desc">实时消息 + 情绪分析面板</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">VOICE 语音通话</div>
+          <div class="check-desc">波形动画 + 麦克风控制</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">VIDEO 视频通话</div>
+          <div class="check-desc">摄像头预览 + 视频流采集（需Chrome/Edge）</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="module">
+    <div class="module-header">
+      <span class="module-title">7.3 咨询师工作台</span>
+      <span class="tag tag-partial">部分实现</span>
+    </div>
+    <div class="module-body">
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">实时数字表型面板</div>
+          <div class="check-desc">咨询过程中实时显示情感变化</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">咨询笔记</div>
+          <div class="check-desc">咨询师可记录和保存咨询笔记</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon fail">✗</div>
+        <div class="check-content">
+          <div class="check-title">智能辅助工作台</div>
+          <div class="check-desc">方案要求整合AI评估结果、数字表型摘要、风险预警和CBT引导脚本，当前仅有基础面板</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon fail">✗</div>
+        <div class="check-content">
+          <div class="check-title">风险感知预约</div>
+          <div class="check-desc">方案要求提前查看患者风险等级和数字表型变化趋势，当前未实现</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon fail">✗</div>
+        <div class="check-content">
+          <div class="check-title">安全审计面板</div>
+          <div class="check-desc">方案要求展示AI被拦截的回复和触发的危机升级事件</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="improvement">
+    <h4>🔧 改进措施</h4>
+    <ul>
+      <li><span class="priority priority-high">高优</span> 构建智能辅助工作台：整合AI评估、表型摘要、风险预警、CBT脚本</li>
+      <li><span class="priority priority-high">高优</span> 实现风险感知预约：咨询前查看患者风险等级和趋势</li>
+      <li><span class="priority priority-medium">中优</span> 添加咨询师端安全审计面板</li>
+      <li><span class="priority priority-medium">中优</span> 实现视频通话的 WebRTC 真实双向视频流（当前仅本地预览）</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ==================== 8. 管理员端 ==================== -->
+<div class="section">
+  <h2>八、管理员端</h2>
+
+  <div class="module">
+    <div class="module-header">
+      <span class="module-title">8.1 算法性能监控</span>
+      <span class="tag tag-partial">部分实现</span>
+    </div>
+    <div class="module-body">
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">公平性审计报告</div>
+          <div class="check-desc">Admin Dashboard 展示分组公平性指标（使用模拟数据）</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon fail">✗</div>
+        <div class="check-content">
+          <div class="check-title">危机升级响应时间统计</div>
+          <div class="check-desc">未实现</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon fail">✗</div>
+        <div class="check-content">
+          <div class="check-title">端侧推理覆盖率</div>
+          <div class="check-desc">未实现</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="module">
+    <div class="module-header">
+      <span class="module-title">8.2 社区内容审核</span>
+      <span class="tag tag-done">已实现</span>
+    </div>
+    <div class="module-body">
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">Gentle Guardian 三级审核</div>
+          <div class="check-desc">Warm Publish / Companion Wait / Emergency Protection</div>
+        </div>
+      </div>
+      <div class="check-item">
+        <div class="check-icon pass">✓</div>
+        <div class="check-content">
+          <div class="check-title">管理员审核区</div>
+          <div class="check-desc">AdminReview 页面审核待审内容</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="improvement">
+    <h4>🔧 改进措施</h4>
+    <ul>
+      <li><span class="priority priority-medium">中优</span> 用真实数据替换公平性报告中的模拟数据</li>
+      <li><span class="priority priority-medium">中优</span> 增加危机升级响应时间统计面板</li>
+      <li><span class="priority priority-low">低优</span> 增加端侧推理覆盖率监控指标</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ==================== 总结 ==================== -->
+<div class="section">
+  <h2>九、总结与优先级建议</h2>
+
+  <table>
+    <thead>
+      <tr>
+        <th>优先级</th>
+        <th>改进项</th>
+        <th>影响范围</th>
+        <th>预估工作量</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><span class="priority priority-high">高优</span></td>
+        <td>构建智能辅助工作台（整合AI评估+表型+预警+CBT）</td>
+        <td>咨询师端核心体验</td>
+        <td>3-5天</td>
+      </tr>
+      <tr>
+        <td><span class="priority priority-high">高优</span></td>
+        <td>风险感知预约（咨询前查看风险趋势）</td>
+        <td>咨询师预判能力</td>
+        <td>2-3天</td>
+      </tr>
+      <tr>
+        <td><span class="priority priority-high">高优</span></td>
+        <td>多模态→量表分值自动映射+证据链</td>
+        <td>评估层专业性</td>
+        <td>3-4天</td>
+      </tr>
+      <tr>
+        <td><span class="priority priority-high">高优</span></td>
+        <td>Profile页"同龄对比"可视化</td>
+        <td>青少年场景化方案</td>
+        <td>1-2天</td>
+      </tr>
+      <tr>
+        <td><span class="priority priority-medium">中优</span></td>
+        <td>咨询师端安全审计面板</td>
+        <td>AI透明度</td>
+        <td>2-3天</td>
+      </tr>
+      <tr>
+        <td><span class="priority priority-medium">中优</span></td>
+        <td>MediaPipe Face Mesh 替代像素分析</td>
+        <td>面部检测精度</td>
+        <td>2-3天</td>
+      </tr>
+      <tr>
+        <td><span class="priority priority-medium">中优</span></td>
+        <td>重构干预架构为 Action 分离模式</td>
+        <td>干预可控性</td>
+        <td>3-4天</td>
+      </tr>
+      <tr>
+        <td><span class="priority priority-medium">中优</span></td>
+        <td>WebRTC 双向视频流</td>
+        <td>视频通话真实性</td>
+        <td>3-5天</td>
+      </tr>
+      <tr>
+        <td><span class="priority priority-low">低优</span></td>
+        <td>SProp GNN 语义盲法</td>
+        <td>文本偏见减少</td>
+        <td>5-7天</td>
+      </tr>
+      <tr>
+        <td><span class="priority priority-low">低优</span></td>
+        <td>睡眠监测模块</td>
+        <td>数字表型完整性</td>
+        <td>3-5天</td>
+      </tr>
+      <tr>
+        <td><span class="priority priority-low">低优</span></td>
+        <td>端侧推理真正部署到前端</td>
+        <td>隐私保护架构</td>
+        <td>5-7天</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div style="margin-top: 24px; padding: 20px; background: linear-gradient(135deg, #f0f9ff 0%, #f5f3ff 100%); border-radius: 12px;">
+    <h3 style="margin-bottom: 12px; color: #6366f1;">整体评价</h3>
+    <p style="font-size: 14px; line-height: 1.8; color: #555;">
+      平台已实现策划方案中约 <strong>60%</strong> 的核心功能。<strong>感知层</strong>的四模态融合、<strong>评估层</strong>的多任务模型、<strong>干预层</strong>的对话状态机+CBT+安全审计、<strong>升级层</strong>的危机干预系统、<strong>文化适配</strong>的公平性审计+联邦学习、<strong>隐私保护</strong>的端侧推理+脱敏上传+知情同意均已落地。
+    </p>
+    <p style="font-size: 14px; line-height: 1.8; color: #555; margin-top: 12px;">
+      主要差距在于：<strong>咨询师端智能辅助工作台</strong>不够完善（缺少风险感知预约、安全审计面板）、<strong>数字表型引擎</strong>缺少睡眠/生理特征和同龄对比、<strong>干预架构</strong>尚未实现 Action 分离模式、<strong>视频通话</strong>仅为本地预览未实现双向流。
+    </p>
+    <p style="font-size: 14px; line-height: 1.8; color: #555; margin-top: 12px;">
+      建议优先完善咨询师端工作台和评估层的量表映射，这两项对实际咨询效果影响最大。
+    </p>
+  </div>
+</div>
+
+</div>
+</body>
+</html>

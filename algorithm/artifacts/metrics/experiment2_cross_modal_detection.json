@@ -1,0 +1,62 @@
+{
+  "num_users": 30,
+  "samples_per_type": 30,
+  "total_samples": 2700,
+  "text_only": {
+    "accuracy": 0.3333,
+    "category_accuracy": {
+      "congruent": 1.0,
+      "masking": 0.0,
+      "performative": 0.0
+    },
+    "confusion_matrix": {
+      "congruent": {
+        "congruent": 900,
+        "masking": 0,
+        "performative": 0
+      },
+      "masking": {
+        "congruent": 900,
+        "masking": 0,
+        "performative": 0
+      },
+      "performative": {
+        "congruent": 900,
+        "masking": 0,
+        "performative": 0
+      }
+    },
+    "total_samples": 2700,
+    "correct_predictions": 900
+  },
+  "cross_modal": {
+    "accuracy": 0.9104,
+    "category_accuracy": {
+      "congruent": 0.9644,
+      "masking": 0.87,
+      "performative": 0.8967
+    },
+    "confusion_matrix": {
+      "congruent": {
+        "congruent": 868,
+        "masking": 17,
+        "performative": 15
+      },
+      "masking": {
+        "congruent": 117,
+        "masking": 783,
+        "performative": 0
+      },
+      "performative": {
+        "congruent": 93,
+        "masking": 0,
+        "performative": 807
+      }
+    },
+    "total_samples": 2700,
+    "correct_predictions": 2458
+  },
+  "improvement": {
+    "accuracy": 0.5771
+  }
+}

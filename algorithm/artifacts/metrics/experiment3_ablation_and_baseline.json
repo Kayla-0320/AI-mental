@@ -1,0 +1,57 @@
+{
+  "num_users": 50,
+  "turns_per_user": 10,
+  "test_samples": 150,
+  "ablation": {
+    "full_tamer": {
+      "accuracy": 0.92,
+      "precision": 0.9286,
+      "recall": 0.8667,
+      "f1": 0.8966
+    },
+    "w/o_rqi": {
+      "accuracy": 0.92,
+      "precision": 0.9286,
+      "recall": 0.8667,
+      "f1": 0.8966
+    },
+    "w/o_mis": {
+      "accuracy": 0.9133,
+      "precision": 0.9273,
+      "recall": 0.85,
+      "f1": 0.887
+    },
+    "w/o_cusum": {
+      "accuracy": 0.9133,
+      "precision": 0.9273,
+      "recall": 0.85,
+      "f1": 0.887
+    }
+  },
+  "baseline_comparison": {
+    "fixed_threshold": {
+      "accuracy": 0.68,
+      "precision": 0.6154,
+      "recall": 0.5333,
+      "f1": 0.5714
+    },
+    "personal_baseline": {
+      "accuracy": 0.92,
+      "precision": 0.9286,
+      "recall": 0.8667,
+      "f1": 0.8966
+    },
+    "simple_mlp": {
+      "accuracy": 0.7267,
+      "precision": 0.6203,
+      "recall": 0.8167,
+      "f1": 0.705
+    },
+    "tamer_ours": {
+      "accuracy": 0.92,
+      "precision": 0.9286,
+      "recall": 0.8667,
+      "f1": 0.8966
+    }
+  }
+}

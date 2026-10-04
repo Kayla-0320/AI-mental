@@ -1,0 +1,21 @@
+{
+  "built_at": "2026-09-25 20:38:53",
+  "entries": 7404,
+  "scenes": 276,
+  "dim": 768,
+  "seed": 42,
+  "embedder": "BGEEmbedder",
+  "embedder_model_path": "D:\\ai\\models\\encoders\\bge-base-zh-v1.5",
+  "label_distribution": {
+    "非扭曲": 2048,
+    "读心术": 996,
+    "过度泛化": 888,
+    "情绪化推理": 725,
+    "个人化归责": 707,
+    "乱贴标签": 706,
+    "算命": 673,
+    "非黑即白": 661
+  },
+  "source_csv": "D:\\Develop\\AIC\\data\\c2d2\\c2d2_clean.csv",
+  "source_csv_sha256": "ffe8f98df050f7de8f5d3a8ef141f78c602eced074a01daaae1e8cae0a33c9af"
+}

@@ -1,0 +1,1012 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI青少年心理健康平台 — 真实数据集接入指南</title>
+<style>
+  :root {
+    --primary: #5B8DEF;
+    --primary-light: #EBF1FD;
+    --accent: #F5A623;
+    --accent-light: #FFF8EC;
+    --success: #4CAF50;
+    --success-light: #E8F5E9;
+    --danger: #E57373;
+    --danger-light: #FFEBEE;
+    --text: #2D3748;
+    --text-light: #718096;
+    --bg: #F7F8FC;
+    --card: #FFFFFF;
+    --border: #E2E8F0;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    padding: 0;
+  }
+  .hero {
+    background: linear-gradient(135deg, #5B8DEF 0%, #7C3AED 50%, #F5A623 100%);
+    color: white;
+    padding: 60px 40px;
+    text-align: center;
+  }
+  .hero h1 { font-size: 2.2em; font-weight: 700; margin-bottom: 12px; }
+  .hero p { font-size: 1.1em; opacity: 0.92; max-width: 700px; margin: 0 auto; }
+  .container { max-width: 1100px; margin: 0 auto; padding: 40px 24px; }
+  .toc {
+    background: var(--card);
+    border-radius: 16px;
+    padding: 28px 32px;
+    margin-bottom: 36px;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+    border-left: 5px solid var(--primary);
+  }
+  .toc h2 { font-size: 1.3em; margin-bottom: 14px; color: var(--primary); }
+  .toc ol { padding-left: 20px; }
+  .toc li { margin-bottom: 6px; }
+  .toc a { color: var(--primary); text-decoration: none; font-weight: 500; }
+  .toc a:hover { text-decoration: underline; }
+
+  .section {
+    background: var(--card);
+    border-radius: 16px;
+    padding: 32px;
+    margin-bottom: 28px;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+  }
+  .section h2 {
+    font-size: 1.5em;
+    color: var(--primary);
+    margin-bottom: 8px;
+    padding-bottom: 10px;
+    border-bottom: 2px solid var(--primary-light);
+  }
+  .section h3 {
+    font-size: 1.15em;
+    color: var(--text);
+    margin: 20px 0 10px;
+  }
+
+  .module-card {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 22px 24px;
+    margin: 16px 0;
+    transition: box-shadow 0.2s;
+  }
+  .module-card:hover { box-shadow: 0 4px 16px rgba(91,141,239,0.12); }
+  .module-card h4 {
+    font-size: 1.1em;
+    color: var(--primary);
+    margin-bottom: 6px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .module-card .badge {
+    display: inline-block;
+    font-size: 0.72em;
+    padding: 2px 10px;
+    border-radius: 20px;
+    font-weight: 600;
+  }
+  .badge-critical { background: var(--danger-light); color: var(--danger); }
+  .badge-high { background: var(--accent-light); color: #C77D00; }
+  .badge-medium { background: var(--success-light); color: var(--success); }
+
+  .dataset-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0;
+    font-size: 0.92em;
+  }
+  .dataset-table th {
+    background: var(--primary);
+    color: white;
+    padding: 12px 14px;
+    text-align: left;
+    font-weight: 600;
+  }
+  .dataset-table th:first-child { border-radius: 8px 0 0 0; }
+  .dataset-table th:last-child { border-radius: 0 8px 0 0; }
+  .dataset-table td {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  .dataset-table tr:nth-child(even) { background: #FAFBFE; }
+  .dataset-table tr:hover { background: var(--primary-light); }
+  .dataset-table a { color: var(--primary); text-decoration: none; font-weight: 500; }
+  .dataset-table a:hover { text-decoration: underline; }
+
+  .mapping-box {
+    background: linear-gradient(135deg, var(--primary-light) 0%, #F0E6FF 100%);
+    border-radius: 12px;
+    padding: 20px 24px;
+    margin: 16px 0;
+  }
+  .mapping-box h4 { color: #5B4FC4; margin-bottom: 8px; }
+  .mapping-box code {
+    background: rgba(91,79,196,0.1);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 0.9em;
+    color: #5B4FC4;
+  }
+
+  .pipeline-flow {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin: 16px 0;
+    font-size: 0.9em;
+  }
+  .pipeline-step {
+    background: var(--primary-light);
+    color: var(--primary);
+    padding: 6px 14px;
+    border-radius: 20px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .pipeline-arrow { color: var(--primary); font-size: 1.2em; }
+
+  .callout {
+    border-radius: 10px;
+    padding: 16px 20px;
+    margin: 16px 0;
+    font-size: 0.93em;
+  }
+  .callout-info { background: var(--primary-light); border-left: 4px solid var(--primary); }
+  .callout-warn { background: var(--accent-light); border-left: 4px solid var(--accent); }
+  .callout-success { background: var(--success-light); border-left: 4px solid var(--success); }
+  .callout strong { display: block; margin-bottom: 4px; }
+
+  .priority-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 16px;
+    margin: 16px 0;
+  }
+  .priority-item {
+    border-radius: 12px;
+    padding: 18px 20px;
+    border: 1px solid var(--border);
+  }
+  .priority-item.p1 { border-left: 5px solid var(--danger); background: var(--danger-light); }
+  .priority-item.p2 { border-left: 5px solid var(--accent); background: var(--accent-light); }
+  .priority-item.p3 { border-left: 5px solid var(--success); background: var(--success-light); }
+  .priority-item h5 { font-size: 1em; margin-bottom: 6px; }
+  .priority-item p { font-size: 0.88em; color: var(--text-light); }
+
+  .code-block {
+    background: #1E293B;
+    color: #E2E8F0;
+    border-radius: 10px;
+    padding: 18px 20px;
+    font-family: 'Fira Code', 'Consolas', monospace;
+    font-size: 0.85em;
+    overflow-x: auto;
+    margin: 12px 0;
+    line-height: 1.6;
+  }
+  .code-block .comment { color: #94A3B8; }
+  .code-block .keyword { color: #7DD3FC; }
+  .code-block .string { color: #86EFAC; }
+  .code-block .number { color: #FDE68A; }
+
+  .arch-diagram {
+    background: #FAFBFE;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    text-align: center;
+    margin: 20px 0;
+    font-size: 0.88em;
+    overflow-x: auto;
+  }
+  .arch-diagram pre {
+    display: inline-block;
+    text-align: left;
+    font-family: 'Consolas', monospace;
+    line-height: 1.5;
+    color: var(--text);
+  }
+
+  .footer {
+    text-align: center;
+    padding: 30px;
+    color: var(--text-light);
+    font-size: 0.88em;
+  }
+  ul { padding-left: 20px; }
+  li { margin-bottom: 4px; }
+  .tag { display: inline-block; background: var(--primary-light); color: var(--primary); padding: 2px 8px; border-radius: 4px; font-size: 0.8em; margin: 2px; font-weight: 500; }
+  .tag-cn { background: #FFF0F0; color: #D32F2F; }
+  .tag-en { background: #E8F5E9; color: #2E7D32; }
+  .tag-multi { background: #FFF8E1; color: #F57F17; }
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <h1>AI 青少年心理健康平台</h1>
+  <p>真实数据集接入指南 — 去哪儿找数据、找什么数据、用什么数据训练什么模型</p>
+  <p style="margin-top:10px; font-size:0.9em; opacity:0.8;">基于项目 6 大算法模块、12+ 可训练模型的全面分析</p>
+</div>
+
+<div class="container">
+
+<!-- 目录 -->
+<div class="toc">
+  <h2>目录</h2>
+  <ol>
+    <li><a href="#overview">项目算法架构与训练需求总览</a></li>
+    <li><a href="#module1">文本情感分类模型 — RoBERTa 微调</a></li>
+    <li><a href="#module2">多任务风险分级模型 — MLP 训练</a></li>
+    <li><a href="#module3">对抗去偏见模型 — GRL 对抗训练</a></li>
+    <li><a href="#module4">SProp GNN 语义盲图网络</a></li>
+    <li><a href="#module5">多模态融合 Stacking 元学习器</a></li>
+    <li><a href="#module6">语音情感模型 — 声学特征分类</a></li>
+    <li><a href="#module7">联邦学习风险分类器</a></li>
+    <li><a href="#priority">数据获取优先级路线图</a></li>
+    <li><a href="#format">数据格式规范与接入方式</a></li>
+    <li><a href="#ethics">伦理合规与数据安全保障</a></li>
+  </ol>
+</div>
+
+<!-- 1. 总览 -->
+<div class="section" id="overview">
+  <h2>一、项目算法架构与训练需求总览</h2>
+  <p>当前项目共有 <strong>7 个可训练模块</strong>，全部使用合成假数据跑通了训练流程。接入真实数据库需要为每个模块匹配合适的数据集。</p>
+
+  <div class="arch-diagram">
+    <pre>
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        感知层 (Perception)                              │
+│                                                                         │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌────────────┐  │
+│  │ 文本情感模型  │  │ 语音声学模型  │  │ 面部表情模型  │  │ 行为模式   │  │
+│  │ RoBERTa 微调 │  │ 规则→可训练  │  │  FACS AU检测 │  │ 键动力学   │  │
+│  │ 5类情感分类  │  │ 声学特征提取 │  │  像素分析    │  │  规则引擎  │  │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘  └─────┬──────┘  │
+│         │                 │                 │                │         │
+│         └────────────┬────┴─────────────────┴────────────────┘         │
+│                      ↓                                                  │
+│              ┌───────────────┐    ┌──────────────────┐                  │
+│              │ 多模态融合引擎 │    │ SProp GNN 去偏见 │                  │
+│              │ Weighted/Stack │    │ 对抗训练(GRL)    │                  │
+│              │ /Dynamic       │    │                  │                  │
+│              └───────┬───────┘    └──────────────────┘                  │
+└──────────────────────┼──────────────────────────────────────────────────┘
+                       ↓
+┌──────────────────────────────────────────────────────────────────────────┐
+│                        评估层 (Assessment)                               │
+│  ┌──────────────────────┐  ┌──────────┐  ┌──────────┐  ┌────────────┐  │
+│  │ 多任务风险分级模型    │  │ 共病分析 │  │ 量表评估 │  │ 趋势分析  │  │
+│  │ 抑郁/焦虑/睡眠 三头  │  │ 模式识别 │  │ PHQ/GAD  │  │ 时序建模  │  │
+│  └──────────────────────┘  └──────────┘  └──────────┘  └────────────┘  │
+└──────────────────────────────────────────────────────────────────────────┘
+                       ↓
+┌──────────────────────────────────────────────────────────────────────────┐
+│                   联邦学习 (Federated Learning)                          │
+│  ┌──────────────────────────────────────────────────────────────────┐   │
+│  │ FedAvg 聚合 → LogisticRegression 全局风险分类器                  │   │
+│  └──────────────────────────────────────────────────────────────────┘   │
+└──────────────────────────────────────────────────────────────────────────┘</pre>
+  </div>
+
+  <table class="dataset-table">
+    <tr>
+      <th>模块</th>
+      <th>当前状态</th>
+      <th>训练数据需求</th>
+      <th>优先级</th>
+    </tr>
+    <tr>
+      <td>文本情感分类 (RoBERTa)</td>
+      <td>假数据 420 条</td>
+      <td>中文青少年心理文本 + 5类情感标签</td>
+      <td><span class="badge badge-critical">P0 最高</span></td>
+    </tr>
+    <tr>
+      <td>多任务风险分级 (MLP)</td>
+      <td>假数据 1000 条</td>
+      <td>感知层特征 + 抑郁/焦虑/睡眠三标签</td>
+      <td><span class="badge badge-critical">P0 最高</span></td>
+    </tr>
+    <tr>
+      <td>对抗去偏见 (GRL)</td>
+      <td>假数据 150 条</td>
+      <td>文本 + 情感标签 + 敏感属性标签</td>
+      <td><span class="badge badge-high">P1 高</span></td>
+    </tr>
+    <tr>
+      <td>SProp GNN 图网络</td>
+      <td>已实现，待训练</td>
+      <td>文本 + 情感标签 + 受保护属性</td>
+      <td><span class="badge badge-high">P1 高</span></td>
+    </tr>
+    <tr>
+      <td>融合 Stacking 元学习器</td>
+      <td>未训练</td>
+      <td>文本概率 + 语音概率 + 真实情绪标签</td>
+      <td><span class="badge badge-high">P1 高</span></td>
+    </tr>
+    <tr>
+      <td>语音情感分类</td>
+      <td>规则引擎</td>
+      <td>音频文件 + 情绪标签</td>
+      <td><span class="badge badge-medium">P2 中</span></td>
+    </tr>
+    <tr>
+      <td>联邦学习分类器</td>
+      <td>模拟仿真</td>
+      <td>多机构分布数据 + 风险标签</td>
+      <td><span class="badge badge-medium">P2 中</span></td>
+    </tr>
+  </table>
+</div>
+
+<!-- 2. 文本情感分类 -->
+<div class="section" id="module1">
+  <h2>二、文本情感分类模型 — RoBERTa 微调</h2>
+
+  <div class="module-card">
+    <h4>
+      <span class="badge badge-critical">P0 最高优先级</span>
+      模型信息
+    </h4>
+    <ul>
+      <li><strong>模型文件：</strong><code>perception/text_emotion/model.py</code> → <code>train.py</code></li>
+      <li><strong>基座模型：</strong><code>hfl/chinese-roberta-wwm-ext</code>（中文 RoBERTa）</li>
+      <li><strong>分类类别：</strong>5 类 — <code>anxiety(焦虑)</code> / <code>depression(抑郁)</code> / <code>anger(愤怒)</code> / <code>neutral(中性)</code> / <code>positive(积极)</code></li>
+      <li><strong>数据格式：</strong><code>[{"text": "文本内容", "label": "anxiety"}, ...]</code></li>
+      <li><strong>当前状态：</strong>假数据 420 条（模板变体生成），需替换为真实标注数据</li>
+      <li><strong>最低数据量：</strong>每类 500+ 条（共 2500+），推荐每类 2000+（共 10000+）</li>
+    </ul>
+  </div>
+
+  <h3>推荐数据集</h3>
+  <table class="dataset-table">
+    <tr>
+      <th>数据集名称</th>
+      <th>来源</th>
+      <th>规模</th>
+      <th>语言</th>
+      <th>适配方式</th>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/thu-coai/DepressionDataset" target="_blank">DepressionDataset (thu-coai)</a></td>
+      <td>清华大学 CoAI 组 / 微博</td>
+      <td>~7000+ 帖子</td>
+      <td><span class="tag tag-cn">中文</span></td>
+      <td>抑郁/正常二分类 → 映射到 <code>depression</code> 类，配合其他数据补充其余 4 类</td>
+    </tr>
+    <tr>
+      <td><a href="https://huggingface.co/datasets/emotion" target="_blank">Emotion (Elvis/sentiment)</a></td>
+      <td>HuggingFace / 英文翻译</td>
+      <td>~2000 条</td>
+      <td><span class="tag tag-en">英文</span></td>
+      <td>含 sadness/joy/anger/fear 等 → 需机器翻译为中文后使用</td>
+    </tr>
+    <tr>
+      <td><a href="https://huggingface.co/datasets/DUTIR-BioNLP/tianchi-mental-dataset" target="_blank">天池心理健康数据集</a></td>
+      <td>阿里云天池竞赛</td>
+      <td>~10000+ 条</td>
+      <td><span class="tag tag-cn">中文</span></td>
+      <td>心理咨询文本 → 可直接标注 5 类情感</td>
+    </tr>
+    <tr>
+      <td><a href="https://huggingface.co/datasets/ioclab/korea-suicide-classifier" target="_blank">中文社交媒体情感数据</a></td>
+      <td>学术论文 / 微博</td>
+      <td>规模不等</td>
+      <td><span class="tag tag-cn">中文</span></td>
+      <td>微博情绪分类数据（WEIBO）→ 映射 anger/anxiety 等类别</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/SophonLab/EmotionClassification" target="_blank">Ren-CECps 情感语料库</a></td>
+      <td>大连理工 / 人民日报</td>
+      <td>~35000 条</td>
+      <td><span class="tag tag-cn">中文</span></td>
+      <td>含 8 种情绪 → 合并映射到 5 类体系</td>
+    </tr>
+    <tr>
+      <td><a href="https://huggingface.co/datasets/CAREFL/mental_health_counseling_conversations" target="_blank">Mental Health Counseling</a></td>
+      <td>心理咨询对话</td>
+      <td>~3000 对话</td>
+      <td><span class="tag tag-en">英文</span></td>
+      <td>翻译后用于增强 depression/anxiety 类样本</td>
+    </tr>
+    <tr>
+      <td><strong>自建标注数据（推荐）</strong></td>
+      <td>平台咨询记录</td>
+      <td>按需</td>
+      <td><span class="tag tag-cn">中文</span></td>
+      <td>对平台真实咨询文本进行人工标注，最贴合目标域</td>
+    </tr>
+  </table>
+
+  <div class="callout callout-warn">
+    <strong>关键适配要点</strong>
+    项目标签体系为 <code>anxiety / depression / anger / neutral / positive</code>，多数公开数据集的标签体系不同，需要建立映射表。例如：将 ISEAR 的 "fear" 映射到 "anxiety"，将 "guilt/shame" 映射到 "depression"。中性/积极类可从日常对话语料中采样平衡。
+  </div>
+
+  <div class="mapping-box">
+    <h4>标签映射建议</h4>
+    <p>
+      <code>fear / fear-panic</code> → <code>anxiety</code> &nbsp;|&nbsp;
+      <code>sadness / grief</code> → <code>depression</code> &nbsp;|&nbsp;
+      <code>anger / rage</code> → <code>anger</code> &nbsp;|&nbsp;
+      <code>neutral / surprise</code> → <code>neutral</code> &nbsp;|&nbsp;
+      <code>joy / love / gratitude</code> → <code>positive</code>
+    </p>
+  </div>
+
+  <h3>训练命令</h3>
+  <div class="code-block">
+<span class="comment"># 准备真实数据 JSON 文件（格式同假数据）</span>
+<span class="comment"># data/real_train.json: [{"text": "...", "label": "anxiety"}, ...]</span>
+
+<span class="comment"># 启动训练</span>
+<span class="keyword">cd</span> algorithm
+<span class="keyword">python</span> -m perception.text_emotion.train --data perception/text_emotion/data/real_train.json
+
+<span class="comment"># 模型将保存至 perception/text_emotion/outputs/model/</span>
+  </div>
+</div>
+
+<!-- 3. 多任务风险分级 -->
+<div class="section" id="module2">
+  <h2>三、多任务风险分级模型 — MLP 训练</h2>
+
+  <div class="module-card">
+    <h4>
+      <span class="badge badge-critical">P0 最高优先级</span>
+      模型信息
+    </h4>
+    <ul>
+      <li><strong>模型文件：</strong><code>assessment/multi_task/model.py</code> → <code>train.py</code></li>
+      <li><strong>架构：</strong>共享编码器(2层MLP) + 三个任务头(depression/anxiety/sleep)</li>
+      <li><strong>输入特征：</strong>20 维向量（感知层输出融合特征）</li>
+      <li><strong>输出：</strong>三个二分类概率（抑郁/焦虑/睡眠风险）</li>
+      <li><strong>数据格式：</strong><code>{"samples": [{"features": [...20维...], "depression": 0/1, "anxiety": 0/1, "sleep": 0/1}]}</code></li>
+      <li><strong>当前状态：</strong>假数据 1000 条，需替换为真实临床/筛查数据</li>
+      <li><strong>最低数据量：</strong>2000+ 条，推荐 5000+ 条</li>
+    </ul>
+  </div>
+
+  <h3>推荐数据集</h3>
+  <table class="dataset-table">
+    <tr>
+      <th>数据集名称</th>
+      <th>来源</th>
+      <th>内容</th>
+      <th>适配方式</th>
+    </tr>
+    <tr>
+      <td><a href="https://huggingface.co/datasets/adversarial-consensus/phq9-dataset" target="_blank">PHQ-9 抑郁筛查数据</a></td>
+      <td>临床量表 / 医院</td>
+      <td>PHQ-9 量表评分 + 人口统计</td>
+      <td>PHQ-9 ≥ 10 → <code>depression=1</code>；提取特征维度作为输入</td>
+    </tr>
+    <tr>
+      <td><a href="https://www.kaggle.com/datasets/tawfikerqadan/depression-anxiety-stress-dataset" target="_blank">DASS-21 数据集 (Kaggle)</a></td>
+      <td>DASS-21 量表 / 社区</td>
+      <td>抑郁-焦虑-压力三维度评分</td>
+      <td>直接对应 depression/anxiety 标签，睡眠可从相关条目推导</td>
+    </tr>
+    <tr>
+      <td><a href="https://psycnet.apa.org/" target="_blank">PSQI 匹兹堡睡眠质量指数数据</a></td>
+      <td>临床睡眠研究</td>
+      <td>睡眠质量评分 + 相关指标</td>
+      <td>PSQI > 5 → <code>sleep=1</code>；与 DASS-21 联合使用获得三标签</td>
+    </tr>
+    <tr>
+      <td><a href="https://huggingface.co/datasets?search=mental+health" target="_blank">HuggingFace 心理健康数据集合集</a></td>
+      <td>多来源</td>
+      <td>各类心理健康问卷数据</td>
+      <td>提取量表分数 → 二值化为三任务标签</td>
+    </tr>
+    <tr>
+      <td><strong>平台自有数据（最佳）</strong></td>
+      <td>平台用户心理档案</td>
+      <td>用户填写的 PHQ-9/GAD-7/PSQI + 多模态感知特征</td>
+      <td>直接使用感知层输出作为 features，量表分数作为标签</td>
+    </tr>
+  </table>
+
+  <div class="callout callout-info">
+    <strong>特征工程要点</strong>
+    该模型的 20 维输入特征应来自感知层的融合输出，包括：文本情感 5 维概率 + 语音风险分 + 面部风险分 + 行为风险分 + 键盘动力学特征 + 会话统计特征。如果使用真实量表数据训练，需要先从量表文本中提取对应特征，或使用感知层对量表文本进行推理后获取特征向量。
+  </div>
+
+  <div class="pipeline-flow">
+    <span class="pipeline-step">量表数据</span>
+    <span class="pipeline-arrow">→</span>
+    <span class="pipeline-step">感知层特征提取</span>
+    <span class="pipeline-arrow">→</span>
+    <span class="pipeline-step">20维特征向量</span>
+    <span class="pipeline-arrow">→</span>
+    <span class="pipeline-step">多任务模型训练</span>
+    <span class="pipeline-arrow">→</span>
+    <span class="pipeline-step">抑郁/焦虑/睡眠 三头预测</span>
+  </div>
+</div>
+
+<!-- 4. 对抗去偏见 -->
+<div class="section" id="module3">
+  <h2>四、对抗去偏见模型 — GRL 对抗训练</h2>
+
+  <div class="module-card">
+    <h4>
+      <span class="badge badge-high">P1 高优先级</span>
+      模型信息
+    </h4>
+    <ul>
+      <li><strong>模型文件：</strong><code>perception/text_emotion/adversarial_debias.py</code></li>
+      <li><strong>架构：</strong>RoBERTa 共享编码器 + 主分类头(情感) + 对抗分类头(GRL→敏感属性)</li>
+      <li><strong>需求：</strong>文本 + 情感标签 + 敏感属性标签（性别/方言/年龄组）</li>
+      <li><strong>数据格式：</strong><code>{"input_ids": ..., "attention_mask": ..., "label": 情感ID, "sensitive_label": 敏感属性ID}</code></li>
+      <li><strong>目标：</strong>情感分类准确率不降的同时，模型无法从特征中预测敏感属性</li>
+    </ul>
+  </div>
+
+  <h3>推荐数据集</h3>
+  <table class="dataset-table">
+    <tr>
+      <th>数据集</th>
+      <th>说明</th>
+      <th>适配方式</th>
+    </tr>
+    <tr>
+      <td><a href="https://huggingface.co/datasets?search=gender+bias+text" target="_blank">性别偏见文本数据集</a></td>
+      <td>含性别标注的文本情感数据</td>
+      <td>情感标签 → label，性别 → sensitive_label</td>
+    </tr>
+    <tr>
+      <td><strong>自建标注数据</strong></td>
+      <td>在文本情感分类数据基础上，额外标注性别/年龄段/地域</td>
+      <td>最灵活，可精确控制偏见模式</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/thu-coai/DepressionDataset" target="_blank">微博抑郁数据集 + 性别标注</a></td>
+      <td>微博帖子含用户性别信息</td>
+      <td>文本→情感标注，用户性别→sensitive_label</td>
+    </tr>
+  </table>
+
+  <div class="callout callout-warn">
+    <strong>核心要点</strong>
+    对抗去偏见需要同一批数据同时具有「情感标签」和「敏感属性标签」。最实用的做法是在文本情感分类数据（模块二）的基础上，额外标注每条数据的作者性别/年龄段/地域信息。建议至少标注性别（男/女/未知）三组，每组样本量均衡。
+  </div>
+</div>
+
+<!-- 5. SProp GNN -->
+<div class="section" id="module4">
+  <h2>五、SProp GNN 语义盲图网络</h2>
+
+  <div class="module-card">
+    <h4>
+      <span class="badge badge-high">P1 高优先级</span>
+      模型信息
+    </h4>
+    <ul>
+      <li><strong>模型文件：</strong><code>perception/text_emotion/sprop_gnn.py</code></li>
+      <li><strong>架构：</strong>语义图构建(词/句节点) → 3层GCN消息传递 → 对抗去偏见(GRL) + SProp正则</li>
+      <li><strong>需求：</strong>与对抗去偏见相同 — 文本 + 情感标签 + 受保护属性</li>
+      <li><strong>特色：</strong>图结构输入，对文本语义关系建模更强</li>
+    </ul>
+  </div>
+
+  <h3>数据需求</h3>
+  <p>与对抗去偏见模型（模块四）共享同一数据集。额外优势：GNN 的图结构输入可以利用文本的词-句关系，因此<strong>长文本数据</strong>（如咨询对话、日记）对此模型效果更好。</p>
+
+  <div class="callout callout-success">
+    <strong>数据复用建议</strong>
+    SProp GNN 与对抗去偏见模型可以共享同一份标注数据，一次标注同时训练两个去偏见模型，对比效果。
+  </div>
+</div>
+
+<!-- 6. 融合 Stacking -->
+<div class="section" id="module5">
+  <h2>六、多模态融合 Stacking 元学习器</h2>
+
+  <div class="module-card">
+    <h4>
+      <span class="badge badge-high">P1 高优先级</span>
+      模型信息
+    </h4>
+    <ul>
+      <li><strong>模型文件：</strong><code>perception/fusion/fusion.py</code> → <code>StackingFusion</code> 类</li>
+      <li><strong>架构：</strong>LogisticRegression 元学习器，输入为文本+语音概率拼接的 10 维特征</li>
+      <li><strong>训练方式：</strong><code>fit(text_probs, audio_probs, labels)</code></li>
+      <li><strong>需求：</strong>各模态的概率输出 + 真实情绪标签</li>
+    </ul>
+  </div>
+
+  <h3>数据获取策略</h3>
+  <p>Stacking 元学习器的训练数据需要<strong>分两步</strong>获取：</p>
+  <div class="pipeline-flow">
+    <span class="pipeline-step">Step 1: 收集多模态数据</span>
+    <span class="pipeline-arrow">→</span>
+    <span class="pipeline-step">Step 2: 用已训练好的单模态模型推理</span>
+    <span class="pipeline-arrow">→</span>
+    <span class="pipeline-step">Step 3: 拼接概率 + 真实标签</span>
+    <span class="pipeline-arrow">→</span>
+    <span class="pipeline-step">Step 4: 训练 StackingFusion</span>
+  </div>
+
+  <h3>推荐数据源</h3>
+  <table class="dataset-table">
+    <tr>
+      <th>数据集</th>
+      <th>说明</th>
+      <th>用途</th>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/SpeechBrain-SpeechBrain/speechbrain" target="_blank">IEMOCAP 情感数据库</a></td>
+      <td>英文对话情感（音频+文本+标签）</td>
+      <td>同时有文本和语音，可分别输入两个模型获取概率</td>
+    </tr>
+    <tr>
+      <td><a href="https://huggingface.co/datasets/speech_college/CH-SIMS" target="_blank">CH-SIMS 中文多模态情感</a></td>
+      <td>中文多模态情感（视频+音频+文本）</td>
+      <td>最匹配！中文 + 多模态 + 情感标注</td>
+    </tr>
+    <tr>
+      <td><a href="https://huggingface.co/datasets?search=multimodal+emotion" target="_blank">CMU-MOSEI / CMU-MOSI</a></td>
+      <td>英文多模态情感分析基准</td>
+      <td>翻译后可用，文本+音频+情感标签齐全</td>
+    </tr>
+    <tr>
+      <td><strong>平台咨询录音+文本</strong></td>
+      <td>语音咨询的录音和转写文本</td>
+      <td>最贴合实际使用场景</td>
+    </tr>
+  </table>
+</div>
+
+<!-- 7. 语音情感 -->
+<div class="section" id="module6">
+  <h2>七、语音情感模型 — 声学特征分类</h2>
+
+  <div class="module-card">
+    <h4>
+      <span class="badge badge-medium">P2 中优先级</span>
+      模型信息
+    </h4>
+    <ul>
+      <li><strong>模型文件：</strong><code>perception/voice/acoustic.py</code></li>
+      <li><strong>当前状态：</strong>基于规则的经验映射（Scherer 2003 声学标志物）</li>
+      <li><strong>可升级方向：</strong>用标注数据训练 SVM/MLP 替换规则引擎</li>
+      <li><strong>特征：</strong>F0/能量/语速/停顿/共振峰/Jitter/Shimmer 等 12 维声学特征</li>
+    </ul>
+  </div>
+
+  <h3>推荐数据集</h3>
+  <table class="dataset-table">
+    <tr>
+      <th>数据集</th>
+      <th>规模</th>
+      <th>语言</th>
+      <th>适配方式</th>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/IEMOCAP-Emotion-Detection" target="_blank">IEMOCAP</a></td>
+      <td>~12h / 10039 utterance</td>
+      <td><span class="tag tag-en">英文</span></td>
+      <td>提取声学特征 → 训练分类器替换规则引擎</td>
+    </tr>
+    <tr>
+      <td><a href="https://www.aishelltech.com/aishell_3" target="_blank">AISHELL-3 情感语音</a></td>
+      <td>85 小时</td>
+      <td><span class="tag tag-cn">中文</span></td>
+      <td>中文情感语音，提取声学特征训练</td>
+    </tr>
+    <tr>
+      <td><a href="https://emodb.wildermaenn.de/" target="_blank">EMO-DB (Berlin)</a></td>
+      <td>800 utterances / 7 emotions</td>
+      <td><span class="tag tag-en">德文</span></td>
+      <td>经典情感语音基准，验证特征提取pipeline</td>
+    </tr>
+    <tr>
+      <td><a href="https://huggingface.co/datasets?search=chinese+speech+emotion" target="_blank">CASME / CAVE 中文情感语音</a></td>
+      <td>规模不等</td>
+      <td><span class="tag tag-cn">中文</span></td>
+      <td>最贴合目标场景</td>
+    </tr>
+  </table>
+</div>
+
+<!-- 8. 联邦学习 -->
+<div class="section" id="module7">
+  <h2>八、联邦学习风险分类器</h2>
+
+  <div class="module-card">
+    <h4>
+      <span class="badge badge-medium">P2 中优先级</span>
+      模型信息
+    </h4>
+    <ul>
+      <li><strong>模型文件：</strong><code>federated/server.py</code> + <code>federated/client.py</code></li>
+      <li><strong>架构：</strong>LogisticRegression + FedAvg 聚合</li>
+      <li><strong>需求：</strong>多个「客户端」各自持有本地数据 + 风险标签</li>
+      <li><strong>当前状态：</strong>模拟 2 客户端，假数据各 500 条</li>
+    </ul>
+  </div>
+
+  <h3>数据获取策略</h3>
+  <p>联邦学习的核心价值在于<strong>多机构数据不共享的前提下联合训练</strong>。推荐数据源：</p>
+  <ul>
+    <li><strong>多所学校/医院的心理健康筛查数据</strong> — 每个机构作为一个客户端</li>
+    <li><strong>DASS-21 / PHQ-9 公开数据</strong> — 按地域/机构拆分为多个客户端</li>
+    <li><strong>平台多地区用户数据</strong> — 按地区自然划分客户端</li>
+  </ul>
+
+  <div class="callout callout-info">
+    <strong>实际部署建议</strong>
+    联邦学习在真实场景中需要各机构配合部署客户端节点。建议先使用公开数据集的分区版本验证流程，再逐步接入真实机构数据。
+  </div>
+</div>
+
+<!-- 9. 优先级路线图 -->
+<div class="section" id="priority">
+  <h2>九、数据获取优先级路线图</h2>
+
+  <div class="priority-grid">
+    <div class="priority-item p1">
+      <h5>P0 — 第一阶段（1-2 周）</h5>
+      <p><strong>文本情感分类数据</strong><br>
+      天池心理健康数据集 + Ren-CECps + 自建标注<br>
+      目标：2500+ 条中文青少年心理文本，5类均衡标注<br>
+      训练 RoBERTa 文本情感模型，替换假数据</p>
+    </div>
+    <div class="priority-item p1">
+      <h5>P0 — 第一阶段（1-2 周）</h5>
+      <p><strong>多任务风险分级数据</strong><br>
+      DASS-21 量表数据 + PHQ-9 + PSQI<br>
+      目标：2000+ 条含三标签的筛查数据<br>
+      训练多任务 MLP 模型，替换假数据</p>
+    </div>
+    <div class="priority-item p2">
+      <h5>P1 — 第二阶段（2-4 周）</h5>
+      <p><strong>对抗去偏见 / SProp GNN 数据</strong><br>
+      在 P0 文本数据基础上追加敏感属性标注<br>
+      目标：性别/年龄段标注覆盖全数据集<br>
+      训练去偏见模型，提升公平性</p>
+    </div>
+    <div class="priority-item p2">
+      <h5>P1 — 第二阶段（2-4 周）</h5>
+      <p><strong>多模态融合数据</strong><br>
+      CH-SIMS 中文多模态情感数据<br>
+      目标：500+ 条同时含文本+音频的数据<br>
+      训练 Stacking 元学习器</p>
+    </div>
+    <div class="priority-item p3">
+      <h5>P2 — 第三阶段（4-8 周）</h5>
+      <p><strong>语音情感数据</strong><br>
+      AISHELL-3 / IEMOCAP<br>
+      目标：用真实数据训练声学特征分类器<br>
+      替换当前规则引擎</p>
+    </div>
+    <div class="priority-item p3">
+      <h5>P2 — 第三阶段（4-8 周）</h5>
+      <p><strong>联邦学习数据</strong><br>
+      多机构数据分区 + 模拟验证<br>
+      目标：验证跨机构联合训练可行性<br>
+      为真实部署做准备</p>
+    </div>
+  </div>
+</div>
+
+<!-- 10. 数据格式规范 -->
+<div class="section" id="format">
+  <h2>十、数据格式规范与接入方式</h2>
+
+  <h3>1. 文本情感分类数据格式</h3>
+  <div class="code-block">
+<span class="comment">// perception/text_emotion/data/real_train.json</span>
+[
+  {<span class="string">"text"</span>: <span class="string">"我最近总是感到很不安，担心各种事情"</span>, <span class="string">"label"</span>: <span class="string">"anxiety"</span>},
+  {<span class="string">"text"</span>: <span class="string">"今天心情特别好，阳光很温暖"</span>, <span class="string">"label"</span>: <span class="string">"positive"</span>},
+  {<span class="string">"text"</span>: <span class="string">"我觉得活着没什么意思"</span>, <span class="string">"label"</span>: <span class="string">"depression"</span>}
+]
+<span class="comment">// label 取值: anxiety | depression | anger | neutral | positive</span>
+  </div>
+
+  <h3>2. 多任务风险分级数据格式</h3>
+  <div class="code-block">
+<span class="comment">// assessment/multi_task/data/real_train.json</span>
+{
+  <span class="string">"samples"</span>: [
+    {
+      <span class="string">"features"</span>: [<span class="number">0.12</span>, <span class="number">-0.34</span>, <span class="number">0.56</span>, ... ],  <span class="comment">// 20维浮点向量</span>
+      <span class="string">"depression"</span>: <span class="number">0</span>,   <span class="comment">// 0 或 1</span>
+      <span class="string">"anxiety"</span>: <span class="number">1</span>,      <span class="comment">// 0 或 1</span>
+      <span class="string">"sleep"</span>: <span class="number">0</span>         <span class="comment">// 0 或 1</span>
+    }
+  ]
+}
+  </div>
+
+  <h3>3. 对抗去偏见数据格式</h3>
+  <div class="code-block">
+<span class="comment">// 在 EmotionDataset 基础上增加 sensitive_label 字段</span>
+[
+  {
+    <span class="string">"text"</span>: <span class="string">"我最近压力很大"</span>,
+    <span class="string">"label"</span>: <span class="string">"anxiety"</span>,
+    <span class="string">"sensitive_label"</span>: <span class="number">0</span>   <span class="comment">// 0=女, 1=男, 2=其他</span>
+  }
+]
+  </div>
+
+  <h3>4. 多模态融合数据格式</h3>
+  <div class="code-block">
+<span class="comment">// 需要先通过单模态模型推理获取概率，再拼接标签</span>
+<span class="comment">// 用于 StackingFusion.fit(text_probs, audio_probs, labels)</span>
+text_probs:  np.array([[0.1, 0.2, 0.3, 0.1, 0.3], ...])  <span class="comment"># (N, 5)</span>
+audio_probs: np.array([[0.2, 0.1, 0.4, 0.1, 0.2], ...])  <span class="comment"># (N, 5)</span>
+labels:      np.array([2, 0, 1, ...])                      <span class="comment"># (N,) 真实情绪类别</span>
+  </div>
+</div>
+
+<!-- 11. 伦理合规 -->
+<div class="section" id="ethics">
+  <h2>十一、伦理合规与数据安全保障</h2>
+
+  <div class="callout callout-warn">
+    <strong>青少年心理健康数据的特殊伦理要求</strong>
+    本项目面向青少年群体，数据收集和使用必须遵守以下规范：
+  </div>
+
+  <h3>法律法规合规</h3>
+  <ul>
+    <li><strong>《个人信息保护法》(PIPL)</strong> — 未成年人个人信息需获得监护人同意</li>
+    <li><strong>《未成年人保护法》</strong> — 网络保护专章，限制未成年人数据收集范围</li>
+    <li><strong>《数据安全法》</strong> — 心理健康数据属于敏感个人信息，需加密存储</li>
+    <li><strong>GDPR（如涉及海外用户）</strong> — Article 9 明确心理健康数据为特殊类别</li>
+  </ul>
+
+  <h3>数据安全措施</h3>
+  <ul>
+    <li>所有训练数据必须<strong>脱敏处理</strong> — 移除姓名、学校、联系方式等可识别信息</li>
+    <li>使用项目已有的<strong>隐私保护层</strong>（<code>privacy/sanitizer.py</code>）进行自动脱敏</li>
+    <li>模型训练使用<strong>差分隐私</strong>或<strong>联邦学习</strong>减少数据泄露风险</li>
+    <li>数据集访问权限严格控制，仅算法团队成员可访问</li>
+  </ul>
+
+  <h3>推荐的安全数据获取渠道</h3>
+  <table class="dataset-table">
+    <tr>
+      <th>渠道</th>
+      <th>优势</th>
+      <th>注意事项</th>
+    </tr>
+    <tr>
+      <td>公开学术数据集</td>
+      <td>已脱敏、合规、可立即使用</td>
+      <td>注意许可证（CC-BY / MIT / 学术用途限制）</td>
+    </tr>
+    <tr>
+      <td>平台用户数据（需授权）</td>
+      <td>最贴合目标域</td>
+      <td>需更新隐私政策、获取用户知情同意</td>
+    </tr>
+    <tr>
+      <td>合作医院/学校</td>
+      <td>临床数据质量高</td>
+      <td>需伦理委员会审批（IRB）</td>
+    </tr>
+    <tr>
+      <td>数据增强/合成</td>
+      <td>无伦理问题</td>
+      <td>使用 LLM 生成模拟青少年表达，扩充训练集</td>
+    </tr>
+  </table>
+
+  <div class="callout callout-success">
+    <strong>快速启动建议</strong>
+    建议从公开学术数据集入手（天池心理健康 + DASS-21 + CH-SIMS），这些数据集已经过伦理审查且可免费下载。在验证训练流程后，再逐步接入平台自有数据。所有公开数据集请检查其许可证是否允许商业/研究使用。
+  </div>
+</div>
+
+<!-- 附录：数据集速查表 -->
+<div class="section">
+  <h2>附录：数据集速查总表</h2>
+  <table class="dataset-table">
+    <tr>
+      <th>数据集</th>
+      <th>语言</th>
+      <th>模态</th>
+      <th>适配模块</th>
+      <th>获取方式</th>
+    </tr>
+    <tr>
+      <td>天池心理健康数据集</td>
+      <td><span class="tag tag-cn">中文</span></td>
+      <td>文本</td>
+      <td>文本情感分类、对抗去偏</td>
+      <td>HuggingFace 下载</td>
+    </tr>
+    <tr>
+      <td>Ren-CECps 情感语料</td>
+      <td><span class="tag tag-cn">中文</span></td>
+      <td>文本</td>
+      <td>文本情感分类</td>
+      <td>学术申请</td>
+    </tr>
+    <tr>
+      <td>DepressionDataset (微博)</td>
+      <td><span class="tag tag-cn">中文</span></td>
+      <td>文本</td>
+      <td>文本情感分类(depression)</td>
+      <td>GitHub 下载</td>
+    </tr>
+    <tr>
+      <td>DASS-21 (Kaggle)</td>
+      <td><span class="tag tag-en">英文</span></td>
+      <td>量表</td>
+      <td>多任务风险分级</td>
+      <td>Kaggle 下载</td>
+    </tr>
+    <tr>
+      <td>CH-SIMS 中文多模态</td>
+      <td><span class="tag tag-cn">中文</span></td>
+      <td>文本+音频+视频</td>
+      <td>融合 Stacking、语音情感</td>
+      <td>HuggingFace 下载</td>
+    </tr>
+    <tr>
+      <td>IEMOCAP</td>
+      <td><span class="tag tag-en">英文</span></td>
+      <td>文本+音频+视频</td>
+      <td>融合 Stacking、语音情感</td>
+      <td>学术申请</td>
+    </tr>
+    <tr>
+      <td>AISHELL-3 情感语音</td>
+      <td><span class="tag tag-cn">中文</span></td>
+      <td>音频</td>
+      <td>语音情感</td>
+      <td>学术申请</td>
+    </tr>
+    <tr>
+      <td>PHQ-9 筛查数据</td>
+      <td><span class="tag tag-multi">多语言</span></td>
+      <td>量表</td>
+      <td>多任务风险分级</td>
+      <td>临床合作/公开数据</td>
+    </tr>
+    <tr>
+      <td>PSQI 睡眠质量数据</td>
+      <td><span class="tag tag-multi">多语言</span></td>
+      <td>量表</td>
+      <td>多任务(sleep任务头)</td>
+      <td>学术申请</td>
+    </tr>
+    <tr>
+      <td>Mental Health Counseling</td>
+      <td><span class="tag tag-en">英文</span></td>
+      <td>文本</td>
+      <td>文本情感分类(翻译后)</td>
+      <td>HuggingFace 下载</td>
+    </tr>
+  </table>
+</div>
+
+</div>
+
+<div class="footer">
+  <p>AI 青少年心理健康平台 — 真实数据集接入指南</p>
+  <p>基于项目算法模块分析自动生成 | 请在使用数据前确认伦理合规与许可证要求</p>
+</div>
+
+</body>
+</html>

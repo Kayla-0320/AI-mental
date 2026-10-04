@@ -1,0 +1,514 @@
+/* ===== 温馨治愈主题 ===== */
+:root {
+  /* 主色调 - 粉色棉花糖 */
+  --cloud-pink: #ffb6c1;
+  --cloud-pink-light: #ffd1dc;
+  --cloud-pink-dark: #ff8fab;
+  --cloud-pink-soft: #fff0f3;
+  
+  /* 辅助色 - 温暖治愈 */
+  --warm-lavender: #e8d5f5;
+  --warm-peach: #ffe5d9;
+  --warm-mint: #d4f1f4;
+  --warm-cream: #fff8f0;
+  --warm-sky: #d6eaf8;
+  
+  /* 渐变背景 */
+  --bg-gradient: linear-gradient(135deg, #fff0f3 0%, #f0e6ff 30%, #e8f4f8 60%, #fff8f0 100%);
+  --card-gradient: linear-gradient(135deg, #ffffff 0%, #fff5f7 100%);
+  --cloud-gradient: linear-gradient(135deg, #ffb6c1 0%, #ffc8d6 50%, #ffd1dc 100%);
+  
+  /* 文字颜色 */
+  --text-primary: #5a4a6a;
+  --text-secondary: #8a7a9a;
+  --text-soft: #b0a0c0;
+  
+  /* 阴影 - 柔和云朵感 */
+  --shadow-soft: 0 4px 20px rgba(255, 182, 193, 0.2);
+  --shadow-cloud: 0 8px 32px rgba(255, 182, 193, 0.25);
+  --shadow-hover: 0 12px 40px rgba(255, 143, 171, 0.3);
+  
+  /* 圆角 */
+  --radius-cloud: 24px;
+  --radius-soft: 16px;
+  --radius-pill: 50px;
+}
+
+/* 全局背景 */
+body {
+  background: var(--bg-gradient) !important;
+  min-height: 100vh;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  color: var(--text-primary);
+}
+
+/* ===== 棉花糖云朵按钮 ===== */
+.cloud-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 12px 32px;
+  border: none;
+  /* 云朵形状：不规则圆角 */
+  border-radius: 50px 50px 50px 50px / 60px 60px 40px 40px;
+  background: linear-gradient(135deg, #ffb6c1 0%, #ffc8d6 40%, #ffd1dc 70%, #ffe0e8 100%);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  /* 多层阴影模拟云朵蓬松感 */
+  box-shadow:
+    0 4px 0 #ffb6c1,
+    0 8px 20px rgba(255, 182, 193, 0.4),
+    inset 0 -3px 6px rgba(255, 143, 171, 0.2),
+    inset 0 3px 6px rgba(255, 255, 255, 0.4);
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  text-shadow: 0 1px 2px rgba(255, 255, 255, 0.3);
+  overflow: visible;
+  letter-spacing: 0.5px;
+  /* 云朵边缘模糊效果 */
+  filter: drop-shadow(0 2px 4px rgba(255, 182, 193, 0.3));
+}
+
+/* 云朵顶部装饰圆泡 */
+.cloud-btn::before {
+  content: '';
+  position: absolute;
+  top: -10px;
+  left: 15px;
+  width: 24px;
+  height: 24px;
+  background: linear-gradient(135deg, #ffd1dc, #ffe0e8);
+  border-radius: 50%;
+  box-shadow: 0 2px 4px rgba(255, 182, 193, 0.3);
+}
+
+.cloud-btn::after {
+  content: '';
+  position: absolute;
+  top: -7px;
+  right: 18px;
+  width: 18px;
+  height: 18px;
+  background: linear-gradient(135deg, #ffd1dc, #ffe0e8);
+  border-radius: 50%;
+  box-shadow: 0 2px 4px rgba(255, 182, 193, 0.3);
+}
+
+.cloud-btn:hover {
+  transform: translateY(-4px) scale(1.05);
+  background: linear-gradient(135deg, #ff8fab 0%, #ffb6c1 40%, #ffc8d6 70%, #ffd1dc 100%);
+  box-shadow:
+    0 6px 0 #ff8fab,
+    0 12px 30px rgba(255, 143, 171, 0.5),
+    inset 0 -3px 6px rgba(255, 143, 171, 0.3),
+    inset 0 3px 6px rgba(255, 255, 255, 0.5);
+  filter: drop-shadow(0 6px 8px rgba(255, 143, 171, 0.4));
+}
+
+.cloud-btn:active {
+  transform: translateY(-1px) scale(0.98);
+  box-shadow:
+    0 2px 0 #ffb6c1,
+    0 4px 10px rgba(255, 182, 193, 0.3),
+    inset 0 -2px 4px rgba(255, 143, 171, 0.2),
+    inset 0 2px 4px rgba(255, 255, 255, 0.3);
+}
+
+.cloud-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* 云朵按钮 - 次要样式 */
+.cloud-btn-secondary {
+  background: linear-gradient(135deg, #e8d5f5 0%, #f0e6ff 100%);
+  color: var(--text-primary);
+}
+
+.cloud-btn-secondary::before,
+.cloud-btn-secondary::after {
+  background: #f0e6ff;
+}
+
+.cloud-btn-secondary:hover {
+  background: linear-gradient(135deg, #d4b8eb 0%, #e8d5f5 100%);
+}
+
+/* 云朵按钮 - 小尺寸 */
+.cloud-btn-sm {
+  padding: 6px 18px;
+  font-size: 12px;
+  border-radius: var(--radius-pill);
+}
+
+.cloud-btn-sm::before {
+  width: 14px;
+  height: 14px;
+  top: -4px;
+  left: 8px;
+}
+
+.cloud-btn-sm::after {
+  width: 11px;
+  height: 11px;
+  top: -3px;
+  right: 10px;
+}
+
+/* 云朵按钮 - 大尺寸 */
+.cloud-btn-lg {
+  padding: 14px 36px;
+  font-size: 16px;
+}
+
+/* ===== 云朵卡片 - 棉花糖云朵形状 ===== */
+.cloud-card {
+  position: relative;
+  background: linear-gradient(135deg, #ffffff 0%, #fff5f7 50%, #fff0f3 100%);
+  /* 云朵不规则圆角 */
+  border-radius: 30px 30px 30px 30px / 35px 35px 25px 25px;
+  /* 多层阴影模拟蓬松云朵 */
+  box-shadow:
+    0 4px 0 rgba(255, 182, 193, 0.15),
+    0 8px 24px rgba(255, 182, 193, 0.2),
+    inset 0 -2px 4px rgba(255, 182, 193, 0.1),
+    inset 0 2px 4px rgba(255, 255, 255, 0.8);
+  border: 2px solid rgba(255, 182, 193, 0.2);
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  overflow: visible;
+  filter: drop-shadow(0 2px 4px rgba(255, 182, 193, 0.15));
+}
+
+/* 卡片顶部云朵装饰 */
+.cloud-card::before {
+  content: '';
+  position: absolute;
+  top: -8px;
+  left: 20px;
+  width: 28px;
+  height: 28px;
+  background: linear-gradient(135deg, #fff5f7, #ffffff);
+  border-radius: 50%;
+  border: 2px solid rgba(255, 182, 193, 0.2);
+  border-bottom: none;
+  box-shadow: 0 -2px 4px rgba(255, 182, 193, 0.1);
+}
+
+.cloud-card::after {
+  content: '';
+  position: absolute;
+  top: -5px;
+  right: 25px;
+  width: 20px;
+  height: 20px;
+  background: linear-gradient(135deg, #fff5f7, #ffffff);
+  border-radius: 50%;
+  border: 2px solid rgba(255, 182, 193, 0.2);
+  border-bottom: none;
+  box-shadow: 0 -2px 4px rgba(255, 182, 193, 0.1);
+}
+
+.cloud-card:hover {
+  transform: translateY(-4px);
+  box-shadow:
+    0 6px 0 rgba(255, 182, 193, 0.2),
+    0 12px 32px rgba(255, 182, 193, 0.3),
+    inset 0 -2px 4px rgba(255, 182, 193, 0.15),
+    inset 0 2px 4px rgba(255, 255, 255, 0.9);
+  filter: drop-shadow(0 6px 8px rgba(255, 182, 193, 0.25));
+}
+
+/* ===== 云朵输入框 ===== */
+.cloud-input {
+  border: 2px solid rgba(255, 182, 193, 0.3);
+  border-radius: var(--radius-soft);
+  padding: 10px 16px;
+  font-size: 14px;
+  line-height: 1.5;
+  background: rgba(255, 255, 255, 0.8);
+  color: var(--text-primary);
+  transition: all 0.3s ease;
+  outline: none;
+}
+
+.cloud-input:focus {
+  border-color: var(--cloud-pink);
+  box-shadow: 0 0 0 3px rgba(255, 182, 193, 0.2);
+  background: #fff;
+}
+
+.cloud-input::placeholder {
+  color: var(--text-soft);
+}
+
+/* ===== 云朵标签 ===== */
+.cloud-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 14px;
+  border-radius: var(--radius-pill);
+  font-size: 12px;
+  font-weight: 500;
+  background: var(--cloud-pink-soft);
+  color: var(--cloud-pink-dark);
+  border: 1px solid rgba(255, 182, 193, 0.3);
+}
+
+/* ===== 滚动条美化 ===== */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--cloud-pink-soft);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--cloud-pink-light);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--cloud-pink);
+}
+
+/* ===== 动画 ===== */
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
+}
+
+@keyframes cloudPulse {
+  0%, 100% { box-shadow: var(--shadow-cloud); }
+  50% { box-shadow: var(--shadow-hover); }
+}
+
+.float-animation {
+  animation: float 3s ease-in-out infinite;
+}
+
+.cloud-pulse {
+  animation: cloudPulse 2s ease-in-out infinite;
+}
+
+/* ===== Ant Design 组件覆盖 ===== */
+.ant-btn-primary {
+  background: var(--cloud-gradient) !important;
+  border: none !important;
+  border-radius: var(--radius-pill) !important;
+  box-shadow: var(--shadow-cloud) !important;
+  font-weight: 600 !important;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) !important;
+}
+
+.ant-btn-primary:hover {
+  background: linear-gradient(135deg, #ff8fab 0%, #ffb6c1 50%, #ffc8d6 100%) !important;
+  transform: translateY(-2px) !important;
+  box-shadow: var(--shadow-hover) !important;
+}
+
+.ant-card {
+  border-radius: 28px 28px 28px 28px / 32px 32px 24px 24px !important;
+  box-shadow:
+    0 4px 0 rgba(255, 182, 193, 0.12),
+    0 8px 24px rgba(255, 182, 193, 0.15),
+    inset 0 2px 4px rgba(255, 255, 255, 0.8) !important;
+  border: 2px solid rgba(255, 182, 193, 0.15) !important;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) !important;
+  overflow: visible !important;
+  background: linear-gradient(135deg, #ffffff 0%, #fff5f7 100%) !important;
+}
+
+.ant-card:hover {
+  transform: translateY(-3px) !important;
+  box-shadow:
+    0 6px 0 rgba(255, 182, 193, 0.18),
+    0 12px 32px rgba(255, 182, 193, 0.25),
+    inset 0 2px 4px rgba(255, 255, 255, 0.9) !important;
+}
+
+.ant-input, .ant-input-textarea textarea {
+  border-radius: var(--radius-soft) !important;
+  border-color: rgba(255, 182, 193, 0.3) !important;
+  line-height: 1.5 !important;
+  transition: all 0.3s ease !important;
+}
+
+.ant-input:focus, .ant-input-textarea textarea:focus,
+.ant-input-focused, .ant-input-textarea textarea:focus {
+  border-color: var(--cloud-pink) !important;
+  box-shadow: 0 0 0 3px rgba(255, 182, 193, 0.15) !important;
+}
+
+.ant-modal-content {
+  border-radius: var(--radius-cloud) !important;
+  box-shadow: var(--shadow-cloud) !important;
+}
+
+.ant-tag {
+  border-radius: var(--radius-pill) !important;
+  border: none !important;
+}
+
+.ant-menu {
+  border-radius: var(--radius-soft) !important;
+}
+
+.ant-menu-item-selected {
+  background: var(--cloud-pink-soft) !important;
+  color: var(--cloud-pink-dark) !important;
+  border-radius: var(--radius-soft) !important;
+}
+
+.ant-progress-circle .ant-progress-text {
+  color: var(--cloud-pink-dark) !important;
+}
+
+.ant-timeline-item-tail {
+  border-color: var(--cloud-pink-light) !important;
+}
+
+.ant-collapse {
+  background: transparent !important;
+  border: none !important;
+}
+
+.ant-collapse-item {
+  background: var(--cloud-pink-soft) !important;
+  border-radius: var(--radius-soft) !important;
+  margin-bottom: 8px !important;
+  border: 1px solid rgba(255, 182, 193, 0.15) !important;
+}
+
+.ant-collapse-header {
+  border-radius: var(--radius-soft) !important;
+}
+
+.ant-divider {
+  border-color: rgba(255, 182, 193, 0.2) !important;
+}
+
+/* Layout 背景 */
+.ant-layout {
+  background: transparent !important;
+}
+
+.ant-layout-sider {
+  background: rgba(255, 255, 255, 0.6) !important;
+  backdrop-filter: blur(20px);
+  border-right: 1px solid rgba(255, 182, 193, 0.15) !important;
+}
+
+.ant-layout-header {
+  background: rgba(255, 255, 255, 0.5) !important;
+  backdrop-filter: blur(20px);
+  border-bottom: 1px solid rgba(255, 182, 193, 0.1) !important;
+}
+
+/* 消息提示美化 */
+.ant-message-notice-content {
+  border-radius: var(--radius-pill) !important;
+  box-shadow: var(--shadow-cloud) !important;
+}
+
+/* 下拉菜单 */
+.ant-dropdown-menu {
+  border-radius: var(--radius-soft) !important;
+  box-shadow: var(--shadow-cloud) !important;
+  border: 1px solid rgba(255, 182, 193, 0.15) !important;
+}
+
+/* Select 下拉 */
+.ant-select-dropdown {
+  border-radius: var(--radius-soft) !important;
+  box-shadow: var(--shadow-cloud) !important;
+}
+
+/* 头像 */
+.ant-avatar {
+  box-shadow: var(--shadow-soft) !important;
+}
+
+/* Badge */
+.ant-badge-count {
+  background: var(--cloud-pink-dark) !important;
+  border-radius: var(--radius-pill) !important;
+}
+
+/* List */
+.ant-list-item {
+  border-radius: var(--radius-soft) !important;
+  transition: all 0.3s ease !important;
+}
+
+.ant-list-item:hover {
+  background: var(--cloud-pink-soft) !important;
+}
+
+/* Empty */
+.ant-empty-description {
+  color: var(--text-secondary) !important;
+}
+
+/* Spin */
+.ant-spin-dot-item {
+  background-color: var(--cloud-pink) !important;
+}
+
+/* Popover */
+.ant-popover-inner {
+  border-radius: var(--radius-soft) !important;
+  box-shadow: var(--shadow-cloud) !important;
+  border: 1px solid rgba(255, 182, 193, 0.15) !important;
+}
+
+/* Tooltip */
+.ant-tooltip-inner {
+  border-radius: var(--radius-soft) !important;
+  background: var(--text-primary) !important;
+}
+
+/* Tabs */
+.ant-tabs-tab-active .ant-tabs-tab-btn {
+  color: var(--cloud-pink-dark) !important;
+}
+
+.ant-tabs-ink-bar {
+  background: var(--cloud-pink) !important;
+  border-radius: 2px !important;
+}
+
+/* Radio */
+.ant-radio-checked .ant-radio-inner {
+  border-color: var(--cloud-pink) !important;
+  background-color: var(--cloud-pink) !important;
+}
+
+/* Checkbox */
+.ant-checkbox-checked .ant-checkbox-inner {
+  background-color: var(--cloud-pink) !important;
+  border-color: var(--cloud-pink) !important;
+}
+
+/* Switch */
+.ant-switch-checked {
+  background: var(--cloud-pink) !important;
+}
+
+/* Slider */
+.ant-slider-rail {
+  background: var(--cloud-pink-soft) !important;
+}
+
+.ant-slider-track {
+  background: var(--cloud-pink) !important;
+}
+
+.ant-slider-handle::after {
+  box-shadow: 0 0 0 2px var(--cloud-pink-light) !important;
+}

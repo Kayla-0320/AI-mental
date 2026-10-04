@@ -1,0 +1,1733 @@
+import { useState, useEffect, useCallback, useRef, ChangeEvent } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { Card, Row, Col, Typography, Progress, Tag, Space, Empty, Spin, Button, Statistic, Divider, Tabs, Modal, Skeleton, message, Radio, List, Alert, Result, Input } from 'antd';
+import {
+  RadarChartOutlined, AlertOutlined, SmileOutlined,
+  ThunderboltOutlined, CloudOutlined, BulbOutlined, ClockCircleOutlined,
+  FileTextOutlined, HeartOutlined, PhoneOutlined,
+} from '@ant-design/icons';
+import { RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, Legend, AreaChart, Area } from 'recharts';
+import { profileApi, extraApi } from '../../services';
+import { useAnxiety } from '../../context/AnxietyContext';
+import CUSUMTrajectoryChart from '../../components/CUSUMTrajectoryChart';
+import { useOnDeviceInference } from '../../hooks/useOnDeviceInference';
+import {
+  RPPG_UNAVAILABLE_REASON,
+  BREATHING_UNAVAILABLE_REASON,
+  SLEEP_UNAVAILABLE_REASON,
+} from '../../hooks/perceptionCapabilities';
+
+const { Title, Text, Paragraph } = Typography;
+
+const riskColors: Record<string, string> = { LOW: '#52c41a', MEDIUM: '#faad14', HIGH: '#ff4d4f', CRISIS: '#cf1322' };
+const riskLabels: Record<string, string> = { LOW: '低风险', MEDIUM: '中风险', HIGH: '高风险', CRISIS: '危机' };
+
+// ===== 量表定义 =====
+const SCALE_QUESTIONS: Record<string, { title: string; desc: string; questions: string[] }> = {
+  PHQ9: {
+    title: 'PHQ-9 抑郁症筛查量表',
+    desc: '评估过去两周内的抑郁症状严重程度',
+    questions: [
+      '做事时提不起劲或没有兴趣', '感到心情低落、沮丧或绝望',
+      '入睡困难、睡不安稳或睡眠过多', '感觉疲倦或没有活力',
+      '食欲不振或吃太多', '觉得自己很糟或觉得自己很失败',
+      '对事物专注有困难', '动作或说话慢/烦躁或坐立不安',
+      '有不如死掉或用某种方式伤害自己的念头',
+    ],
+  },
+  GAD7: {
+    title: 'GAD-7 广泛性焦虑量表',
+    desc: '评估过去两周内的焦虑症状',
+    questions: [
+      '感觉紧张、焦虑或急切', '不能够停止或控制担忧',
+      '对各种各样的事情担忧过多', '很难放松下来',
+      '由于不安而无法静坐', '变得容易烦恼或急躁',
+      '感到似乎将有可怕的事情发生',
+    ],
+  },
+};
+
+// ===== 端侧推理面板组件 =====
+const ON_DEVICE_EMOTIONS = ['快乐', '悲伤', '焦虑', '愤怒', '中性'];
+
+function OnDeviceInferencePanel() {
+  const inference = useOnDeviceInference();
+  const [testText, setTestText] = useState('');
+  const [lastResult, setLastResult] = useState<any>(null);
+
+  const handlePredict = () => {
+    if (!testText.trim()) return;
+    const result = inference.predict(testText);
+    setLastResult(result);
+  };
+
+  const emotionColors: Record<string, string> = {
+    '快乐': '#52c41a', '悲伤': '#722ed1', '焦虑': '#ff4d4f', '愤怒': '#fa8c16', '中性': '#1890ff',
+  };
+
+  return (
+    <div>
+      <Row gutter={16} style={{ marginBottom: 16 }}>
+        <Col xs={8}>
+          <Statistic
+            title="推理引擎"
+            value={inference.engine === 'onnx' ? 'ONNX 量化模型' : inference.engine === 'lexicon' ? '情绪词典' : '规则引擎'}
+            valueStyle={{ fontSize: 14, color: inference.engine === 'onnx' ? '#52c41a' : '#faad14' }}
+          />
+        </Col>
+        <Col xs={8}>
+          <Statistic
+            title="模型大小"
+            value={inference.modelSize}
+            suffix="MB"
+            valueStyle={{ fontSize: 14 }}
+          />
+        </Col>
+        <Col xs={8}>
+          <Statistic
+            title="平均延迟"
+            value={inference.avgLatency}
+            suffix="ms"
+            valueStyle={{ fontSize: 14, color: inference.avgLatency < 50 ? '#52c41a' : '#faad14' }}
+          />
+        </Col>
+      </Row>
+
+      <div style={{ padding: 12, background: '#f9f9f9', borderRadius: 8, marginBottom: 16 }}>
+        <Text style={{ fontSize: 12, color: '#666', display: 'block', marginBottom: 8 }}>
+          🔒 所有推理均在本地浏览器完成，文本数据不会上传到服务器
+        </Text>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <Input
+            placeholder="输入文本测试端侧推理…"
+            value={testText}
+            onChange={(e) => setTestText(e.target.value)}
+            onPressEnter={handlePredict}
+            style={{ flex: 1 }}
+          />
+          <Button type="primary" onClick={handlePredict} disabled={!testText.trim()}>
+            本地推理
+          </Button>
+        </div>
+      </div>
+
+      {lastResult && (
+        <div style={{ padding: 12, background: '#f0f5ff', borderRadius: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+            <Text strong>推理结果</Text>
+            <Tag color="cyan">{lastResult.engine}</Tag>
+            <Tag>{lastResult.latency}ms</Tag>
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {lastResult.emotions.map((score: number, idx: number) => (
+              <div key={idx} style={{ textAlign: 'center', minWidth: 60 }}>
+                <div style={{ fontSize: 12, color: emotionColors[ON_DEVICE_EMOTIONS[idx]] || '#666', fontWeight: 600 }}>
+                  {ON_DEVICE_EMOTIONS[idx]}
+                </div>
+                <Progress
+                  percent={Math.round(score * 100)}
+                  showInfo={false}
+                  size="small"
+                  strokeColor={emotionColors[ON_DEVICE_EMOTIONS[idx]] || '#999'}
+                  style={{ width: 60 }}
+                />
+                <div style={{ fontSize: 11, color: '#999' }}>{Math.round(score * 100)}%</div>
+              </div>
+            ))}
+          </div>
+          <div style={{ marginTop: 8 }}>
+            <Text strong>主导情绪：</Text>
+            <Tag color={emotionColors[lastResult.dominantEmotion] || '#999'}>
+              {lastResult.dominantEmotion} ({Math.round(lastResult.dominantScore * 100)}%)
+            </Tag>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function Profile() {
+  const navigate = useNavigate();
+  const { comprehensiveState, modalityStatus, updateCounter, keyboardMetrics, textMetrics, voiceMetrics, facialMetrics, circadianMetrics, cognitiveMetrics, hrvMetrics, breathingMetrics, behavioralMetrics, eyeMetrics, voiceSemanticsMetrics, baseline, baselineDeviation, getZScoreForValue, adaptiveWeights, moodTrajectory, getWeeklyReport, cameraEnabled, mediaNotice, toggleCamera } = useAnxiety();
+  const [mediaToggling, setMediaToggling] = useState(false);
+  const [profile, setProfile] = useState<any>(null);
+  const [moodTrend, setMoodTrend] = useState<any[]>([]);
+  // 画像数据不可用标记：接口失败时不得伪造分数与结论，改为显式提示
+  const [profileUnavailable, setProfileUnavailable] = useState(false);
+  const [dynamicProfile, setDynamicProfile] = useState<any>(null);
+  const [copingStrategies, setCopingStrategies] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
+  const [updating, setUpdating] = useState(false);
+  const autoGeneratedRef = useRef(false);
+  const [genProgress, setGenProgress] = useState(0);
+
+  // ===== 量表测评状态 =====
+  const [selectedScale, setSelectedScale] = useState<string | null>(null);
+  const [scaleAnswers, setScaleAnswers] = useState<Record<number, number>>({});
+  const [scaleResult, setScaleResult] = useState<any>(null);
+  const [scaleHistory, setScaleHistory] = useState<any[]>([]);
+  const [scaleSubmitting, setScaleSubmitting] = useState(false);
+  const [safetyModalOpen, setSafetyModalOpen] = useState(false);
+  const safetyTriggeredRef = useRef(false);
+
+  // ===== 睡眠监测状态 =====
+  // ⚠️ 睡眠不可自动检测：这里只保存用户「手动记录」的真实数据，不预置任何假记录。
+  // （原实现在这里写死了 7 条睡眠记录，会被当成真实睡眠数据展示，已删除）
+  const [sleepLogs, setSleepLogs] = useState<any[]>([]);
+  const [sleepLoading, setSleepLoading] = useState(false);
+  const [sleepSaving, setSleepSaving] = useState(false);
+  const [sleepFormOpen, setSleepFormOpen] = useState(false);
+  const [sleepDuration, setSleepDuration] = useState(7);
+  const [sleepQuality, setSleepQuality] = useState(6);
+  const [sleepBedtime, setSleepBedtime] = useState('23:00');
+  const [sleepNote, setSleepNote] = useState('');
+
+  // 拉取用户真实睡眠记录（无记录则保持空，不编造）
+  const loadSleepRecords = useCallback(async () => {
+    setSleepLoading(true);
+    try {
+      const res = await extraApi.getSleepRecords(30) as any;
+      const records = res?.data || res || [];
+      setSleepLogs((Array.isArray(records) ? records : []).map((r: any) => {
+        const bed = new Date(r.bedTime);
+        const wake = new Date(r.wakeTime);
+        return {
+          id: r.id,
+          date: bed.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }),
+          duration: r.duration,
+          quality: r.quality,
+          bedtime: bed.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }),
+          wakeTime: wake.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }),
+          note: r.notes || r.dreamRecall || '',
+        };
+      }));
+    } catch {
+      // 接口失败时保持空列表：没有数据就是没有数据，不用假数据填充
+      setSleepLogs([]);
+    } finally {
+      setSleepLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { loadSleepRecords(); }, [loadSleepRecords]);
+
+  // 由「入睡时间 + 时长」推导起床时间（后端要求 bedTime/wakeTime 成对）
+  const buildSleepTimes = () => {
+    const toLocalIso = (d: Date) => {
+      const pad = (n: number) => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:00`;
+    };
+    const [hStr, mStr] = (sleepBedtime || '23:00').split(':');
+    const bedHour = Number(hStr);
+    const bedMinute = Number(mStr);
+    const bed = new Date();
+    bed.setHours(Number.isFinite(bedHour) ? bedHour : 23, Number.isFinite(bedMinute) ? bedMinute : 0, 0, 0);
+    if (bed.getTime() > Date.now()) bed.setDate(bed.getDate() - 1); // 今天还没到点则算昨晚入睡
+    const wake = new Date(bed.getTime() + sleepDuration * 60 * 60 * 1000);
+    return { bedTime: toLocalIso(bed), wakeTime: toLocalIso(wake) };
+  };
+
+  // PHQ-9 第9题安全拦截
+  useEffect(() => {
+    if (
+      selectedScale === 'PHQ9' &&
+      scaleAnswers[8] !== undefined &&
+      scaleAnswers[8] > 0 &&
+      !safetyTriggeredRef.current
+    ) {
+      safetyTriggeredRef.current = true;
+      setSafetyModalOpen(true);
+    }
+  }, [scaleAnswers, selectedScale]);
+
+  // 加载测评历史
+  const loadScaleHistory = useCallback(async () => {
+    try {
+      const res = await profileApi.getAssessments() as any;
+      setScaleHistory(res.data || []);
+    } catch {}
+  }, []);
+
+  useEffect(() => { loadScaleHistory(); }, [loadScaleHistory]);
+
+  const handleScaleSubmit = async () => {
+    if (!selectedScale) return;
+    setScaleSubmitting(true);
+    try {
+      const scale = SCALE_QUESTIONS[selectedScale];
+      const res = await profileApi.submitAssessment({
+        type: selectedScale,
+        title: scale.title,
+        answers: scaleAnswers,
+      }) as any;
+      setScaleResult(res.data);
+      loadScaleHistory();
+    } catch {} finally { setScaleSubmitting(false); }
+  };
+
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [profileRes, trendRes, emotionRes, copingRes] = await Promise.all([
+        profileApi.getPsychological() as any,
+        profileApi.getMoodTrend(30) as any,
+        profileApi.getTodayEmotionalState() as any,
+        profileApi.getCopingStrategies() as any,
+      ]);
+      setProfile(profileRes.data);
+      setProfileUnavailable(false);
+      setMoodTrend(trendRes.data?.moodRecords || []);
+      setDynamicProfile(emotionRes.data);
+      setCopingStrategies(copingRes.data);
+    } catch {
+      // 接口失败时**不得伪造心理画像**：之前这里塞了一组写死的分数（焦虑35/抑郁30…）
+      // 并标注 assessedBy:'AI'，用户会把它当成真实评估结论。改为显式不可用状态。
+      setProfile(null);
+      setProfileUnavailable(true);
+    } finally { setLoading(false); }
+  }, []);
+
+  const handleUpdate = useCallback(async () => {
+    setUpdating(true);
+    try {
+      await profileApi.updateProfile();
+    } catch {} finally { setUpdating(false); }
+  }, []);
+
+  // 初始加载
+  useEffect(() => { loadData(); }, [loadData]);
+
+  // 生成完后重新加载数据
+  useEffect(() => {
+    if (!updating && autoGeneratedRef.current) {
+      loadData();
+    }
+  }, [updating, loadData]);
+
+  // 如果没有画像且未自动生成过，自动触发一次
+  useEffect(() => {
+    if (!profile && !loading && !updating && !autoGeneratedRef.current) {
+      autoGeneratedRef.current = true;
+      // 模拟进度条，让用户感知到进展
+      let p = 0;
+      const timer = setInterval(() => {
+        p = Math.min(p + Math.random() * 8, 90);
+        setGenProgress(Math.round(p));
+      }, 1000);
+      handleUpdate().finally(() => {
+        clearInterval(timer);
+        setGenProgress(100);
+        // 生成失败导致仍无画像时，**不得塞入写死的分数冒充 AI 评估结果**
+        // （原实现会显示「焦虑35/抑郁30… 评估方式：AI」+「整体心理状态良好」，
+        //  与「未评估」是完全相反的结论）。改为显式不可用状态。
+        setTimeout(() => {
+          if (!profile) setProfileUnavailable(true);
+        }, 500);
+      });
+    }
+  }, [profile, loading, updating, handleUpdate]);
+
+  // 骨架屏加载状态
+  if (loading && !profile) {
+    return (
+      <div>
+        {/* 会员卡片骨架 */}
+        <Skeleton.Avatar active size={64} style={{ marginBottom: 16 }} />
+        <Skeleton.Input active style={{ width: 200, marginBottom: 24, display: 'block' }} />
+        
+        <Row gutter={[16, 16]}>
+          <Col xs={24} md={8}>
+            <Card style={{ borderRadius: 12, textAlign: 'center' }}>
+              <Skeleton.Avatar active size={120} shape="square" style={{ borderRadius: 60 }} />
+              <Skeleton.Button active style={{ marginTop: 16, width: 100 }} />
+            </Card>
+          </Col>
+          <Col xs={24} md={16}>
+            <Card title={<Skeleton.Input active size="small" style={{ width: 120 }} />} style={{ borderRadius: 12 }}>
+              <Skeleton.Image active style={{ height: 280 }} />
+            </Card>
+          </Col>
+          <Col xs={24}>
+            <Card title={<Skeleton.Input active size="small" style={{ width: 150 }} />} style={{ borderRadius: 12 }}>
+              <Skeleton.Image active style={{ height: 250 }} />
+            </Card>
+          </Col>
+        </Row>
+      </div>
+    );
+  }
+
+  if (loading) return (
+    <div style={{ textAlign: 'center', padding: 100 }}>
+      <Spin size="large" />
+      <div style={{ marginTop: 16 }}><Text type="secondary">正在刷新数据...</Text></div>
+    </div>
+  );
+
+  // 画像数据不可用：明确告知，不展示任何分数（避免被误读为真实评估结论）
+  if (!profile && profileUnavailable) {
+    return (
+      <Card style={{ borderRadius: 12, textAlign: 'center', padding: '60px 40px' }}>
+        <div style={{ fontSize: 48, marginBottom: 16 }}>📭</div>
+        <Title level={4} style={{ marginBottom: 8 }}>暂时无法获取心理画像</Title>
+        <Text type="secondary" style={{ display: 'block', marginBottom: 16 }}>
+          服务未返回画像数据，因此本页不展示任何评分与结论。
+          <br />
+          下方内容为占位说明，<b>不是</b>你的评估结果，请勿据此判断自身状态。
+        </Text>
+        <Alert
+          type="warning"
+          showIcon
+          style={{ maxWidth: 520, margin: '0 auto 20px', textAlign: 'left' }}
+          message="未获得有效画像数据"
+          description="可能原因：后端服务不可用、尚未完成任何测评，或登录状态已失效。请稍后重试；若持续失败，请联系咨询师或平台支持。"
+        />
+        <Button type="primary" onClick={() => { setProfileUnavailable(false); loadData(); }}>
+          重新加载
+        </Button>
+      </Card>
+    );
+  }
+
+  if (!profile) {
+    return (
+      <Card style={{ borderRadius: 12, textAlign: 'center', padding: '60px 40px' }}>
+        <div style={{ fontSize: 48, marginBottom: 16 }}>🧠</div>
+        <Title level={4} style={{ marginBottom: 8 }}>AI 正在分析你的心理状态</Title>
+        <Text type="secondary" style={{ display: 'block', marginBottom: 24 }}>
+          综合你的对话记录、测评结果和情绪数据，生成专属心理画像
+        </Text>
+        <div style={{ maxWidth: 400, margin: '0 auto' }}>
+          <Progress percent={genProgress} strokeColor={{ from: '#6366f1', to: '#ec4899' }} />
+          <div style={{ marginTop: 12 }}>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              {genProgress < 30 ? ' 收集对话数据...' :
+               genProgress < 60 ? '🔍 分析情绪趋势...' :
+               genProgress < 90 ? '🧩 生成心理维度评分...' :
+               '✨ 即将完成...'}
+            </Text>
+          </div>
+        </div>
+      </Card>
+    );
+  }
+
+  // 动态计算雷达图数据（基于多模态融合结果）
+  // 同龄对比基线数据（基于青少年常模模拟）
+  const getPeerBaselineData = () => {
+    // 青少年同龄常模均值（基于 CMDC 数据集模拟）
+    return {
+      anxiety: 38, depression: 30, stress: 42,
+      socialActivity: 58, emotionalStability: 55,
+    };
+  };
+
+  // 睡眠维度：只有用户真实手动记录过睡眠，才允许出现在雷达图上。
+  // 平台没有夜间传感器，绝不能用情绪分推算出一个"睡眠 44 分"。
+  const sleepDimensionValue = sleepLogs.length > 0
+    ? Math.round((sleepLogs.reduce((s, l) => s + l.quality, 0) / sleepLogs.length) * 10)
+    : null;
+
+  const buildSleepDimension = (peerValue: number) => (
+    sleepDimensionValue === null
+      ? [{ subject: '睡眠(未记录)', value: 0, peer: 0 }]
+      : [{ subject: '睡眠(手动)', value: Math.min(100, Math.max(0, sleepDimensionValue)), peer: peerValue }]
+  );
+
+  const getDynamicRadarData = () => {
+    const hasMultimodalData = comprehensiveState.activeModalities.length > 0;
+    const peerSleep = 62;
+    
+    if (!hasMultimodalData) {
+      const peer = getPeerBaselineData();
+      // 没有多模态数据时，使用 profile 静态数据
+      return [
+        { subject: '焦虑', value: profile.anxiety, peer: peer.anxiety },
+        { subject: '抑郁', value: profile.depression, peer: peer.depression },
+        { subject: '压力', value: profile.stress, peer: peer.stress },
+        ...buildSleepDimension(peerSleep),
+        { subject: '社交', value: profile.socialActivity, peer: peer.socialActivity },
+        { subject: '情绪稳定', value: profile.emotionalStability, peer: peer.emotionalStability },
+      ];
+    }
+
+    // 从多模态融合结果动态计算
+    const emotionProbs = comprehensiveState.emotionProbs; // [快乐，悲伤，焦虑，愤怒，中性]
+    const anxietyProb = emotionProbs[2] || 0;
+    const sadnessProb = emotionProbs[1] || 0;
+    const angerProb = emotionProbs[3] || 0;
+    const happinessProb = emotionProbs[0] || 0;
+    const neutralProb = emotionProbs[4] || 0;
+
+    // 焦虑维度：直接取焦虑概率 (0-100)
+    const anxiety = Math.round(anxietyProb * 100);
+    
+    // 抑郁维度：悲伤概率 + 部分中性 (0-100)
+    const depression = Math.round((sadnessProb * 0.8 + neutralProb * 0.2) * 100);
+    
+    // 压力维度：愤怒概率 + 焦虑概率的加权 (0-100)
+    const stress = Math.round((angerProb * 0.7 + anxietyProb * 0.3) * 100);
+    
+    // 社交维度：快乐概率 + 部分中性 (0-100)
+    const socialActivity = Math.round((happinessProb * 0.7 + neutralProb * 0.3) * 100);
+    
+    // 情绪稳定：中性概率 + 快乐概率 (高=稳定) (0-100)
+    const emotionalStability = Math.round((neutralProb * 0.4 + happinessProb * 0.4 + (1 - anxietyProb - sadnessProb - angerProb) * 0.2) * 100);
+
+    const peerBaseline = getPeerBaselineData();
+    return [
+      { subject: '焦虑', value: Math.min(100, Math.max(0, anxiety)), peer: peerBaseline.anxiety },
+      { subject: '抑郁', value: Math.min(100, Math.max(0, depression)), peer: peerBaseline.depression },
+      { subject: '压力', value: Math.min(100, Math.max(0, stress)), peer: peerBaseline.stress },
+      ...buildSleepDimension(peerSleep),
+      { subject: '社交', value: Math.min(100, Math.max(0, socialActivity)), peer: peerBaseline.socialActivity },
+      { subject: '情绪稳定', value: Math.min(100, Math.max(0, emotionalStability)), peer: peerBaseline.emotionalStability },
+    ];
+  };
+
+  const radarData = getDynamicRadarData();
+
+  // 动态计算综合评分（基于多模态融合结果）
+  const getDynamicScore = () => {
+    const hasMultimodalData = comprehensiveState.activeModalities.length > 0;
+    
+    if (!hasMultimodalData) {
+      return profile.overallScore || 62;
+    }
+
+    const emotionProbs = comprehensiveState.emotionProbs;
+    const anxietyProb = emotionProbs[2] || 0;
+    const sadnessProb = emotionProbs[1] || 0;
+    const angerProb = emotionProbs[3] || 0;
+    const happinessProb = emotionProbs[0] || 0;
+    const neutralProb = emotionProbs[4] || 0;
+
+    // 负面情绪总分 (愤怒权重最高，因为愤怒是最强烈的负面情绪)
+    const negativeScore = (angerProb * 40 + anxietyProb * 25 + sadnessProb * 20);
+    
+    // 正面情绪加分 (快乐和中性)
+    const positiveScore = (happinessProb * 10 + neutralProb * 5);
+    
+    // 基础分 50，减去负面，加上正面
+    const score = Math.round(50 - negativeScore * 1.5 + positiveScore);
+    
+    return Math.min(100, Math.max(0, score));
+  };
+
+  const dynamicScore = getDynamicScore();
+  const hasMultimodalData = comprehensiveState.activeModalities.length > 0;
+  const displayScore = hasMultimodalData ? dynamicScore : (profile.overallScore || 62);
+  
+  // 根据动态评分计算风险等级（而不是只基于焦虑概率）
+  const getDynamicRiskLevel = () => {
+    if (!hasMultimodalData) {
+      return profile.riskLevel;
+    }
+    // 根据综合评分判断风险等级（返回大写键名）
+    if (displayScore <= 20) return 'CRISIS';
+    if (displayScore <= 40) return 'HIGH';
+    if (displayScore <= 60) return 'MEDIUM';
+    return 'LOW';
+  };
+  
+  const displayRiskLevel = getDynamicRiskLevel();
+
+  return (
+    <div>
+
+      <Row gutter={[16, 16]}>
+        {/* 综合评分 */}
+        <Col xs={24} md={8}>
+          <Card style={{ borderRadius: 12, textAlign: 'center' }}>
+            <Title level={5}>综合心理健康评分</Title>
+            {hasMultimodalData && (
+              <div style={{ marginBottom: 8 }}>
+                <Tag color="blue" style={{ fontSize: 12 }}> 实时多模态分析</Tag>
+              </div>
+            )}
+            <Progress type="dashboard" percent={displayScore} format={(p) => (
+              <div>
+                <div style={{ fontSize: 32, fontWeight: 'bold' }}>{p}</div>
+                <Text type="secondary">/ 100</Text>
+              </div>
+            )} strokeColor={displayScore > 60 ? '#52c41a' : displayScore > 30 ? '#faad14' : '#ff4d4f'} />
+            <div style={{ marginTop: 16 }}>
+              <Tag color={riskColors[displayRiskLevel] || riskColors.LOW} style={{ fontSize: 14, padding: '4px 12px' }}>
+                {riskLabels[displayRiskLevel] || '低风险'}
+              </Tag>
+            </div>
+            <Button onClick={handleUpdate} loading={updating} style={{ marginTop: 16 }}>
+              更新画像
+            </Button>
+          </Card>
+        </Col>
+
+        {/* 雷达图 + 同龄对比 */}
+        <Col xs={24} md={16}>
+          <Card 
+            title={<Space><RadarChartOutlined /> 心理维度分析</Space>} 
+            extra={<Tag color="green" style={{ fontSize: 11 }}>含同龄对比</Tag>}
+            style={{ borderRadius: 12 }}
+          >
+            <ResponsiveContainer width="100%" height={280}>
+              <RadarChart data={radarData}>
+                <PolarGrid />
+                <PolarAngleAxis dataKey="subject" />
+                <PolarRadiusAxis angle={30} domain={[0, 100]} />
+                <Radar name="你的评分" dataKey="value" stroke="#6366f1" fill="#6366f1" fillOpacity={0.3} />
+                <Radar name="同龄基线" dataKey="peer" stroke="#52c41a" fill="#52c41a" fillOpacity={0.1} strokeDasharray="5 5" />
+                <Legend />
+              </RadarChart>
+            </ResponsiveContainer>
+            {/* 同龄对比说明 */}
+            <div style={{ marginTop: 8, padding: '8px 12px', background: '#f6ffed', borderRadius: 8, fontSize: 12, color: '#389e0d' }}>
+              <strong>同龄对比说明：</strong>绿色虚线为同龄青少年（12-17岁）常模基线，紫色区域为你的实际评分。
+              超出基线表示该维度高于同龄平均水平，低于基线表示低于同龄平均水平。
+              <div style={{ marginTop: 4, color: '#ad6800' }}>
+                <strong>关于「睡眠」维度：</strong>平台无法检测睡眠，该维度只在你自己手动记录过睡眠后才会出现；
+                显示「睡眠(未记录)」时不参与任何对比。
+              </div>
+            </div>
+          </Card>
+        </Col>
+
+        {/* 情绪趋势 */}
+        <Col xs={24}>
+          <Card title={<Space><SmileOutlined /> 情绪趋势 (近30天)</Space>} style={{ borderRadius: 12 }}>
+            {moodTrend.length > 0 ? (
+              <ResponsiveContainer width="100%" height={250}>
+                <LineChart data={moodTrend.map((r: any) => ({ date: r.recordedAt?.slice(5, 10), score: r.score }))}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="date" />
+                  <YAxis domain={[0, 10]} />
+                  <Tooltip />
+                  <Line type="monotone" dataKey="score" stroke="#6366f1" strokeWidth={2} dot={{ fill: '#6366f1' }} />
+                </LineChart>
+              </ResponsiveContainer>
+            ) : <Empty description="暂无情绪记录" />}
+          </Card>
+        </Col>
+
+        {/* 创新点③：CUSUM 时序轨迹图 */}
+        <Col xs={24}>
+          <Card 
+            title={<Space><AlertOutlined /> CUSUM 变点检测 <Tag color="purple" style={{ fontSize: 11 }}>创新点③</Tag></Space>}
+            extra={<Tag color="blue" style={{ fontSize: 11 }}>基于对话记录</Tag>}
+            style={{ borderRadius: 12 }}
+          >
+            <div style={{ marginBottom: 12, padding: '6px 12px', background: '#f9f0ff', borderRadius: 6, fontSize: 12, color: '#5b4a8a' }}>
+              <strong>CUSUM 算法</strong>：检测情绪时序中的微小但持续的漂移，红点标记变点位置。
+            </div>
+            {/* 使用对话消息数据，这里用空数组占位，实际应从对话历史获取 */}
+            <CUSUMTrajectoryChart messages={[]} />
+            <div style={{ marginTop: 8, fontSize: 11, color: '#888', textAlign: 'center' }}>
+              💡 在对话页面发送多条消息后，这里会显示情绪轨迹变化
+            </div>
+          </Card>
+        </Col>
+
+        {/* 睡眠监测模块 —— 平台无夜间传感器，睡眠只能由用户手动记录 */}
+        <Col xs={24}>
+          <Card 
+            title={<Space><ClockCircleOutlined /> 睡眠监测 <Tag color="blue" style={{ fontSize: 11 }}>仅手动记录</Tag><Tag color="orange" style={{ fontSize: 11 }}>非设备测量</Tag></Space>}
+            extra={<Button type="primary" size="small" onClick={() => setSleepFormOpen(!sleepFormOpen)}>{sleepFormOpen ? '收起' : '+ 记录睡眠'}</Button>}
+            style={{ borderRadius: 12 }}
+          >
+            <div style={{ marginBottom: 12, padding: '6px 12px', background: '#fff7e6', borderRadius: 6, fontSize: 12, color: '#ad6800' }}>
+              平台没有可穿戴设备或夜间传感器，<strong>无法自动检测睡眠</strong>。
+              下方数据全部来自你自己的记录，没有任何自动推算。
+            </div>
+
+            {/* 睡眠记录表单 */}
+            {sleepFormOpen && (
+              <div style={{ padding: 16, background: '#f0f5ff', borderRadius: 8, marginBottom: 16 }}>
+                <Row gutter={[16, 12]}>
+                  <Col xs={24} md={6}>
+                    <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>睡眠时长 (小时)</Text>
+                    <Input type="number" min={0} max={24} step={0.5} value={sleepDuration} onChange={(e: ChangeEvent<HTMLInputElement>) => setSleepDuration(Number(e.target.value))} style={{ borderRadius: 8 }} />
+                  </Col>
+                  <Col xs={24} md={6}>
+                    <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>主观睡眠质量 (1-10)</Text>
+                    <Input type="number" min={1} max={10} value={sleepQuality} onChange={(e: ChangeEvent<HTMLInputElement>) => setSleepQuality(Number(e.target.value))} style={{ borderRadius: 8 }} />
+                  </Col>
+                  <Col xs={24} md={6}>
+                    <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>入睡时间</Text>
+                    <Input value={sleepBedtime} onChange={(e: ChangeEvent<HTMLInputElement>) => setSleepBedtime(e.target.value)} placeholder="如 23:00" style={{ borderRadius: 8 }} />
+                  </Col>
+                  <Col xs={24} md={6}>
+                    <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>备注</Text>
+                    <Input value={sleepNote} onChange={(e: ChangeEvent<HTMLInputElement>) => setSleepNote(e.target.value)} placeholder="如：多梦、入睡困难" style={{ borderRadius: 8 }} />
+                  </Col>
+                </Row>
+                <Button type="primary" loading={sleepSaving} style={{ marginTop: 12, borderRadius: 8 }} onClick={async () => {
+                  if (!(sleepDuration > 0 && sleepDuration <= 24)) {
+                    message.warning('请填写 0~24 之间的睡眠时长');
+                    return;
+                  }
+                  setSleepSaving(true);
+                  try {
+                    const { bedTime, wakeTime } = buildSleepTimes();
+                    await extraApi.recordSleep({
+                      bedTime,
+                      wakeTime,
+                      quality: sleepQuality,
+                      notes: sleepNote || undefined,
+                    });
+                    await loadSleepRecords();
+                    setSleepFormOpen(false);
+                    setSleepNote('');
+                    message.success('睡眠记录已保存');
+                  } catch {
+                    message.error('保存失败，请稍后重试');
+                  } finally {
+                    setSleepSaving(false);
+                  }
+                }}>保存记录</Button>
+              </div>
+            )}
+
+            {sleepLoading ? (
+              <Skeleton active paragraph={{ rows: 3 }} />
+            ) : sleepLogs.length === 0 ? (
+              <Empty description="还没有睡眠记录，点击右上角「记录睡眠」手动添加" />
+            ) : (
+              <>
+                {/* 睡眠统计摘要 */}
+                <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
+                  <Col xs={8}>
+                    <div style={{ textAlign: 'center', padding: 12, background: '#f6ffed', borderRadius: 8 }}>
+                      <Text type="secondary" style={{ fontSize: 12 }}>平均时长</Text>
+                      <div style={{ fontSize: 24, fontWeight: 'bold', color: '#52c41a' }}>
+                        {(sleepLogs.reduce((s, l) => s + l.duration, 0) / sleepLogs.length).toFixed(1)}h
+                      </div>
+                    </div>
+                  </Col>
+                  <Col xs={8}>
+                    <div style={{ textAlign: 'center', padding: 12, background: '#f0f5ff', borderRadius: 8 }}>
+                      <Text type="secondary" style={{ fontSize: 12 }}>平均主观质量</Text>
+                      <div style={{ fontSize: 24, fontWeight: 'bold', color: '#6366f1' }}>
+                        {(sleepLogs.reduce((s, l) => s + l.quality, 0) / sleepLogs.length).toFixed(1)}/10
+                      </div>
+                    </div>
+                  </Col>
+                  <Col xs={8}>
+                    <div style={{ textAlign: 'center', padding: 12, background: '#fff7e6', borderRadius: 8 }}>
+                      <Text type="secondary" style={{ fontSize: 12 }}>最近一次入睡</Text>
+                      <div style={{ fontSize: 24, fontWeight: 'bold', color: '#fa8c16' }}>
+                        {sleepLogs[0]?.bedtime || '--'}
+                      </div>
+                    </div>
+                  </Col>
+                </Row>
+
+                {/* 睡眠趋势图（仅展示用户手动记录的数据点） */}
+                <ResponsiveContainer width="100%" height={180}>
+                  <LineChart data={[...sleepLogs].reverse().slice(-7)}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                    <YAxis yAxisId="left" domain={[0, 12]} tick={{ fontSize: 11 }} />
+                    <YAxis yAxisId="right" orientation="right" domain={[0, 10]} tick={{ fontSize: 11 }} />
+                    <Tooltip />
+                    <Legend />
+                    <Line yAxisId="left" type="monotone" dataKey="duration" name="时长(h)" stroke="#52c41a" strokeWidth={2} dot={{ fill: '#52c41a' }} />
+                    <Line yAxisId="right" type="monotone" dataKey="quality" name="主观质量(1-10)" stroke="#6366f1" strokeWidth={2} dot={{ fill: '#6366f1' }} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </>
+            )}
+
+            {/* 同龄对比提示（仅在有本人记录时才给对比结论） */}
+            <div style={{ marginTop: 8, padding: '6px 12px', background: '#fffbe6', borderRadius: 6, fontSize: 12, color: '#ad8b00' }}>
+              <strong>同龄参考：</strong>青少年（12-17岁）建议睡眠时长 8-10 小时，平均入睡时间不晚于 23:00。
+              {sleepLogs.length > 0 && (sleepLogs.reduce((s, l) => s + l.duration, 0) / sleepLogs.length) < 8 && (
+                <span style={{ color: '#ff4d4f', marginLeft: 8 }}>你的平均睡眠时长低于建议值，建议调整作息。</span>
+              )}
+              {sleepLogs.length === 0 && (
+                <span style={{ marginLeft: 8 }}>你还没有记录过睡眠，因此这里不做任何个人对比。</span>
+              )}
+            </div>
+          </Card>
+        </Col>
+
+        {/* AI 报告 */}
+        {profile.report && (
+          <Col xs={24}>
+            <Card title={<Space><CloudOutlined /> AI 心理画像报告</Space>} style={{ borderRadius: 12 }}>
+              <Paragraph style={{ whiteSpace: 'pre-wrap', lineHeight: 1.8 }}>{profile.report}</Paragraph>
+              <Text type="secondary">评估方式：{profile.assessedBy} | 更新时间：{new Date(profile.updatedAt).toLocaleDateString()}</Text>
+            </Card>
+          </Col>
+        )}
+
+        {/* 动态情绪画像 */}
+        {dynamicProfile?.hasData && dynamicProfile?.profile && (
+          <Col xs={24}>
+            <Card
+              title={<Space><ThunderboltOutlined /> 今日动态情绪画像 <Tag color="purple">AI 实时分析</Tag></Space>}
+              extra={dynamicProfile.updatedAt && <Text type="secondary" style={{ fontSize: 12 }}><ClockCircleOutlined /> {new Date(dynamicProfile.updatedAt).toLocaleString()}</Text>}
+              style={{ borderRadius: 12 }}
+            >
+              <Row gutter={24}>
+                <Col xs={24} md={8}>
+                  <div style={{ textAlign: 'center' }}>
+                    <Text type="secondary">今日主要情绪</Text>
+                    <div style={{ fontSize: 24, fontWeight: 'bold', margin: '8px 0' }}>
+                      {dynamicProfile.profile.dominantEmotions?.join('、') || '平静'}
+                    </div>
+                    <Tag color={riskColors[dynamicProfile.profile.riskLevel]} style={{ fontSize: 13, padding: '4px 12px' }}>
+                      {riskLabels[dynamicProfile.profile.riskLevel]}
+                    </Tag>
+                    <div style={{ marginTop: 12 }}>
+                      <Text type="secondary">情绪趋势：</Text>
+                      <Text strong>{dynamicProfile.profile.emotionalTrend}</Text>
+                    </div>
+                  </div>
+                </Col>
+                <Col xs={24} md={16}>
+                  <Row gutter={[12, 12]}>
+                    {[
+                      { label: '焦虑', value: dynamicProfile.profile.anxiety, color: '#ff4d4f' },
+                      { label: '抑郁', value: dynamicProfile.profile.depression, color: '#722ed1' },
+                      { label: '压力', value: dynamicProfile.profile.stress, color: '#fa8c16' },
+                      { label: '社交', value: dynamicProfile.profile.socialActivity, color: '#52c41a' },
+                      { label: '情绪稳定', value: dynamicProfile.profile.emotionalStability, color: '#13c2c2' },
+                    ].filter(m => typeof m.value === 'number').map(({ label, value, color }) => (
+                      <Col xs={12} key={label}>
+                        <div style={{ marginBottom: 4 }}>
+                          <Text type="secondary" style={{ fontSize: 12 }}>{label}</Text>
+                          <Text style={{ float: 'right', fontWeight: 600, color }}>{value}</Text>
+                        </div>
+                        <Progress percent={value} showInfo={false} size="small" strokeColor={color} />
+                      </Col>
+                    ))}
+                  </Row>
+                  {/* ⚠️ 不再展示"睡眠"维度：平台无法检测睡眠，此前的数值由当天文字情绪推算得出 */}
+                  <div style={{ marginTop: 8, fontSize: 11, color: '#ad6800' }}>
+                    本画像不包含睡眠维度——平台没有夜间传感器，睡眠数据请见下方「睡眠监测」的手动记录。
+                  </div>
+                </Col>
+              </Row>
+              <Divider style={{ margin: '16px 0' }} />
+              <Paragraph style={{ fontSize: 14, lineHeight: 1.8 }}>{dynamicProfile.profile.emotionalSummary}</Paragraph>
+            </Card>
+          </Col>
+        )}
+
+        {/* 实时多模态情绪分析 */}
+        <Col xs={24}>
+          <Card
+            title={
+              <Space>
+                <ThunderboltOutlined /> 实时多模态情绪分析
+                <Tag color="purple" style={{ fontSize: 12 }}>AI 多模态融合</Tag>
+                {comprehensiveState.activeModalities.length > 0 && (
+                  <Tag color="green">{comprehensiveState.activeModalities.length} 个模态采集中</Tag>
+                )}
+              </Space>
+            }
+            extra={
+              <Space>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  <ClockCircleOutlined /> {comprehensiveState.lastUpdated > 0 ? new Date(comprehensiveState.lastUpdated).toLocaleTimeString() : '等待数据'}
+                </Text>
+                {/* 采集开关。
+                    改造前这里是一个只能开、不能关的「启动分析」按钮，点完还会弹 alert
+                    说"如果还是没有变化，请检查摄像头/麦克风权限" —— 等于在引导用户再点一次。
+                    而每次点击都会真的再开一路摄像头 + 麦克风（`start()` 覆盖写、无重入守卫），
+                    实测连点 4 次泄漏出 5 条 live 麦克风轨道。
+                    现在它是一个真正的开关，并且失败原因直接显示在下方。 */}
+                <Button
+                  type={cameraEnabled ? 'default' : 'primary'}
+                  danger={cameraEnabled}
+                  size="small"
+                  loading={mediaToggling}
+                  onClick={async () => {
+                    setMediaToggling(true);
+                    try {
+                      await toggleCamera();
+                    } finally {
+                      setMediaToggling(false);
+                    }
+                  }}
+                >
+                  {cameraEnabled ? '关闭采集' : '开启采集'}
+                </Button>
+              </Space>
+            }
+            style={{ borderRadius: 12 }}
+          >
+            {/* 采集失败必须可见：改造前摄像头启动失败被 start() 静默吞掉，
+                "用户拒了摄像头权限"的表现是界面显示一切正常、实际一个数据都没有。 */}
+            {mediaNotice && (
+              <Alert
+                type="warning"
+                showIcon
+                style={{ marginBottom: 12 }}
+                message={mediaNotice}
+              />
+            )}
+            {facialMetrics.unavailableReason && !mediaNotice && (
+              <Alert
+                type="info"
+                showIcon
+                style={{ marginBottom: 12 }}
+                message={`面部读数不可用：${facialMetrics.unavailableReason}`}
+              />
+            )}
+            {/* 11 模态状态面板 */}
+            <div style={{ padding: '12px 16px', background: '#f5f5f5', borderRadius: 8, marginBottom: 16 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                <div style={{ fontWeight: 600, fontSize: 13, color: '#5b4a8a' }}> 模态实时状态</div>
+                <Space size={4}>
+                  {baselineDeviation.calibrated && (
+                    <Tag color={baselineDeviation.maxDeviation > 2 ? 'red' : 'green'} style={{ fontSize: 10, lineHeight: '16px', padding: '0 6px' }}>
+                      基线偏移 {baselineDeviation.maxDeviation.toFixed(1)}σ
+                    </Tag>
+                  )}
+                  <Tag color={baselineDeviation.calibrated ? 'cyan' : 'default'} style={{ fontSize: 10, lineHeight: '16px', padding: '0 6px' }}>
+                    {baselineDeviation.calibrated ? `个人基线已校准 (${baseline.sampleCount}样本)` : `基线校准中 (${baseline.sampleCount}/20)`}
+                  </Tag>
+                  <Tag color="purple" style={{ fontSize: 10, lineHeight: '16px', padding: '0 6px' }}>年龄差异化校准</Tag>
+                  {adaptiveWeights.recordCount >= 10 && (
+                    <Tag color="geekblue" style={{ fontSize: 10, lineHeight: '16px', padding: '0 6px' }}>权重自适应中</Tag>
+                  )}
+                </Space>
+              </div>
+
+              {/* 自适应权重提示 */}
+              {adaptiveWeights.recordCount >= 10 && Object.keys(adaptiveWeights.coefficients).length > 0 && (() => {
+                const labelMap: Record<string, string> = { text: '文字', voice: '语音', facial: '面部', keyboard: '键盘', circadian: '昼夜', cognitive: '认知', hrv: '心率', breathing: '呼吸', behavioralAct: '行为', eye: '眼动', voiceSemantics: '语义' };
+                const boosted = Object.entries(adaptiveWeights.coefficients).filter(([, v]) => v > 1.05);
+                const reduced = Object.entries(adaptiveWeights.coefficients).filter(([, v]) => v < 0.95);
+                if (boosted.length === 0 && reduced.length === 0) return null;
+                return (
+                  <div style={{ marginBottom: 8, padding: '6px 10px', background: '#f0f5ff', borderRadius: 6, fontSize: 11, color: '#5b4a8a', lineHeight: 1.6 }}>
+                    <strong>🎯 权重自适应：</strong>
+                    {boosted.length > 0 && <span>{boosted.map(([k, v]) => `${labelMap[k] || k}×${v.toFixed(2)}`).join('、')} <span style={{ color: '#52c41a' }}>↑</span> </span>}
+                    {reduced.length > 0 && <span>{reduced.map(([k, v]) => `${labelMap[k] || k}×${v.toFixed(2)}`).join('、')} <span style={{ color: '#ff4d4f' }}>↓</span></span>}
+                  </div>
+                );
+              })()}
+            
+              {/* 基础感知层 */}
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: 10, color: '#999', fontWeight: 500, marginBottom: 4 }}>🔍 基础感知层</div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                  <div style={{ padding: 8, background: keyboardMetrics.isCollecting ? '#f6ffed' : '#fff', borderRadius: 6, border: `1px solid ${(() => { const kbZ = Math.abs(getZScoreForValue('typingSpeed', keyboardMetrics.typingSpeed || 0)); return kbZ > 2 ? '#ff4d4f' : keyboardMetrics.isCollecting ? '#b7eb8f' : '#d9d9d9'; })()}` }}>
+                    <div style={{ fontWeight: 600, fontSize: 12 }}>⌨️ 键盘动力学</div>
+                    <div style={{ fontSize: 11, lineHeight: 1.7, color: '#555' }}>
+                      <div>采集：{keyboardMetrics.isCollecting ? '✅' : '⏳ 等待打字'}</div>
+                      <div>样本：{keyboardMetrics.sampleSize} / 需≥3</div>
+                      <div>速度：{keyboardMetrics.typingSpeed} 字/分
+                        {baseline.typingSpeed.n >= 2 && <span style={{ color: Math.abs(getZScoreForValue('typingSpeed', keyboardMetrics.typingSpeed || 0)) > 2 ? '#ff4d4f' : '#999' }}> (均值 {Math.round(baseline.typingSpeed.mean)})</span>}
+                      </div>
+                    </div>
+                  </div>
+                  <div style={{ padding: 8, background: textMetrics.timestamp > 0 ? '#f6ffed' : '#fff', borderRadius: 6, border: `1px solid ${textMetrics.timestamp > 0 ? '#b7eb8f' : '#d9d9d9'}` }}>
+                    <div style={{ fontWeight: 600, fontSize: 12 }}>📝 文字语义</div>
+                    <div style={{ fontSize: 11, lineHeight: 1.7, color: '#555' }}>
+                      <div>分析：{textMetrics.timestamp > 0 ? '✅' : '⏳ 等待输入文字'}</div>
+                      <div>字数：{textMetrics.totalCharsAnalyzed}</div>
+                      <div>情绪：{textMetrics.dominantEmotion}</div>
+                    </div>
+                  </div>
+                  <div style={{ padding: 8, background: voiceMetrics.isRecording ? '#f6ffed' : '#fff', borderRadius: 6, border: `1px solid ${voiceMetrics.isRecording ? '#b7eb8f' : '#d9d9d9'}` }}>
+                    <div style={{ fontWeight: 600, fontSize: 12 }}>🔊 语音声学</div>
+                    <div style={{ fontSize: 11, lineHeight: 1.7, color: '#555' }}>
+                      <div>录音：{voiceMetrics.isRecording ? '✅' : '⏳ 开启麦克风'}</div>
+                      <div>时长：{voiceMetrics.duration}秒 / 需&gt;2</div>
+                      <div>情绪：{voiceMetrics.detectedEmotion}</div>
+                    </div>
+                  </div>
+                  <div style={{ padding: 8, background: facialMetrics.isDetecting ? '#f6ffed' : '#fff', borderRadius: 6, border: `1px solid ${facialMetrics.isDetecting ? '#b7eb8f' : '#d9d9d9'}` }}>
+                    <div style={{ fontWeight: 600, fontSize: 12 }}>😊 面部微表情</div>
+                    <div style={{ fontSize: 11, lineHeight: 1.7, color: '#555' }}>
+                      <div>检测：{facialMetrics.isDetecting ? '✅' : ' 开启摄像头'}</div>
+                      <div>帧数：{facialMetrics.frameCount} / 需≥2</div>
+                      <div>表情：{facialMetrics.dominantExpression}</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            
+              {/* 认知分析层 */}
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: 10, color: '#999', fontWeight: 500, marginBottom: 4 }}>🧠 认知分析层</div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 6 }}>
+                  <div style={{ padding: 8, background: circadianMetrics.isActive ? '#e6fffb' : '#fff', borderRadius: 6, border: `1px solid ${circadianMetrics.isActive ? '#87e8de' : '#d9d9d9'}` }}>
+                    <div style={{ fontWeight: 600, fontSize: 12 }}>🕐 昼夜活动</div>
+                    <div style={{ fontSize: 11, lineHeight: 1.7, color: '#555' }}>
+                      <div>状态：{circadianMetrics.isActive ? '✅ 记录中' : '⏳ 等待活动记录'}</div>
+                      <div>时间规律性：{(circadianMetrics.activitySampleCount || 0) >= 10 ? `${Math.round((circadianMetrics.regularityScore || 0) * 100)}%` : `样本不足(${circadianMetrics.activitySampleCount || 0}/10)`}</div>
+                      <div>深夜活动风险：{Math.round((circadianMetrics.lateNightRisk || 0) * 100)}%</div>
+                    </div>
+                  </div>
+                  <div style={{ padding: 8, background: (cognitiveMetrics.riskScore || 0) > 0 || cognitiveMetrics.timestamp > 0 ? '#fff0f6' : '#fff', borderRadius: 6, border: `1px solid ${(cognitiveMetrics.riskScore || 0) > 0 ? '#ffadd2' : '#d9d9d9'}` }}>
+                    <div style={{ fontWeight: 600, fontSize: 12 }}>💭 认知扭曲</div>
+                    <div style={{ fontSize: 11, lineHeight: 1.7, color: '#555' }}>
+                      <div>分析：{cognitiveMetrics.timestamp > 0 ? '✅' : '⏳ 等待文字分析'}</div>
+                      <div>风险：{Math.round((cognitiveMetrics.riskScore || 0) * 100)}%</div>
+                      <div>类型：{cognitiveMetrics.totalDistortionCount || 0} 类</div>
+                    </div>
+                  </div>
+                  <div style={{ padding: 8, background: voiceSemanticsMetrics.timestamp > 0 ? '#fffbe6' : '#fff', borderRadius: 6, border: `1px solid ${voiceSemanticsMetrics.timestamp > 0 ? '#ffe58f' : '#d9d9d9'}` }}>
+                    <div style={{ fontWeight: 600, fontSize: 12 }}>🗣️ 语音语义</div>
+                    <div style={{ fontSize: 11, lineHeight: 1.7, color: '#555' }}>
+                      <div>分析：{voiceSemanticsMetrics.timestamp > 0 ? '✅' : '⏳ 等待语音识别'}</div>
+                      <div>风险：{Math.round((voiceSemanticsMetrics.riskScore || 0) * 100)}%</div>
+                      <div>消极词：{Math.round((voiceSemanticsMetrics.negativeAffectRatio || 0) * 100)}%</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            
+              {/* 生理行为层 */}
+              {/* ⚠️ 心率(rPPG)/呼吸 本设备无采集能力：卡片保留但置灰，不显示任何数值 */}
+              <div>
+                <div style={{ fontSize: 10, color: '#999', fontWeight: 500, marginBottom: 4 }}> 生理行为层</div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 6 }}>
+                  <div style={{ padding: 8, background: '#fafafa', borderRadius: 6, border: '1px dashed #e0e0e0' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 4 }}>
+                      <div style={{ fontWeight: 600, fontSize: 12, color: '#bfbfbf' }}>❤️ rPPG 心率</div>
+                      <Tag color="default" style={{ fontSize: 9, lineHeight: '14px', padding: '0 4px', margin: 0, color: '#8c8c8c' }}>暂不支持检测</Tag>
+                    </div>
+                    <div style={{ fontSize: 11, lineHeight: 1.7, color: '#bfbfbf' }}>
+                      <div>心率：-- bpm</div>
+                      <div>HRV：-- ms</div>
+                      <div style={{ fontSize: 10 }}>{RPPG_UNAVAILABLE_REASON}</div>
+                    </div>
+                  </div>
+                  <div style={{ padding: 8, background: '#fafafa', borderRadius: 6, border: '1px dashed #e0e0e0' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 4 }}>
+                      <div style={{ fontWeight: 600, fontSize: 12, color: '#bfbfbf' }}>🌬️ 呼吸模式</div>
+                      <Tag color="default" style={{ fontSize: 9, lineHeight: '14px', padding: '0 4px', margin: 0, color: '#8c8c8c' }}>暂不支持检测</Tag>
+                    </div>
+                    <div style={{ fontSize: 11, lineHeight: 1.7, color: '#bfbfbf' }}>
+                      <div>频率：-- 次/分</div>
+                      <div>叹气：-- 次</div>
+                      <div style={{ fontSize: 10 }}>{BREATHING_UNAVAILABLE_REASON}</div>
+                    </div>
+                  </div>
+                  <div style={{ padding: 8, background: behavioralMetrics.isActive ? '#f0f5ff' : '#fff', borderRadius: 6, border: `1px solid ${behavioralMetrics.isActive ? '#adc6ff' : '#d9d9d9'}` }}>
+                    <div style={{ fontWeight: 600, fontSize: 12 }}>🏃 行为激活</div>
+                    <div style={{ fontSize: 11, lineHeight: 1.7, color: '#555' }}>
+                      <div>状态：{behavioralMetrics.isActive ? '✅ 采集中' : '⏳'}</div>
+                      <div>互动：{behavioralMetrics.dailyInteractionCount || 0} 次</div>
+                      <div>探索率：{Math.round((behavioralMetrics.explorationRate || 0) * 100)}%</div>
+                    </div>
+                  </div>
+                  <div style={{ padding: 8, background: eyeMetrics.isMeasuring ? '#f9f0ff' : '#fff', borderRadius: 6, border: `1px solid ${(() => { const blZ = Math.abs(getZScoreForValue('blinkRate', eyeMetrics.blinkRate || 0)); return blZ > 2 ? '#ff4d4f' : eyeMetrics.isMeasuring ? '#d3adf7' : '#d9d9d9'; })()}` }}>
+                    <div style={{ fontWeight: 600, fontSize: 12 }}>👁️ 眨眼 / 头姿</div>
+                    <div style={{ fontSize: 11, lineHeight: 1.7, color: '#555' }}>
+                      <div>测量：{eyeMetrics.isMeasuring ? '✅' : '⏳ 需面部帧数据'}</div>
+                      <div>眨眼：{eyeMetrics.blinkRate || '--'} 次/分
+                        {baseline.blinkRate.n >= 2 && <span style={{ color: Math.abs(getZScoreForValue('blinkRate', eyeMetrics.blinkRate || 0)) > 2 ? '#ff4d4f' : '#999' }}> (均值 {Math.round(baseline.blinkRate.mean)})</span>}
+                      </div>
+                      <div>低头帧占比：{Math.round((eyeMetrics.downwardGazeRatio || 0) * 100)}%</div>
+                      <div style={{ fontSize: 10, color: '#bfbfbf' }}>
+                        {eyeMetrics.isMeasuring
+                          ? `眨眼来源：${eyeMetrics.blinkMethod === 'ear' ? 'EAR 降级' : '眼睑闭合度'}（头姿为注视代理）`
+                          : '开启摄像头后由面部帧计算'}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            
+              {/* 融合条件说明 */}
+              <div style={{ marginTop: 8, padding: 8, background: '#fffbe6', borderRadius: 6, fontSize: 11, color: '#8c6d1f', lineHeight: 1.6 }}>
+                <strong>💡 激活条件：</strong>
+                键盘(自动) · 文字(输入文字) · 语音(开启麦克风) · 面部(开启摄像头) ·
+                昼夜活动(自动记录) · 认知(文字分析后) · 语义(语音识别后) ·
+                行为(自动) · 眼动(面部帧数据)
+                <div style={{ marginTop: 4, color: '#ad6800' }}>
+                  <strong>⚠️ 未接入传感器：</strong>
+                  {RPPG_UNAVAILABLE_REASON} · {BREATHING_UNAVAILABLE_REASON} · {SLEEP_UNAVAILABLE_REASON}
+                  ，这三项不参与焦虑指数计算，界面也不会显示其数值。
+                </div>
+              </div>
+            </div>
+
+            {/* 无数据时的引导提示 */}
+            {comprehensiveState.activeModalities.length === 0 && (
+              <div style={{ textAlign: 'center', padding: '30px 0' }}>
+                <div style={{ fontSize: 48, marginBottom: 16 }}>🌱</div>
+                <Text strong style={{ fontSize: 16, color: '#722ed1' }}>等待感知数据...</Text>
+                <div style={{ marginTop: 12, color: '#999', fontSize: 14, lineHeight: 2 }}>
+                  <div>1. 键盘分析 <Text strong>已自动启动</Text>，打字即可被感知</div>
+                  <div>2. 在聊天框 <Text strong>输入文字</Text>，系统会分析你的情绪</div>
+                  <div>3. 点击右下角浮动组件的 <Text strong>开关按钮</Text> 开启摄像头和麦克风</div>
+                  <div>4. 说话时，系统会分析你的 <Text strong>声音特征</Text></div>
+                </div>
+              </div>
+            )}
+
+            {/* 叙事性分析长文本（主要内容） */}
+            {comprehensiveState.narrativeAnalysis && (
+              <div style={{
+                padding: '16px 20px',
+                background: 'linear-gradient(135deg, #f0f4ff 0%, #faf0ff 100%)',
+                borderRadius: 12,
+                marginBottom: 16,
+                border: '1px solid #e8e0f0',
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
+                  <span style={{ fontSize: 20, marginRight: 8 }}>📋</span>
+                  <Text strong style={{ fontSize: 15, color: '#5b4a8a' }}>多模态心理观察报告</Text>
+                  <Tag color="purple" style={{ marginLeft: 8, fontSize: 11 }}>每3秒更新</Tag>
+                  <Tag color="orange" style={{ marginLeft: 4, fontSize: 11 }}>不含心率/呼吸/睡眠</Tag>
+                </div>
+                <div style={{
+                  fontSize: 14,
+                  lineHeight: 2,
+                  color: '#3d3166',
+                  whiteSpace: 'pre-wrap',
+                  letterSpacing: 0.3,
+                }}>
+                  {comprehensiveState.narrativeAnalysis}
+                </div>
+                <div style={{ marginTop: 12, padding: '6px 10px', background: '#fff7e6', borderRadius: 6, fontSize: 11, color: '#ad6800', lineHeight: 1.7 }}>
+                  {comprehensiveState.availabilityNote || BREATHING_UNAVAILABLE_REASON + '；' + SLEEP_UNAVAILABLE_REASON}
+                </div>
+              </div>
+            )}
+
+              {/* 主导情绪 + 五维分布 */}
+              <Row gutter={24}>
+                <Col xs={24} md={6}>
+                  <div style={{ textAlign: 'center' }}>
+                    <Text type="secondary">当前主导情绪</Text>
+                    <div style={{ fontSize: 28, fontWeight: 'bold', margin: '8px 0',
+                      color: ['#52c41a', '#722ed1', '#ff7a45', '#ff4d4f', '#1890ff'][
+                        ['快乐', '悲伤', '焦虑', '愤怒', '中性'].indexOf(comprehensiveState.dominantEmotion)
+                      ] || '#666'
+                    }}>
+                      {comprehensiveState.dominantEmotion}
+                    </div>
+                    <Tag color="purple" style={{ fontSize: 13, padding: '4px 12px' }}>
+                      置信度 {Math.round(comprehensiveState.confidence * 100)}%
+                    </Tag>
+                    <div style={{ marginTop: 12, padding: '8px 12px', background: '#fff0f6', borderRadius: 10, fontSize: 13, color: '#8a6d9a' }}>
+                      {comprehensiveState.caringMessage}
+                    </div>
+                  </div>
+                </Col>
+                <Col xs={24} md={18}>
+                  <Row gutter={[12, 12]}>
+                    {comprehensiveState.emotionProbs.map((prob, i) => {
+                      const labels = ['快乐', '悲伤', '焦虑', '愤怒', '中性'];
+                      const colors = ['#52c41a', '#722ed1', '#ff7a45', '#ff4d4f', '#1890ff'];
+                      return (
+                        <Col xs={12} key={labels[i]}>
+                          <div style={{ marginBottom: 4 }}>
+                            <Text type="secondary" style={{ fontSize: 12 }}>{labels[i]}</Text>
+                            <Text style={{ float: 'right', fontWeight: 600, color: colors[i] }}>
+                              {Math.round(prob * 100)}%
+                            </Text>
+                          </div>
+                          <Progress percent={Math.round(prob * 100)} showInfo={false} size="small" strokeColor={colors[i]} />
+                        </Col>
+                      );
+                    })}
+                  </Row>
+                </Col>
+              </Row>
+
+              {/* 情绪趋势区域 */}
+              {moodTrajectory.points.length >= 5 && (
+                <div style={{ marginTop: 16, padding: '12px 16px', background: 'linear-gradient(135deg, #f0f5ff 0%, #f9f0ff 100%)', borderRadius: 12, border: '1px solid #e8e0f0' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                    <Space>
+                      <span style={{ fontSize: 18 }}>📈</span>
+                      <Text strong style={{ fontSize: 14, color: '#5b4a8a' }}>情绪趋势</Text>
+                      <Tag color={moodTrajectory.trend === 'improving' ? 'green' : moodTrajectory.trend === 'declining' ? 'red' : 'blue'} style={{ fontSize: 11 }}>
+                        {moodTrajectory.trend === 'improving' ? '↑ 改善中' : moodTrajectory.trend === 'declining' ? '↓ 需关注' : '→ 平稳'}
+                      </Tag>
+                    </Space>
+                    {moodTrajectory.weeklyChange !== 0 && (
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        本周比上周焦虑水平{moodTrajectory.weeklyChange > 0 ? '上升' : '下降'} {Math.abs(moodTrajectory.weeklyChange)}%
+                      </Text>
+                    )}
+                  </div>
+
+                  {/* 7天焦虑概率曲线 */}
+                  <div style={{ height: 120, marginBottom: 8 }}>
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={moodTrajectory.points.slice(-14).map(p => ({
+                        time: new Date(p.timestamp).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' }),
+                        焦虑概率: Math.round(p.anxietyProb * 100),
+                        融合分数: Math.round(p.fusionScore * 100),
+                      }))}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                        <XAxis dataKey="time" tick={{ fontSize: 10 }} />
+                        <YAxis tick={{ fontSize: 10 }} domain={[0, 100]} unit="%" />
+                        <Tooltip />
+                        <Area type="monotone" dataKey="焦虑概率" stroke="#ff4d4f" fill="#fff1f0" strokeWidth={2} dot={{ r: 2 }} />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+
+                  {/* 周报摘要 */}
+                  <div style={{ padding: '8px 12px', background: '#fff', borderRadius: 8, fontSize: 12, color: '#555', lineHeight: 1.8 }}>
+                    {getWeeklyReport()}
+                  </div>
+                </div>
+              )}
+
+              <Divider style={{ margin: '16px 0' }} />
+
+              {/* 11 模态详细分析 */}
+              <Divider style={{ margin: '16px 0' }} />
+              <div style={{ display: 'flex', alignItems: 'center', marginBottom: 12 }}>
+                <Text strong style={{ fontSize: 15, color: '#5b4a8a' }}>🔬 多模态感知详情</Text>
+                <Tag color="purple" style={{ marginLeft: 8, fontSize: 11 }}>年龄差异化校准</Tag>
+              </div>
+              <Row gutter={[16, 16]}>
+                {/* 文字语义分析 */}
+                {comprehensiveState.text.timestamp > 0 && (
+                  <Col xs={24} md={12}>
+                    <Card size="small" title={<Space><span style={{ fontSize: 16 }}>📝</span> 文字语义深度分析</Space>} style={{ borderRadius: 10, background: '#fafbff' }}>
+                      <div style={{ fontSize: 13, lineHeight: 2 }}>
+                        <div><Text type="secondary">主导情绪：</Text><Text strong>{comprehensiveState.text.dominantEmotion}</Text>
+                          <Text type="secondary" style={{ marginLeft: 12 }}>情感效价：</Text>
+                          <Text strong style={{ color: comprehensiveState.text.sentiment > 0 ? '#52c41a' : comprehensiveState.text.sentiment < 0 ? '#ff4d4f' : '#999' }}>
+                            {comprehensiveState.text.sentiment > 0 ? '偏积极' : comprehensiveState.text.sentiment < 0 ? '偏消极' : '中性'} ({comprehensiveState.text.sentiment})
+                          </Text>
+                        </div>
+                        <div><Text type="secondary">情绪强度：</Text><Progress percent={Math.round(comprehensiveState.text.emotionalIntensity * 100)} showInfo={false} size="small" strokeColor="#722ed1" style={{ width: 100, display: 'inline-block', verticalAlign: 'middle' }} /></div>
+                        <div><Text type="secondary">已分析字数：</Text><Text strong>{comprehensiveState.text.totalCharsAnalyzed}</Text></div>
+
+                        {/* 认知扭曲标记 */}
+                        {Object.values(comprehensiveState.text.cognitiveMarkers).some(v => v > 0) && (
+                          <div style={{ marginTop: 8, padding: '8px 12px', background: '#fff7e6', borderRadius: 8 }}>
+                            <Text strong style={{ fontSize: 12, color: '#d46b08' }}> 认知扭曲标记 (CBT)</Text>
+                            <div style={{ marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                              {comprehensiveState.text.cognitiveMarkers.catastrophizing > 0 && (
+                                <Tag color="orange" style={{ fontSize: 11, margin: 0 }}>灾难化 {Math.round(comprehensiveState.text.cognitiveMarkers.catastrophizing * 100)}%</Tag>
+                              )}
+                              {comprehensiveState.text.cognitiveMarkers.blackAndWhite > 0 && (
+                                <Tag color="red" style={{ fontSize: 11, margin: 0 }}>非黑即白 {Math.round(comprehensiveState.text.cognitiveMarkers.blackAndWhite * 100)}%</Tag>
+                              )}
+                              {comprehensiveState.text.cognitiveMarkers.overgeneralization > 0 && (
+                                <Tag color="gold" style={{ fontSize: 11, margin: 0 }}>过度概括 {Math.round(comprehensiveState.text.cognitiveMarkers.overgeneralization * 100)}%</Tag>
+                              )}
+                              {comprehensiveState.text.cognitiveMarkers.selfBlame > 0 && (
+                                <Tag color="magenta" style={{ fontSize: 11, margin: 0 }}>自我归咎 {Math.round(comprehensiveState.text.cognitiveMarkers.selfBlame * 100)}%</Tag>
+                              )}
+                              {comprehensiveState.text.cognitiveMarkers.hopelessness > 0 && (
+                                <Tag color="volcano" style={{ fontSize: 11, margin: 0 }}>无望感 {Math.round(comprehensiveState.text.cognitiveMarkers.hopelessness * 100)}%</Tag>
+                              )}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* 危机信号 */}
+                        {comprehensiveState.text.crisisLevel !== 'none' && (
+                          <div style={{ marginTop: 8, padding: '8px 12px', background: '#fff1f0', borderRadius: 8, border: '1px solid #ffccc7' }}>
+                            <Text strong style={{ fontSize: 12, color: '#cf1322' }}>️ 危机信号 ({comprehensiveState.text.crisisLevel}级)</Text>
+                            <div style={{ fontSize: 12, color: '#cf1322', marginTop: 4 }}>
+                              检测到：{comprehensiveState.text.crisisMarkers.join('、')}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* 语言特征 */}
+                        <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 12, fontSize: 12 }}>
+                          <span><Text type="secondary">第一人称密度：</Text>{Math.round(comprehensiveState.text.firstPersonRate * 100)}%</span>
+                          <span><Text type="secondary">否定词密度：</Text>{Math.round(comprehensiveState.text.negationRate * 100)}%</span>
+                          <span><Text type="secondary">绝对化用词：</Text>{comprehensiveState.text.absoluteWords}次</span>
+                          <span><Text type="secondary">疑问句比例：</Text>{Math.round(comprehensiveState.text.questionRate * 100)}%</span>
+                        </div>
+                      </div>
+                    </Card>
+                  </Col>
+                )}
+
+                {/* 面部微表情分析 */}
+                {comprehensiveState.facial.isDetecting && (
+                  <Col xs={24} md={12}>
+                    <Card size="small" title={<Space><span style={{ fontSize: 16 }}>😊</span> 面部微表情分析 (FACS)</Space>} style={{ borderRadius: 10, background: '#fffbf0' }}>
+                      <div style={{ fontSize: 13, lineHeight: 2 }}>
+                        <div><Text type="secondary">主导表情：</Text><Text strong style={{ fontSize: 15 }}>{comprehensiveState.facial.dominantExpression}</Text>
+                          <Text type="secondary" style={{ marginLeft: 12 }}>强度：</Text>
+                          <Progress percent={Math.round(comprehensiveState.facial.expressionIntensity * 100)} showInfo={false} size="small" strokeColor="#fa8c16" style={{ width: 80, display: 'inline-block', verticalAlign: 'middle' }} />
+                        </div>
+                        <div><Text type="secondary">微表情次数：</Text><Text strong>{comprehensiveState.facial.microExpressions.count}</Text> 次
+                          {comprehensiveState.facial.microExpressions.recentEmotions.length > 0 && (
+                            <Text type="secondary" style={{ marginLeft: 8 }}>最近：{comprehensiveState.facial.microExpressions.recentEmotions.join('、')}</Text>
+                          )}
+                        </div>
+
+                        {/* AU 动作单元 */}
+                        <div style={{ marginTop: 8 }}>
+                          <Text strong style={{ fontSize: 12 }}>关键动作单元 (AU)</Text>
+                          <div style={{ marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                            {comprehensiveState.facial.actionUnits.au12_lipCorner > 0.1 && (
+                              <Tag color="green" style={{ fontSize: 11, margin: 0 }}>AU12 嘴角上提 {Math.round(comprehensiveState.facial.actionUnits.au12_lipCorner * 100)}%</Tag>
+                            )}
+                            {comprehensiveState.facial.actionUnits.au6_cheekRaise > 0.1 && (
+                              <Tag color="lime" style={{ fontSize: 11, margin: 0 }}>AU6 脸颊上扬 {Math.round(comprehensiveState.facial.actionUnits.au6_cheekRaise * 100)}%</Tag>
+                            )}
+                            {comprehensiveState.facial.actionUnits.au4_browLower > 0.1 && (
+                              <Tag color="red" style={{ fontSize: 11, margin: 0 }}>AU4 眉毛下压 {Math.round(comprehensiveState.facial.actionUnits.au4_browLower * 100)}%</Tag>
+                            )}
+                            {comprehensiveState.facial.actionUnits.au1_browRaise > 0.1 && (
+                              <Tag color="blue" style={{ fontSize: 11, margin: 0 }}>AU1 内眉上扬 {Math.round(comprehensiveState.facial.actionUnits.au1_browRaise * 100)}%</Tag>
+                            )}
+                            {comprehensiveState.facial.actionUnits.au15_lipCornerDrop > 0.1 && (
+                              <Tag color="purple" style={{ fontSize: 11, margin: 0 }}>AU15 嘴角下拉 {Math.round(comprehensiveState.facial.actionUnits.au15_lipCornerDrop * 100)}%</Tag>
+                            )}
+                            {comprehensiveState.facial.actionUnits.au9_noseWrinkle > 0.1 && (
+                              <Tag color="orange" style={{ fontSize: 11, margin: 0 }}>AU9 鼻子皱起 {Math.round(comprehensiveState.facial.actionUnits.au9_noseWrinkle * 100)}%</Tag>
+                            )}
+                            {comprehensiveState.facial.actionUnits.au7_eyeTighten > 0.1 && (
+                              <Tag color="cyan" style={{ fontSize: 11, margin: 0 }}>AU7 眼睑收紧 {Math.round(comprehensiveState.facial.actionUnits.au7_eyeTighten * 100)}%</Tag>
+                            )}
+                            {comprehensiveState.facial.actionUnits.au26_jawDrop > 0.1 && (
+                              <Tag color="geekblue" style={{ fontSize: 11, margin: 0 }}>AU26 下巴下垂 {Math.round(comprehensiveState.facial.actionUnits.au26_jawDrop * 100)}%</Tag>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* 情绪映射 */}
+                        <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 8, fontSize: 12 }}>
+                          {Object.entries(comprehensiveState.facial.emotionMapping).filter(([, v]) => v > 0.05).map(([k, v]) => {
+                            const labelMap: Record<string, string> = { happiness: '快乐', sadness: '悲伤', anger: '愤怒', fear: '恐惧', surprise: '惊讶', disgust: '厌恶', distress: '痛苦' };
+                            return <span key={k}><Text type="secondary">{labelMap[k] || k}：</Text>{Math.round(v * 100)}%</span>;
+                          })}
+                        </div>
+                      </div>
+                    </Card>
+                  </Col>
+                )}
+
+                {/* 声音声学分析 */}
+                {comprehensiveState.voice.isRecording && (
+                  <Col xs={24} md={12}>
+                    <Card size="small" title={<Space><span style={{ fontSize: 16 }}>🔊</span> 声音声学分析</Space>} style={{ borderRadius: 10, background: '#f6ffed' }}>
+                      <div style={{ fontSize: 13, lineHeight: 2 }}>
+                        <div><Text type="secondary">检测情绪：</Text><Text strong>{comprehensiveState.voice.detectedEmotion}</Text></div>
+                        <div><Text type="secondary">基频 (F0)：</Text><Text strong>{comprehensiveState.voice.pitch.mean}</Text> Hz
+                          <Text type="secondary" style={{ marginLeft: 8 }}>波动：</Text>{comprehensiveState.voice.pitch.std} Hz
+                        </div>
+                        <div><Text type="secondary">能量：</Text><Text strong>{comprehensiveState.voice.energy.mean}</Text> dB
+                          <Text type="secondary" style={{ marginLeft: 8 }}>峰值比：</Text>{Math.round(comprehensiveState.voice.energy.peakRatio * 100)}%
+                        </div>
+                        <div><Text type="secondary">语速：</Text><Text strong>{comprehensiveState.voice.rate.speechRate}</Text> 音节/s
+                          <Tag color={comprehensiveState.voice.rate.tempo === 'fast' ? 'orange' : comprehensiveState.voice.rate.tempo === 'slow' ? 'blue' : 'green'} style={{ fontSize: 11, margin: '0 4px' }}>
+                            {comprehensiveState.voice.rate.tempo === 'fast' ? '偏快' : comprehensiveState.voice.rate.tempo === 'slow' ? '偏慢' : '正常'}
+                          </Tag>
+                        </div>
+                        <div><Text type="secondary">停顿比：</Text>{Math.round(comprehensiveState.voice.pauses.ratio * 100)}%
+                          <Text type="secondary" style={{ marginLeft: 8 }}>长停顿：</Text>{comprehensiveState.voice.pauses.longPauseCount}次
+                        </div>
+                        <div><Text type="secondary">频谱质心：</Text>{comprehensiveState.voice.spectral.centroid} Hz
+                          <Text type="secondary" style={{ marginLeft: 8 }}>平坦度：</Text>{comprehensiveState.voice.spectral.flatness}
+                        </div>
+                      </div>
+                    </Card>
+                  </Col>
+                )}
+
+                {/* 键盘动力学分析 */}
+                {comprehensiveState.keyboard.isCollecting && (
+                  <Col xs={24} md={12}>
+                    <Card size="small" title={<Space><span style={{ fontSize: 16 }}>️</span> 键盘动力学分析</Space>} style={{ borderRadius: 10, background: '#f9f0ff' }}>
+                      <div style={{ fontSize: 13, lineHeight: 2 }}>
+                        <div><Text type="secondary">打字速度：</Text><Text strong>{comprehensiveState.keyboard.typingSpeed}</Text> 字/分</div>
+                        <div><Text type="secondary">节奏规律性：</Text>
+                          <Progress percent={Math.round(comprehensiveState.keyboard.rhythmScore * 100)} showInfo={false} size="small" strokeColor="#722ed1" style={{ width: 80, display: 'inline-block', verticalAlign: 'middle' }} />
+                        </div>
+                        <div><Text type="secondary">长停顿次数：</Text><Text strong>{comprehensiveState.keyboard.pauseCount}</Text>
+                          <Text type="secondary" style={{ marginLeft: 8 }}>停顿占比：</Text>{Math.round(comprehensiveState.keyboard.pauseRatio * 100)}%
+                        </div>
+                        <div><Text type="secondary">删除率：</Text>{Math.round(comprehensiveState.keyboard.deletionRate * 100)}%
+                          <Text type="secondary" style={{ marginLeft: 8 }}>修正率：</Text>{Math.round(comprehensiveState.keyboard.correctionRate * 100)}%
+                        </div>
+                        <div><Text type="secondary">删除爆发：</Text><Text strong>{comprehensiveState.keyboard.backspaceBurst}</Text> 次
+                          <Text type="secondary" style={{ marginLeft: 8 }}>错误率估计：</Text>{Math.round(comprehensiveState.keyboard.errorRate * 100)}%
+                        </div>
+                        <div><Text type="secondary">按键压力指数：</Text>
+                          <Progress percent={Math.round(comprehensiveState.keyboard.pressureIndex * 100)} showInfo={false} size="small" strokeColor="#ff4d4f" style={{ width: 80, display: 'inline-block', verticalAlign: 'middle' }} />
+                        </div>
+                        <div style={{ marginTop: 4, padding: '6px 10px', background: comprehensiveState.keyboard.anxietyIndex > 60 ? '#fff1f0' : comprehensiveState.keyboard.anxietyIndex > 30 ? '#fffbe6' : '#f6ffed', borderRadius: 6 }}>
+                          <Text strong style={{ fontSize: 12, color: comprehensiveState.keyboard.anxietyIndex > 60 ? '#cf1322' : comprehensiveState.keyboard.anxietyIndex > 30 ? '#d46b08' : '#389e0d' }}>
+                            综合焦虑指数：{comprehensiveState.keyboard.anxietyIndex} / 100
+                          </Text>
+                        </div>
+                      </div>
+                    </Card>
+                  </Col>
+                )}
+
+                {/* ===== 认知分析层 ===== */}
+
+                {/* 昼夜活动分析（仅活动时间，非睡眠检测） */}
+                {(circadianMetrics?.isActive || comprehensiveState.circadian?.isActive) && (
+                  <Col xs={24} md={8}>
+                    <Card size="small" title={<Space><span style={{ fontSize: 16 }}>🕐</span> 昼夜活动 <Tag color="default" style={{ fontSize: 10 }}>非睡眠检测</Tag></Space>} style={{ borderRadius: 10, background: '#e6fffb' }}>
+                      <div style={{ fontSize: 13, lineHeight: 2 }}>
+                        <div><Text type="secondary">深夜活动风险：</Text>
+                          <Tag color={(circadianMetrics?.lateNightRisk ?? comprehensiveState.circadian?.lateNightRisk ?? 0) > 0.5 ? 'red' : (circadianMetrics?.lateNightRisk ?? comprehensiveState.circadian?.lateNightRisk ?? 0) > 0.2 ? 'orange' : 'green'} style={{ fontSize: 11 }}>
+                            {Math.round((circadianMetrics?.lateNightRisk ?? comprehensiveState.circadian?.lateNightRisk ?? 0) * 100)}%
+                          </Tag>
+                        </div>
+                        <div><Text type="secondary">最近活动：</Text><Text strong>{Math.round(circadianMetrics?.lastActivityHour ?? comprehensiveState.circadian?.lastActivityHour ?? 0)}</Text> 时</div>
+                        <div><Text type="secondary">活动时间规律性：</Text>
+                          {(circadianMetrics?.activitySampleCount ?? comprehensiveState.circadian?.activitySampleCount ?? 0) >= 10 ? (
+                            <Progress percent={Math.round((circadianMetrics?.regularityScore ?? comprehensiveState.circadian?.regularityScore ?? 0) * 100)} showInfo={false} size="small" strokeColor="#13c2c2" style={{ width: 80, display: 'inline-block', verticalAlign: 'middle' }} />
+                          ) : (
+                            <Text type="secondary" style={{ fontSize: 12 }}>样本不足（{(circadianMetrics?.activitySampleCount ?? comprehensiveState.circadian?.activitySampleCount ?? 0)}/10）</Text>
+                          )}
+                        </div>
+                        <div style={{ fontSize: 11, color: '#8c8c8c' }}>仅记录平台内活动时间，不代表真实睡眠情况</div>
+                      </div>
+                    </Card>
+                  </Col>
+                )}
+
+                {/* 认知扭曲深度分析 */}
+                {(cognitiveMetrics?.riskScore ?? comprehensiveState.cognitiveDistortion?.riskScore ?? 0) > 0 && (
+                  <Col xs={24} md={8}>
+                    <Card size="small" title={<Space><span style={{ fontSize: 16 }}>💭</span> 认知扭曲</Space>} style={{ borderRadius: 10, background: '#fff0f6' }}>
+                      <div style={{ fontSize: 13, lineHeight: 2 }}>
+                        <div><Text type="secondary">总风险：</Text>
+                          <Tag color="magenta" style={{ fontSize: 11 }}>{Math.round((cognitiveMetrics?.riskScore ?? comprehensiveState.cognitiveDistortion?.riskScore ?? 0) * 100)}%</Tag>
+                          <Text type="secondary" style={{ marginLeft: 8 }}>扭曲类型：</Text><Text strong>{cognitiveMetrics?.totalDistortionCount ?? comprehensiveState.cognitiveDistortion?.totalDistortionCount ?? 0}</Text> 类
+                        </div>
+                        <div style={{ marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                          {Object.entries(cognitiveMetrics?.categories ?? comprehensiveState.cognitiveDistortion?.categories ?? {}).filter(([, v]) => (v as number) > 0).map(([k, v]) => {
+                            const labelMap: Record<string, string> = { catastrophizing: '灾难化', blackAndWhite: '非黑即白', overgeneralization: '过度概括', selfBlame: '自我归咎', hopelessness: '无望感', mindReading: '读心术', shouldStatements: '应该陈述' };
+                            return <Tag key={k} color="pink" style={{ fontSize: 10, margin: 0 }}>{labelMap[k] || k} {Math.round((v as number) * 100)}%</Tag>;
+                          })}
+                        </div>
+                      </div>
+                    </Card>
+                  </Col>
+                )}
+
+                {/* 语音深层语义 */}
+                {(voiceSemanticsMetrics?.timestamp ?? comprehensiveState.voiceSemantics?.timestamp ?? 0) > 0 && (
+                  <Col xs={24} md={8}>
+                    <Card size="small" title={<Space><span style={{ fontSize: 16 }}>🗣️</span> 语音深层语义</Space>} style={{ borderRadius: 10, background: '#fffbe6' }}>
+                      <div style={{ fontSize: 13, lineHeight: 2 }}>
+                        <div><Text type="secondary">语义风险：</Text>
+                          <Tag color={(voiceSemanticsMetrics?.riskScore ?? comprehensiveState.voiceSemantics?.riskScore ?? 0) > 0.3 ? 'orange' : 'green'} style={{ fontSize: 11 }}>{Math.round((voiceSemanticsMetrics?.riskScore ?? comprehensiveState.voiceSemantics?.riskScore ?? 0) * 100)}%</Tag>
+                        </div>
+                        <div><Text type="secondary">第一人称单数：</Text>{Math.round((voiceSemanticsMetrics?.firstPersonSingularRatio ?? comprehensiveState.voiceSemantics?.firstPersonSingularRatio ?? 0) * 10000) / 100}%</div>
+                        <div><Text type="secondary">绝对化表达：</Text>{Math.round((voiceSemanticsMetrics?.absolutistRatio ?? comprehensiveState.voiceSemantics?.absolutistRatio ?? 0) * 10000) / 100}%</div>
+                        <div><Text type="secondary">消极情感词比：</Text>{Math.round((voiceSemanticsMetrics?.negativeAffectRatio ?? comprehensiveState.voiceSemantics?.negativeAffectRatio ?? 0) * 100)}%</div>
+                      </div>
+                    </Card>
+                  </Col>
+                )}
+
+                {/* ===== 生理行为层 ===== */}
+
+                {/* rPPG 心率 / 呼吸：本设备无采集能力，卡片保留但置灰，不显示任何数值 */}
+                <Col xs={24} md={8}>
+                  <Card
+                    size="small"
+                    title={<Space><span style={{ fontSize: 16, filter: 'grayscale(1)' }}>❤️</span> <Text type="secondary">rPPG 心率变异性</Text><Tag color="default" style={{ fontSize: 10 }}>暂不支持检测</Tag></Space>}
+                    style={{ borderRadius: 10, background: '#fafafa', border: '1px dashed #e0e0e0' }}
+                  >
+                    <div style={{ fontSize: 13, lineHeight: 2, color: '#bfbfbf' }}>
+                      <div>心率：-- bpm</div>
+                      <div>HRV (RMSSD)：-- ms</div>
+                      <div style={{ fontSize: 11, color: '#8c8c8c' }}>{RPPG_UNAVAILABLE_REASON}，未启用 rPPG，因此不作任何估算。</div>
+                    </div>
+                  </Card>
+                </Col>
+
+                <Col xs={24} md={8}>
+                  <Card
+                    size="small"
+                    title={<Space><span style={{ fontSize: 16, filter: 'grayscale(1)' }}>🌬️</span> <Text type="secondary">呼吸模式</Text><Tag color="default" style={{ fontSize: 10 }}>暂不支持检测</Tag></Space>}
+                    style={{ borderRadius: 10, background: '#fafafa', border: '1px dashed #e0e0e0' }}
+                  >
+                    <div style={{ fontSize: 13, lineHeight: 2, color: '#bfbfbf' }}>
+                      <div>呼吸频率：-- 次/分</div>
+                      <div>叹气次数：-- 次</div>
+                      <div style={{ fontSize: 11, color: '#8c8c8c' }}>{BREATHING_UNAVAILABLE_REASON}，当前不输出呼吸数值。</div>
+                    </div>
+                  </Card>
+                </Col>
+
+                {/* 行为激活水平 */}
+                {(behavioralMetrics?.isActive ?? comprehensiveState.behavioralActivation?.isActive) && (
+                  <Col xs={24} md={8}>
+                    <Card size="small" title={<Space><span style={{ fontSize: 16 }}>🏃</span> 行为激活</Space>} style={{ borderRadius: 10, background: '#f0f5ff' }}>
+                      <div style={{ fontSize: 13, lineHeight: 2 }}>
+                        <div><Text type="secondary">互动次数：</Text><Text strong>{behavioralMetrics?.dailyInteractionCount ?? comprehensiveState.behavioralActivation?.dailyInteractionCount ?? 0}</Text></div>
+                        <div><Text type="secondary">探索率：</Text>{Math.round((behavioralMetrics?.explorationRate ?? comprehensiveState.behavioralActivation?.explorationRate ?? 0) * 100)}%</div>
+                        <div><Text type="secondary">社交退缩：</Text>
+                          <Progress percent={Math.round((behavioralMetrics?.socialWithdrawalScore ?? comprehensiveState.behavioralActivation?.socialWithdrawalScore ?? 0) * 100)} showInfo={false} size="small" strokeColor="#597ef7" style={{ width: 80, display: 'inline-block', verticalAlign: 'middle' }} />
+                        </div>
+                        <div><Text type="secondary">趋势：</Text>
+                          <Tag color={(behavioralMetrics?.trendDirection ?? comprehensiveState.behavioralActivation?.trendDirection) === 'improving' ? 'green' : (behavioralMetrics?.trendDirection ?? comprehensiveState.behavioralActivation?.trendDirection) === 'declining' ? 'red' : 'blue'} style={{ fontSize: 11 }}>
+                            {(behavioralMetrics?.trendDirection ?? comprehensiveState.behavioralActivation?.trendDirection) === 'improving' ? '↑ 改善' : (behavioralMetrics?.trendDirection ?? comprehensiveState.behavioralActivation?.trendDirection) === 'declining' ? '↓ 下降' : '→ 稳定'}
+                          </Tag>
+                        </div>
+                      </div>
+                    </Card>
+                  </Col>
+                )}
+
+                {/* 眨眼 / 头姿分析 */}
+                {(eyeMetrics?.isMeasuring ?? comprehensiveState.eyeMovement?.isMeasuring) && (
+                  <Col xs={24} md={8}>
+                    <Card size="small" title={<Space><span style={{ fontSize: 16 }}>👁️</span> 眨眼 / 头姿</Space>} style={{ borderRadius: 10, background: '#f9f0ff' }}>
+                      <div style={{ fontSize: 13, lineHeight: 2 }}>
+                        <div><Text type="secondary">眨眼频率：</Text><Text strong>{eyeMetrics?.blinkRate ?? comprehensiveState.eyeMovement?.blinkRate ?? 0}</Text> 次/分
+                          {eyeMetrics?.blinkMethod && (
+                            <Tag color={eyeMetrics.blinkMethod === 'blendshape' ? 'purple' : 'orange'} style={{ fontSize: 10, marginLeft: 6 }}>
+                              {eyeMetrics.blinkMethod === 'blendshape' ? '眼睑闭合度' : 'EAR 降级'}
+                            </Tag>
+                          )}
+                        </div>
+                        <div><Text type="secondary">平均眨眼时长：</Text>{eyeMetrics?.avgBlinkDuration ?? 0} ms</div>
+                        <div><Text type="secondary">低头帧占比：</Text>{Math.round((eyeMetrics?.downwardGazeRatio ?? comprehensiveState.eyeMovement?.downwardGazeRatio ?? 0) * 100)}%</div>
+                        <div><Text type="secondary">头姿波动：</Text>{Math.round((eyeMetrics?.attentionScatter ?? comprehensiveState.eyeMovement?.attentionScatter ?? 0) * 100)}%</div>
+                        <div><Text type="secondary">信号质量：</Text>
+                          <Progress percent={Math.round((eyeMetrics?.signalQuality ?? comprehensiveState.eyeMovement?.signalQuality ?? 0) * 100)} showInfo={false} size="small" strokeColor="#9254de" style={{ width: 80, display: 'inline-block', verticalAlign: 'middle' }} />
+                        </div>
+                        <div style={{ fontSize: 11, color: '#bfbfbf', lineHeight: 1.6 }}>
+                          眨眼来自 MediaPipe 眼睑闭合度（60 秒滚动窗口）；低头/头姿波动由头部姿态推算，
+                          本平台未接入虹膜注视跟踪，不构成「注视方向」。
+                        </div>
+                      </div>
+                    </Card>
+                  </Col>
+                )}
+              </Row>
+
+              {/* 融合证据 */}
+              {comprehensiveState.evidence.length > 0 && (
+                <>
+                  <Divider style={{ margin: '16px 0' }} />
+                  <div style={{ padding: '10px 14px', background: '#f9f0ff', borderRadius: 8 }}>
+                    <Text strong style={{ fontSize: 13, color: '#722ed1' }}> 融合分析依据</Text>
+                    {comprehensiveState.evidence.slice(0, 5).map((e, i) => (
+                      <div key={i} style={{ fontSize: 13, color: '#722ed1', lineHeight: 1.8, marginTop: 4 }}>
+                        • {e}
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+            </Card>
+          </Col>
+
+        {/* 应对策略 */}
+        {copingStrategies && (
+          <Col xs={24}>
+            <Card
+              title={<Space><BulbOutlined /> 个性化应对策略</Space>}
+              style={{ borderRadius: 12, background: 'linear-gradient(135deg, #f0f9ff 0%, #f5f3ff 100%)' }}
+            >
+              <Row gutter={16}>
+                <Col xs={24} md={8}>
+                  <Card size="small" title="当下可做" style={{ borderRadius: 8 }}>
+                    {copingStrategies.immediateActions?.map((a: string, i: number) => (
+                      <div key={i} style={{ padding: '4px 0', fontSize: 13 }}>• {a}</div>
+                    ))}
+                  </Card>
+                </Col>
+                <Col xs={24} md={8}>
+                  <Card size="small" title="本周建议" style={{ borderRadius: 8 }}>
+                    {copingStrategies.shortTermStrategies?.map((s: string, i: number) => (
+                      <div key={i} style={{ padding: '4px 0', fontSize: 13 }}>• {s}</div>
+                    ))}
+                  </Card>
+                </Col>
+                <Col xs={24} md={8}>
+                  <Card size="small" title="长期方向" style={{ borderRadius: 8 }}>
+                    {copingStrategies.longTermSuggestions?.map((s: string, i: number) => (
+                      <div key={i} style={{ padding: '4px 0', fontSize: 13 }}>• {s}</div>
+                    ))}
+                  </Card>
+                </Col>
+              </Row>
+              <div style={{ marginTop: 16, padding: '12px 16px', background: '#fff7e6', borderRadius: 8, textAlign: 'center' }}>
+                <Text style={{ fontSize: 15, color: '#d46b08', fontWeight: 500 }}>{copingStrategies.encouragingMessage}</Text>
+              </div>
+            </Card>
+          </Col>
+        )}
+      </Row>
+
+      {/* ===== 量表测评 ===== */}
+      <Card
+        title={<Space><FileTextOutlined /> 标准化量表测评</Space>}
+        style={{ borderRadius: 12, marginTop: 24 }}
+        extra={
+          <Tag color="blue" style={{ fontSize: 12 }}>
+            数据仅用于生成你的心理画像，不会泄露给第三方
+          </Tag>
+        }
+      >
+        {/* 隐私与伦理声明 */}
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 20, borderRadius: 8 }}
+          message="隐私与伦理保护"
+          description={
+            <div style={{ fontSize: 13, lineHeight: 1.8 }}>
+              <div>• 所有测评数据均加密存储，仅用于生成你的心理画像和辅助公益咨询师了解你的状态</div>
+              <div>• 你的公益咨询师在咨询过程中可以看到测评结果，以便更好地帮助你</div>
+              <div>• 你可以随时要求删除所有测评数据</div>
+              <div>• 本测评仅供参考，不构成医学诊断。如有严重不适，请及时就医</div>
+            </div>
+          }
+        />
+
+        {scaleResult ? (
+          <Card style={{ borderRadius: 12, maxWidth: 600, margin: '0 auto' }}>
+            <Result
+              status={(scaleResult.level === 'normal' ? 'success' : scaleResult.level === 'mild' ? 'warning' : 'error') as any}
+              title="测评完成"
+              subTitle={`总分：${scaleResult.totalScore} | 等级：${scaleResult.level}`}
+              extra={[
+                <Button key="back" onClick={() => { setScaleResult(null); setSelectedScale(null); setScaleAnswers({}); safetyTriggeredRef.current = false; }}>
+                  返回
+                </Button>,
+              ]}
+            >
+              <Paragraph>{scaleResult.suggestion}</Paragraph>
+            </Result>
+          </Card>
+        ) : selectedScale ? (
+          <Card
+            style={{ borderRadius: 12 }}
+            title={SCALE_QUESTIONS[selectedScale].title}
+            extra={<Button onClick={() => { setSelectedScale(null); setScaleAnswers({}); safetyTriggeredRef.current = false; }}>返回</Button>}
+          >
+            <Paragraph type="secondary">{SCALE_QUESTIONS[selectedScale].desc}</Paragraph>
+            <Paragraph>请根据过去<strong>两周</strong>的情况，选择每项的程度：</Paragraph>
+            <Paragraph type="secondary">0=完全没有，1=有几天，2=一半以上天数，3=几乎每天</Paragraph>
+            <Space direction="vertical" style={{ width: '100%' }} size="middle">
+              {SCALE_QUESTIONS[selectedScale].questions.map((q: string, i: number) => (
+                <Card key={i} size="small" style={{ borderRadius: 8 }}>
+                  <Text style={{ display: 'block', marginBottom: 8 }}>{i + 1}. {q}</Text>
+                  <Radio.Group value={scaleAnswers[i]} onChange={e => setScaleAnswers({ ...scaleAnswers, [i]: e.target.value })}>
+                    <Space>{[0, 1, 2, 3].map(v => <Radio.Button key={v} value={v}>{v}</Radio.Button>)}</Space>
+                  </Radio.Group>
+                </Card>
+              ))}
+              <Button
+                type="primary"
+                size="large"
+                block
+                onClick={handleScaleSubmit}
+                loading={scaleSubmitting}
+                disabled={Object.keys(scaleAnswers).length < SCALE_QUESTIONS[selectedScale].questions.length}
+              >
+                提交测评
+              </Button>
+            </Space>
+          </Card>
+        ) : (
+          <>
+            <Space direction="vertical" style={{ width: '100%' }} size="middle">
+              {Object.entries(SCALE_QUESTIONS).map(([key, scale]) => (
+                <Card
+                  key={key}
+                  hoverable
+                  onClick={() => { setSelectedScale(key); setScaleAnswers({}); safetyTriggeredRef.current = false; }}
+                  style={{ borderRadius: 12 }}
+                  bodyStyle={{ padding: 20 }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div>
+                      <Title level={5} style={{ marginBottom: 4 }}>{scale.title}</Title>
+                      <Text type="secondary">{scale.desc}</Text>
+                      <div style={{ marginTop: 8 }}><Tag>{scale.questions.length} 题</Tag></div>
+                    </div>
+                    <Button type="primary">开始测评</Button>
+                  </div>
+                </Card>
+              ))}
+            </Space>
+            <Title level={5} style={{ marginTop: 24, marginBottom: 12 }}>历史记录</Title>
+            {scaleHistory.length === 0 ? (
+              <Empty description="暂无测评记录" />
+            ) : (
+              <List
+                dataSource={scaleHistory}
+                renderItem={(item: any) => (
+                  <List.Item>
+                    <List.Item.Meta
+                      title={item.title}
+                      description={`得分：${item.totalScore} | 等级：${item.level} | ${new Date(item.createdAt).toLocaleDateString()}`}
+                    />
+                    <Tag color={item.level === 'normal' ? 'green' : item.level === 'mild' ? 'orange' : 'red'}>{item.level}</Tag>
+                  </List.Item>
+                )}
+              />
+            )}
+          </>
+        )}
+      </Card>
+
+      {/* PHQ-9 安全关怀弹窗 */}
+      <Modal
+        open={safetyModalOpen}
+        onCancel={() => setSafetyModalOpen(false)}
+        footer={null}
+        width={480}
+        centered
+      >
+        <div style={{ textAlign: 'center', padding: '20px 0' }}>
+          <div style={{ fontSize: 48, marginBottom: 12 }}>💛</div>
+          <Title level={4} style={{ marginBottom: 8, color: '#5a4a6a' }}>
+            谢谢你愿意说出来
+          </Title>
+          <div style={{
+            padding: '16px 20px', background: '#fff7e6', borderRadius: 12,
+            textAlign: 'left', marginBottom: 20,
+          }}>
+            <Paragraph style={{ fontSize: 15, color: '#5a4a6a', marginBottom: 8 }}>
+              你刚才提到的那些想法，让我们很关心你现在的感受。
+            </Paragraph>
+            <Paragraph style={{ fontSize: 14, color: '#8a7a9a', marginBottom: 0 }}>
+              请记住，你不是一个人。现在有人愿意听你说，24小时都在：
+            </Paragraph>
+          </div>
+          <Card style={{ borderRadius: 12, marginBottom: 20, background: '#fff5f5', border: '1px solid #ffccc7' }}>
+            <div style={{ marginBottom: 12 }}>
+              <Text strong>🆘 24小时心理援助热线</Text>
+              <Title level={3} style={{ color: '#ff4d4f', margin: '4px 0' }}>400-161-9995</Title>
+            </div>
+            <div style={{ marginBottom: 0 }}>
+              <Text strong> 生命热线</Text>
+              <Title level={3} style={{ color: '#6366f1', margin: '4px 0' }}>400-821-1215</Title>
+            </div>
+          </Card>
+          <Space direction="vertical" style={{ width: '100%' }} size="middle">
+            <Button
+              type="primary"
+              block
+              size="large"
+              onClick={() => { setSafetyModalOpen(false); navigate('/chat'); }}
+              style={{ borderRadius: 12 }}
+            >
+              <HeartOutlined /> 去找 AI 聊聊，它会一直陪着你
+            </Button>
+            <Button
+              block
+              size="large"
+              onClick={() => setSafetyModalOpen(false)}
+              style={{ borderRadius: 12 }}
+            >
+              我暂时还好，继续测评
+            </Button>
+          </Space>
+        </div>
+      </Modal>
+
+    </div>
+  );
+}

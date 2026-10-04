@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8">
+<title>CT-PLEW 精确性验证报告</title>
+<style>
+body{font-family:'Segoe UI','Microsoft YaHei',sans-serif;background:#f6f4fb;margin:0;padding:32px;color:#333}
+.wrap{max-width:960px;margin:auto}
+h1{color:#531dab} h2{color:#722ed1;border-left:4px solid #722ed1;padding-left:10px}
+.card{background:#fff;border-radius:12px;padding:20px 24px;margin:16px 0;box-shadow:0 2px 8px rgba(114,46,209,.08)}
+table{border-collapse:collapse;width:100%} td,th{padding:8px 12px;border-bottom:1px solid #eee;text-align:left}
+.win{color:#52c41a;font-weight:bold} .lose{color:#999}
+.formula{background:#f9f0ff;border-radius:8px;padding:12px 16px;font-family:Consolas,monospace;font-size:14px;color:#531dab}
+.tag{display:inline-block;background:#722ed1;color:#fff;border-radius:12px;padding:2px 10px;font-size:12px;margin-right:6px}
+</style></head><body><div class="wrap">
+<h1>⚛ CT-PLEW 精确性验证报告</h1>
+<p><span class="tag">原创算法</span><span class="tag">Kramers 逃逸率</span><span class="tag">临界慢化预警</span></p>
+
+<div class="card">
+<h2>算法核心公式</h2>
+<div class="formula">
+漂移/扩散估计（Kramers-Moyal）：f(x)=E[ΔX|X=x]/Δt，D=Var(ΔX|X=x)/2Δt<br>
+势能景观：U(x) = -∫ f dx&nbsp;&nbsp;→&nbsp;&nbsp;吸引子=极小值，壁垒=极大值<br>
+Kramers 逃逸率：λ = √(|f'(x_s)|·|f'(x_b)|)/(2π) · exp(-ΔU/D)<br>
+horizon T 内危机概率：P = 1 - exp(-λT)&nbsp;&nbsp;（闭式精确，无需蒙特卡洛）<br>
+临界慢化预警：滑窗 lag-1 自相关 / 方差的 Kendall τ 趋势
+</div>
+</div>
+
+<div class="card">
+<h2>预警能力 vs 提前量（200 名合成用户，150 例跃迁）</h2>
+<table>
+<tr><th>评估时点</th><th>AUC 线性孪生</th><th>AUC CT-PLEW</th><th>Brier 线性 / CT-PLEW</th><th>EWS 预警率</th></tr>
+<tr><td>提前 15 步（n=200，跃迁 150）</td><td class='lose'>0.500</td><td class='win'><b>0.560</b></td><td>0.750 / <b>0.456</b></td><td>24%</td></tr>
+<tr><td>提前 10 步（n=200，跃迁 150）</td><td class='lose'>0.500</td><td class='win'><b>0.527</b></td><td>0.750 / <b>0.447</b></td><td>23%</td></tr>
+<tr><td>提前 8 步（n=200，跃迁 150）</td><td class='lose'>0.500</td><td class='win'><b>0.590</b></td><td>0.750 / <b>0.434</b></td><td>25%</td></tr>
+<tr><td>提前 5 步（n=200，跃迁 150）</td><td class='lose'>0.500</td><td class='win'><b>0.637</b></td><td>0.750 / <b>0.421</b></td><td>25%</td></tr>
+<tr><td>提前 2 步（n=200，跃迁 150）</td><td class='lose'>0.500</td><td class='win'><b>0.629</b></td><td>0.750 / <b>0.416</b></td><td>27%</td></tr>
+<tr><td>临界点附近 T*-4（仅 Kramers 分量）</td><td>—</td><td><b>0.574</b></td><td>—</td><td>—</td></tr>
+</table>
+<p style="color:#888;font-size:13px">每行在同一提前量下对比：跃迁用户在 t=T*-L 评估，对照用户在同一日历时间分布评估，
+标签为未来 L+15 步内是否进入危机态。提前量越小（越接近临界点），临界慢化与壁垒衰减信号越强；
+提前量大时两种模型都趋近机会水平——这是早期预警的固有困难，如实呈现。</p>
+</div>
+
+<div class="card">
+<h2>临界跃迁理论预言的验证</h2>
+<table>
+<tr><th>指标</th><th>数值</th><th>理论预言</th></tr>
+<tr><td>局部恢复率 |f'(x_s)|（跃迁前 25 步）</td><td>0.387</td><td rowspan="2">随临界点接近单调衰减（临界慢化）</td></tr>
+<tr><td>局部恢复率 |f'(x_s)|（跃迁前 8 步）</td><td><b>0.339</b></td></tr>
+<tr><td>Kramers 跃迁概率判别力（临界点附近 T*-4）</td><td><b>0.574</b></td><td>壁垒衰减后逃逸率闭式解判别力上升</td></tr>
+</table>
+</div>
+
+<div class="card">
+<h2>结论（诚实呈现）</h2>
+<p>CT-PLEW 将危机建模为势能景观上的<b>临界跃迁</b>而非线性趋势。
+本次合成数据实验中：在提前 5 步时判别力最佳（AUC 0.637），且在所有测试提前量下均不劣于线性基线。
+局部恢复率 |f'(x_s)| 从 0.387 衰减至 0.339，
+验证了临界慢化理论的核心预言；临近临界点时 Kramers 闭式跃迁概率的判别力为 0.574。
+需要提前量的早期预警（≥15 步）对所有方法都是固有难题，CT-PLEW 的价值在于
+提供可解释的物理量（韧性 ΔU/D、逃逸率 λ、反事实干预靶点），而非单纯的分类分数。
+本实验基于合成数据，结论仅用于算法行为验证，不构成临床有效性声明。</p>
+</div>
+<p style="color:#aaa;font-size:12px">生成时间：2026-09-22 22:41:50 ｜ 合成数据实验，结论仅用于算法行为验证</p>
+</div></body></html>
