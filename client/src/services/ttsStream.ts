@@ -104,8 +104,23 @@ function concatInt16(parts: Int16Array[]): Int16Array {
 
 /** 一句的接收缓冲 */
 interface SegmentBuffer {
+  /** 客户端**发出去**的原文（未过术语替换） */
   text: string;
+  /**
+   * 服务端回传的 `spoken_text`：**实际被念出来**的文本（已过术语替换）。
+   *
+   * ⚠️ `start` 事件就带着它（`api/tts.py` 在 `say` 时就已算好），所以
+   * **第一块音频到达前**就有值 —— 这是"边收边播"能保持 `onStart(seq, spokenText)`
+   * 语义不变的关键。若服务端没给（旧版本），退回原文。
+   */
+  spokenText: string;
   sampleRate: number;
+  /**
+   * 采样率未知时用来兜底的攒帧缓冲。
+   *
+   * 正常路径**不会用到**：`start` 事件总在二进制帧之前到达且带 `sample_rate`。
+   * 保留是为了防御"协议被改坏时整句丢音"变成"整句静音"。
+   */
   frames: Int16Array[];
   /** 客户端发出 `say` 的时刻，用于算"从请求到出声"的真实延迟 */
   sentAt: number;
@@ -263,7 +278,16 @@ export class TtsStreamSession {
       if (seq === null || !this.ws) return;
       const seg = this.segments.get(seq);
       if (!seg) return;
-      seg.frames.push(bytesToInt16(ev.data as ArrayBuffer));
+      const int16 = bytesToInt16(ev.data as ArrayBuffer);
+      const sr = seg.sampleRate || this.status.sampleRate;
+      if (sr <= 0) {
+        // 采样率还没到（协议异常）：攒着，等 end 时兜底处理，别把音频丢掉
+        seg.frames.push(int16);
+        return;
+      }
+      // **边收边播**：立刻把这一块排进播放时间轴，不要攒到 `end`。
+      // 攒到 end 会把服务端串行合成的等待暴露成句中空洞（实测 686 + 1225 ms）。
+      this.player.enqueueChunk(seq, int16, sr, seg.spokenText || seg.text);
       return;
     }
 
@@ -311,6 +335,9 @@ export class TtsStreamSession {
       const existing = this.segments.get(seq);
       this.segments.set(seq, {
         text: existing?.text ?? '',
+        // 服务端**在 start 就带上 spoken_text**（术语替换后的真文本）。
+        // 没有它，边收边播时 onStart 只能拿到原文，字幕定位与回声过滤会失配。
+        spokenText: String(msg.spoken_text ?? existing?.spokenText ?? existing?.text ?? ''),
         sampleRate: sr,
         frames: existing?.frames ?? [],
         sentAt: existing?.sentAt ?? performance.now(),
@@ -331,8 +358,7 @@ export class TtsStreamSession {
       if (!seg) return;
 
       const sampleRate = Number(msg.sample_rate ?? seg.sampleRate ?? this.status.sampleRate ?? 0);
-      const spokenText = String(msg.spoken_text ?? seg.text);
-      const pcm = concatInt16(seg.frames);
+      const spokenText = String(msg.spoken_text ?? seg.spokenText ?? seg.text);
 
       const meta: TtsSegmentMeta = {
         seq,
@@ -343,18 +369,24 @@ export class TtsStreamSession {
         rtf: Number(msg.rtf ?? 0),
       };
 
-      // 「请求 → 音频到手」：在送入播放器**之前**记，所以不受播放队列长度影响。
+      // 「请求 → 音频到手」：在收尾**之前**记，所以不受播放队列长度影响。
       this.pcmReadyMs.set(seq, Math.round(performance.now() - seg.sentAt));
 
-      if (pcm.length === 0) {
-        // 合成成功但没音频（空文本 / 全被 OOV 吞掉）。如实上报，不假装播过。
-        this.cb.onError?.('这一句没有合成出音频', seq);
-        this.cb.onSegment?.(meta);
-        return;
+      // 兜底：采样率一直没拿到，帧只能攒着（正常路径不会走到这里）
+      if (seg.frames.length > 0) {
+        const pcm = concatInt16(seg.frames);
+        seg.frames = [];
+        if (sampleRate > 0 && pcm.length > 0) {
+          this.player.enqueue(seq, pcm, sampleRate, spokenText);
+        }
       }
 
-      // 交给播放器。文本用 spokenText —— 回声过滤依赖它。
-      this.player.enqueue(seq, pcm, sampleRate, spokenText);
+      // 收尾：这一句不会再有新块了。`onEnd` 由播放器在**最后一块播完**时触发。
+      const chunks = this.player.endSegment(seq);
+      if (chunks === 0) {
+        // 合成成功但没音频（空文本 / 全被 OOV 吞掉）。如实上报，不假装播过。
+        this.cb.onError?.('这一句没有合成出音频', seq);
+      }
       this.cb.onSegment?.(meta);
     }
   }
@@ -380,6 +412,8 @@ export class TtsStreamSession {
     if (this.closed || !text.trim()) return;
     this.segments.set(seq, {
       text,
+      // 先按原文占位；`start` 事件到达时会换成服务端的 spoken_text
+      spokenText: text,
       sampleRate: this.status.sampleRate,
       frames: [],
       sentAt: performance.now(),

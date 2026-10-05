@@ -171,6 +171,22 @@ class DistortionClassifier:
         if self._model is not None:
             return
 
+        # 权重是 Git LFS 指针文件时提前报清楚的错。
+        # 本仓库的 model.safetensors 走 LFS 托管，新克隆/未 `git lfs pull` 时拿到的
+        # 是一个几百字节的文本指针 —— 直接交给 transformers 只会得到一句难以理解的
+        # 反序列化异常，所以这里先自己判一次。
+        # ⚠️ 放在 import torch/transformers **之前**：这一步不需要任何依赖，应当是
+        #    最先给出的诊断，而不是等 torch 装完再报。
+        weights_file = self._ckpt_dir / "model.safetensors"
+        if weights_file.exists():
+            head = weights_file.read_text(encoding="utf-8", errors="ignore")[:80]
+            if "git-lfs" in head or "oid sha256" in head:
+                raise RuntimeError(
+                    f"model.safetensors 是 Git LFS 指针文件（非真实权重）：{weights_file}。"
+                    f"请在该仓库运行 `git lfs pull`，"
+                    f"或把训练产物目录里真实的 model.safetensors 复制到 {self._ckpt_dir}。"
+                )
+
         import torch
         from transformers import AutoModelForSequenceClassification, AutoTokenizer
         from shared.model_lock import MODEL_LOAD_LOCK

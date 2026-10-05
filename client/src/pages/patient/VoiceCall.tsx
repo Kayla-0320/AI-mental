@@ -50,6 +50,18 @@ import CrisisResourceCard from '../../components/CrisisResourceCard';
 
 const { Text, Title } = Typography;
 
+/**
+ * sessionStorage 键：通话期持久化当前会话 id。
+ *
+ * 覆盖两种"通话被打断但没挂断"的场景：
+ *   * 用户中途刷新页面；
+ *   * 误关标签页 / 浏览器崩溃后重新打开 `/call`（此时 URL 里没有 id）。
+ *
+ * ⚠️ 只在**挂断**（phase === 'ended'）时清除，见下面的 effect —— 否则下次进
+ * `/call` 会被送回一通已经结束的通话。
+ */
+const CALL_SESSION_KEY = 'voice-call:active-conversation';
+
 const PHASE_LABEL: Record<CallPhase, string> = {
   idle: '准备就绪',
   connecting: '正在接通…',
@@ -190,34 +202,89 @@ export default function VoiceCall() {
   // 若直接在 effect 里 await 建会话，就会建出**两个**空会话 ——
   // 一个挂着当前通话、另一个永远没人用，却留在用户的对话历史列表里。
   useEffect(() => {
+    let alive = true;
+
     if (conversationId) {
-      // 已经有 id 了，缓存作废（也顺带避免"退回 /call 又被送回旧会话"）
+      // 已经有 id 了，缓存作废（也顺带避免"退回 /call 又被送回旧会话"）；
+      // 同时持久化，供刷新 / 误关标签后恢复。
       bootstrapRef.current = null;
+      try {
+        sessionStorage.setItem(CALL_SESSION_KEY, conversationId);
+      } catch {
+        /* 隐私模式等场景下不可写，忽略 */
+      }
       return;
     }
-    if (!bootstrapRef.current) {
-      setConversationError(null);
-      bootstrapRef.current = consultationApi.createConversation().then((res) => {
-        const id = (res as { data?: { id?: string } })?.data?.id;
-        if (!id) throw new Error('服务端没有返回会话 id');
-        return id;
-      });
+
+    /** 建一个新会话并 replace 到带 id 的地址（恢复失败时也走这里）。 */
+    const bootstrapNew = (): void => {
+      if (!bootstrapRef.current) {
+        setConversationError(null);
+        bootstrapRef.current = consultationApi.createConversation().then((res) => {
+          const id = (res as { data?: { id?: string } })?.data?.id;
+          if (!id) throw new Error('服务端没有返回会话 id');
+          return id;
+        });
+      }
+      bootstrapRef.current
+        .then((id) => {
+          if (alive) navigate(`/call/${id}`, { replace: true });
+        })
+        .catch((err: unknown) => {
+          if (!alive) return;
+          bootstrapRef.current = null; // 允许重试
+          setConversationError(err instanceof Error ? err.message : String(err));
+        });
+    };
+
+    // 没有 URL 参数：先看 sessionStorage 里有没有"上次没挂断"的会话。
+    let stored: string | null = null;
+    try {
+      stored = sessionStorage.getItem(CALL_SESSION_KEY);
+    } catch {
+      /* 读不到就当没有 */
     }
 
-    let alive = true;
-    bootstrapRef.current
-      .then((id) => {
-        if (alive) navigate(`/call/${id}`, { replace: true });
+    if (!stored) {
+      bootstrapNew();
+      return () => {
+        alive = false;
+      };
+    }
+
+    // ⚠️ 必须**先验证会话还在**再跳：id 可能对应一个已被删除的会话（用户清理过
+    //    历史）或不属于当前用户，直接 navigate 会把手机会话带到一个空壳上 ——
+    //    通话页拿不到会话、麦克风却已经申请了。服务端对不存在的会话返回 404，
+    //    所以这里用一次消息拉取做存在性校验；失败就清键并回退到新建。
+    consultationApi
+      .getMessages(stored, 1)
+      .then(() => {
+        if (alive) navigate(`/call/${stored}`, { replace: true });
       })
-      .catch((err: unknown) => {
-        if (!alive) return;
-        bootstrapRef.current = null; // 允许重试
-        setConversationError(err instanceof Error ? err.message : String(err));
+      .catch(() => {
+        try {
+          sessionStorage.removeItem(CALL_SESSION_KEY);
+        } catch {
+          /* 忽略 */
+        }
+        if (alive) bootstrapNew();
       });
+
     return () => {
       alive = false;
     };
   }, [conversationId, navigate, retryToken]);
+
+  // ── 刷新恢复：挂断时清掉 sessionStorage，避免下次进 /call 被送回已结束的通话 ──
+  useEffect(() => {
+    if (phase === 'ended') {
+      try {
+        sessionStorage.removeItem(CALL_SESSION_KEY);
+      } catch {
+        /* 忽略 */
+      }
+    }
+  }, [phase]);
 
   // 通话计时：从"接通"开始（`idle` 一旦离开就开始）
   const active = phase !== 'idle';

@@ -573,6 +573,10 @@ _DOMINANT_EMOTION_MIN_PROB = 0.45
 def _dominant_emotion_cue(emotion_probs: list[float]) -> str:
     """把主导情绪映射成"只给模型看"的内部线索行。
 
+    ⚠️ 自 2026-10-05 prompt 精简后，**这行不再注入 prompt**（只留负性强度
+    数值），函数与测试保留下来：它是"细腻化情绪线索"这条路的可复用实现，
+    将来若要把线索重新注入，仍从这里取。
+
     返回空串表示**本轮不适合给情绪锚点**（中性/快乐占主导，或输入异常）。
     调用方据此决定要不要把这行注入 prompt —— 空串时必须不注入，
     否则模型会在用户什么都没说的时候凭空共情。
@@ -604,6 +608,10 @@ def _narrative_thread(
     scene_context: str = "",
 ) -> str:
     """提取"用户这一段正在讲的那条线"（问题③ 的锚点）。
+
+    ⚠️ 自 2026-10-05 prompt 精简后，**这段锚点不再注入 prompt** —— 新版只留
+    身份、话术总则与安全底线，连贯性交给"ta 说什么你就接什么"这一条总则。
+    函数与测试保留，便于回退或复用。
 
     用户反馈（2026-09-27）："你说考试没考好，它没顺着这个点回应，反而生硬跳问
     哪门课压力大，上下文关联弱。"
@@ -708,10 +716,15 @@ def _ask_question_this_turn(
 ) -> bool:
     """本轮是否可以提出**一个**开放式追问。
 
-    规则来源：提示词的"底线"（尊重节奏）与"往下走"一节（至少隔一轮才追问）。
-    注意这里只判断**本轮能不能问**；"连着两轮都问过"这层由
-    :func:`_assistant_asked_repeatedly` 单独判定，两者在
-    :func:`_build_llm_messages` 与 :func:`_finalize_reply` 里合流。
+    规则来源：新版话术总则（"每轮最后一句都是一个关心 ta 的问题"）的例外 ——
+    用户明确不想谈、或情绪还没平复时不往下问。返回值同时在
+    :func:`_build_llm_messages`（写不写"这一轮不要提问"）与
+    :func:`_finalize_reply`（删不删结尾问句）里使用，两处必须同源。
+
+    ⚠️ 自 2026-10-05 起"连着问了几轮"**不再参与**这里的判定：
+    旧版的隔轮节拍（``_assistant_asked_repeatedly`` 驱动的"问、问、接一句"）
+    与逐句点名的硬禁用清单一起删掉了 —— 它们正是"每轮都是同一套话术"的来源。
+    :func:`_assistant_asked_repeatedly` 保留为判据与测试用，不再注入 prompt。
 
     实现上刻意**不**直接使用 ``UserStyle.AGITATED`` 标签：该标签的判据是
     "高情绪强度 + 短消息/感叹号"，实测会把 "我好难受"（负性 0.989、
@@ -1070,6 +1083,57 @@ def _split_sentences(text: str) -> list[str]:
     return [p for p in parts if p.strip()]
 
 
+# 只由收尾引号/括号组成的"句子"碎片，以及句子开头的收尾引号。
+# 切句正则以句末标点为准，于是「…不一样？”」会被切成「…不一样？」+「”」，
+# 而「“你还好吗？”我在旁边…」会被切成「“你还好吗？」+「”我在旁边…」——
+# 两种情况都会让"最后一句是不是问句"的判断错位。
+_CLOSING_FRAGMENT_RE = re.compile(r'^[”"’』」）)\]】]+$')
+_LEADING_CLOSER_RE = re.compile(r'^[”"’』「」）)\]】]+')
+
+
+def _split_sentences_merged(text: str) -> list[str]:
+    """切句后把"收尾引号"还给它所属的那一句。
+
+    为什么需要：那个孤零零的「”」既不是问句也不是陈述，却会**排到问句后面**
+    或被当成下一句的开头，于是"最后一句是不是问句"的判断整个错位。实测
+    （2026-10-05，qwen-plus 的一条回复）：``_ensure_question_last`` 把引号挪到了
+    句子中间，输出变成「那……”考完之后……」。这里先把引号并回前一句再交给上层。
+
+    Args:
+        text: 任意文本。
+
+    Returns:
+        list[str]: 句子列表；收尾引号已并入前一句。
+    """
+    merged: list[str] = []
+    for part in _split_sentences(text):
+        stripped = part.strip()
+        # 整段就是收尾标点 → 并回前一句
+        if merged and _CLOSING_FRAGMENT_RE.match(stripped):
+            merged[-1] = merged[-1] + stripped
+            continue
+        # 句首是收尾引号 → 它属于前一句（引号被切到了下一句开头）
+        lead = _LEADING_CLOSER_RE.match(stripped)
+        if merged and lead:
+            merged[-1] = merged[-1] + lead.group(0)
+            rest = stripped[len(lead.group(0)):].strip()
+            if rest:
+                merged.append(rest)
+            continue
+        merged.append(part)
+    return merged
+
+
+# 句子结尾的收尾引号/括号：判断"这句是不是问句"时要先剥掉它们，
+# 否则「…哪里会不一样？”」会被当成陈述句（真正的问号被引号挡住了）。
+_TRAILING_CLOSERS = '”"’』」）)]】'
+
+
+def _is_question_sentence(part: str) -> bool:
+    """这一句是不是以问号结尾（容忍问号后面还跟着收尾引号）。"""
+    return part.rstrip().rstrip(_TRAILING_CLOSERS).rstrip().endswith(("？", "?"))
+
+
 def _cap_questions(text: str, max_questions: int = 1) -> str:
     """把一条回复里的问句数量压到 ``max_questions`` 以内。
 
@@ -1081,9 +1145,14 @@ def _cap_questions(text: str, max_questions: int = 1) -> str:
     结果把「老师当着全班说的？那次是什么事？」压成了
     「那次一定有原因。」—— 用户看到的是一句与 ta 说的话无关的通用安慰。
     宁可少删一句，也不能动文本本身。所以这里只做三件事：
-        1. 超出上限时，丢掉**后面**那些问句；
-        2. 删完如果什么都不剩，保留**第一个**问句（宁可留一个问句）；
+        1. 超出上限时，丢掉**前面**那些多余问句，保留**最后**一个问句；
+        2. 删完如果什么都不剩，保留**最后**那个问句（宁可留一个问句）；
         3. 其余情况一律原样返回。
+
+    ⚠️ 保留的是**最后**一个问句（2026-10-05 改，原先是保留第一个）：新话术的
+    契约是"每一轮最后一句都是关心 ta 的问题"，而保留第一个会把结尾整段砍掉
+    —— 实测把「这次考试是数学吗？你平时数学学得怎么样？是不是这次题目特别难？」
+    压成了只剩 9 个字的「这次考试是数学吗？」，既短又丢了模型真正想问的那句。
 
     Args:
         text: 模型回复。
@@ -1092,25 +1161,56 @@ def _cap_questions(text: str, max_questions: int = 1) -> str:
     Returns:
         str: 处理后的回复；未超出上限时原样返回。
     """
-    parts = _split_sentences(text)
+    parts = _split_sentences_merged(text)
     if len(parts) <= 1:
         return text.strip()
     question_idx = [
-        i for i, p in enumerate(parts) if p.rstrip().endswith(("？", "?"))
+        i for i, p in enumerate(parts) if _is_question_sentence(p)
     ]
     if len(question_idx) <= max_questions:
         return text.strip()
 
-    keep = set(question_idx[:max_questions])
+    keep = set(question_idx[-max_questions:])
     kept_parts = [
         p for i, p in enumerate(parts) if i in keep or i not in question_idx
     ]
     result = _join_sentences(kept_parts)
     if not result:
-        # 整段都是问句，删完什么都不剩 —— 保留第一个，别返回空回复
-        result = parts[question_idx[0]].strip()
+        # 整段都是问句，删完什么都不剩 —— 保留最后一个，别返回空回复
+        result = parts[question_idx[-1]].strip()
     logger.info("一轮里问了 %d 个问题，已压到 %d 个", len(question_idx), max_questions)
     return result
+
+
+def _ensure_question_last(text: str) -> str:
+    """让**唯一**的问句落在最后一句 —— 只重排句子，一个字都不改。
+
+    新话术的硬契约是"每一轮最后一句都是一个关心 ta 的问题"，但实测模型仍会写
+    「嗯，最近有什么事让你难受吗？我在这儿听着呢。」这种"问句在前、陈述收尾"，
+    正好和契约相反。这里在「整段只有一个问句、且它不在末尾」时把那一句挪到
+    末尾；其余情况（0 个或 ≥2 个问句、本来就是最后一句）一律原样返回 ——
+    宁可不动，也不猜。
+
+    ⚠️ 只重排、不改写：与 :func:`_cap_questions` 同一条口径。所以它天然安全，
+    最坏情况只是语序变了，绝不会凭空生成一句用户没看到过的话。
+
+    Args:
+        text: 定稿前的回复文本。
+
+    Returns:
+        str: 问句已落到末尾的文本；不满足条件时返回原文。
+    """
+    parts = [p.strip() for p in _split_sentences_merged(text) if p.strip()]
+    if len(parts) < 2:
+        return text
+    question_idx = [
+        i for i, p in enumerate(parts) if _is_question_sentence(p)
+    ]
+    if len(question_idx) != 1 or question_idx[0] == len(parts) - 1:
+        return text
+    question = parts.pop(question_idx[0])
+    logger.info("问句不在最后一句，已整句挪到末尾：%r", text[:40])
+    return _join_sentences(parts + [question])
 
 
 # 纯寒暄/客套（"你好""在吗""谢谢"）。这类输入**没有任何内容**可回应，
@@ -1299,26 +1399,40 @@ def _used_cliches(conversation_history: list) -> list[str]:
     return used
 
 
-# 日常共情回复的正文长度上限（危机/高风险的安全文本不受此限）。
-_MAX_REPLY_CHARS = 95
+# 日常回复的正文长度上限（危机/高风险的安全文本不受此限），**分两档**：
+#
+#   闲聊/寒暄（"你好""谢谢""嗯"）→ 40 字；ta 说到了情绪或具体事情 → 100 字。
+#
+# 取值经过三轮用户反馈校准：
+#   2026-10-05 上午"回复还是有点短" → 95 放宽到 260、并要求 3~5 句；
+#   2026-10-05 下午"又有点长了，单次 100 字以内，闲聊 40 字以内就够" → 收紧到本档。
+# 结论：这个产品要的是**短回复**（聊天式），长度靠 prompt 分档说明 + 这里兜底硬截。
+_MAX_REPLY_CHARS = 100
+_MAX_SOCIAL_REPLY_CHARS = 40
 
 
-def _trim_reply(text: str, used_cliches: list[str]) -> str:
+def _trim_reply(
+    text: str,
+    used_cliches: list[str],
+    max_chars: int = _MAX_REPLY_CHARS,
+) -> str:
     """定稿后处理：删掉**本轮回复里**重复上轮已说过的套话句，并压到长度上限。
 
     只做删除，不改写（与 _cap_questions 同一原则：宁可少删也不改坏语义）。
     - 逐句扫描：若某句含有"上轮已用过"的套话，删掉该句（这是重复的陪伴宣言）。
     - 若删空了，回退到原句（绝不返回空回复）。
-    - 再按 _MAX_REPLY_CHARS 截断到完整句：保留前若干句、总字数不超限，至少留一句。
+    - 再按 ``max_chars`` 截断到完整句：保留前若干句、总字数不超限，至少留一句。
 
     Args:
         text: 模型回复。
         used_cliches: :func:`_used_cliches` 的结果（上轮已说过的套话）。
+        max_chars: 本轮的字数上限；寒暄轮由调用方传更小的
+            :data:`_MAX_SOCIAL_REPLY_CHARS`。
 
     Returns:
         str: 处理后的回复。
     """
-    parts = _split_sentences(text)
+    parts = _split_sentences_merged(text)
     if not parts:
         return text.strip()
 
@@ -1329,15 +1443,26 @@ def _trim_reply(text: str, used_cliches: list[str]) -> str:
         if len(kept) >= 2:
             parts = kept
 
-    # 2) 长度截断：按整句累加，超过上限就停在上一句，至少保留第一句
+    # 2) 长度截断：按整句累加，超过上限就停在上一句，至少保留第一句。
+    #
+    # ⚠️ 结尾若是问句（新话术里那一句"关心 ta 的问题"），**先给它留位置**：
+    # 原来的"从前往后累加到上限"会把结尾整句丢掉 —— 那正好把最该留下的那句删了，
+    # 用户看到的就是一句没有回应的陈述。
+    tail = ""
+    if len(parts) >= 2 and _is_question_sentence(parts[-1]):
+        tail = parts[-1].strip()
+        parts = parts[:-1]
+    budget = max_chars - len(tail)
+
     result = ""
     for p in parts:
         candidate = (result + p.strip()) if result else p.strip()
-        if len(candidate) > _MAX_REPLY_CHARS and result:
+        if len(candidate) > budget and result:
             break
         result = candidate
     if not result:
-        result = parts[0].strip()
+        result = parts[0].strip() if parts else ""
+    result = result + tail
     if len(result) != len(text.strip()):
         logger.info("回复去套话/压长度：%r → %r", text[:40], result[:40])
     return result
@@ -1447,7 +1572,9 @@ def _finalize_reply(
     连着追问只由 prompt 侧的语气规则降温（见 :data:`_QUESTION_RUN_LENGTH`）。
 
     ⚠️ 去套话/压长度**只对低/中风险生效**：危机/高风险的回复含安全确认与
-    热线号码，一个字都不能删（见 :func:`_trim_reply`）。
+    热线号码，一个字都不能删（见 :func:`_trim_reply`）。日常轮次的长度上限分两档：
+    寒暄/闲聊 40 字、其余 100 字（见 :data:`_MAX_SOCIAL_REPLY_CHARS` /
+    :data:`_MAX_REPLY_CHARS`）。
 
     Args:
         text: 模型原始回复。
@@ -1470,12 +1597,22 @@ def _finalize_reply(
         if removed:
             logger.info("本轮禁止提问，已删去结尾问句：%r → %r", capped[:40], cleaned[:40])
         capped = cleaned
+    elif risk_level in ("low", "medium"):
+        # 契约：日常轮次的最后一句是"关心 ta 的问题"。
+        # 模型偶尔会把问句写在中间、用一句陈述收尾，这里整句挪回来（只重排）。
+        # 高风险/危机不做重排：那段文本含安全确认，顺序不能动。
+        capped = _ensure_question_last(capped)
 
-    # 去重复套话 + 压长度：仅日常（低/中风险）；危机/高风险的安全文本原样保留
+    # 去重复套话 + 压长度：仅日常（低/中风险）；危机/高风险的安全文本原样保留。
+    # 长度分档：寒暄/闲聊轮次用 40 字上限，其余 100 字
+    #（用户明确要求"单次 100 字以内，一般闲聊 40 字以内就够了"）。
     if risk_level in ("high", "crisis"):
         return capped
     used_cliches = _used_cliches(conversation_history or [])
-    return _trim_reply(capped, used_cliches)
+    max_chars = (
+        _MAX_SOCIAL_REPLY_CHARS if _is_social_only(user_message) else _MAX_REPLY_CHARS
+    )
+    return _trim_reply(capped, used_cliches, max_chars=max_chars)
 
 
 def _split_speak_units(text: str) -> list[str]:
@@ -1572,294 +1709,123 @@ def _build_llm_messages(
         conversation_history: 历史对话（``[{role, content}]``）。
         emotion_probs: 文本情绪概率 ``[快乐, 悲伤, 焦虑, 愤怒, 中性]``。
         risk_level: 风险等级。
-        style: 用户表达风格，决定本轮是否追问。
+        style: 用户表达风格。**不再写进 prompt**（2026-10-05 精简后只留身份、
+            话术总则与安全底线）；形参保留给调用方与降级模板使用。
         scene_context: C2D2 场景检索上下文；为空串时不注入，避免让模型对
             用户没说过的处境共情。
-        ask_question: 本轮是否允许追问。由调用方用
-            :func:`_ask_question_this_turn` 算好传入，保证注入的 ``ask_rule``
-            与实际话术规则同源。**为 True 也可能被降级**：若最近两轮 AI 回复
-            都追问了（:func:`_assistant_asked_repeatedly`），本轮仍会写明
-            「不要提问」，把追问改成隔轮出现。
+        ask_question: 本轮是否适合往下追问。由调用方用
+            :func:`_ask_question_this_turn` 算好传入；为 False 时在 prompt
+            末尾补一条「这一轮不要提问」（高风险/危机除外 —— 那一轮的安全
+            确认本身就是一句要问的话）。
+        memory_context: 长期记忆召回文本；为空串时不注入。
 
     Returns:
         list[dict]: OpenAI 兼容的 messages 列表。
     """
-    # ⚠️ 刻意**不把情绪标签的字面值喂进 prompt**（"悲伤/焦虑"这类分类名）。
-    # 过去注入「主导情绪=焦虑」，模型会忍不住复述这个词（"听起来你很焦虑"）——
-    # 这恰恰是"复读情绪标签"这一死板来源。这里给的是两样别的东西：
-    #   1. **负性强度数值**与风险等级：够模型把握分量，又不会被某个词锚定；
-    #   2. **细腻化的内部线索**（"失落/难过"而不是"悲伤"），且明令禁止说出口 ——
-    #      让"先接住哪一种情绪"从让模型瞎猜变成有据可依（问题①的修复点）。
-    # 线索为空串时**不注入**：用户什么都没说时凭空共情是最伤人的。
+    # ⚠️ 刻意**不把情绪标签的字面值喂进 prompt**（"悲伤/焦虑"这类分类名），
+    # 只给一个负性强度数值：够模型把握回应的分量，又不会被某个分类词锚定
+    # （过去注入「主导情绪=焦虑」，模型就忍不住复述"听起来你很焦虑"）。
     neg_intensity = _negative_emotion_intensity(emotion_probs)
-    emotion_cue = _dominant_emotion_cue(emotion_probs)
-    if emotion_cue:
-        emotion_cue_line = (
-            "ta 这一轮最可能是在**" + emotion_cue + "**。\n"
-            "怎么用：先用一句自己的话**接住**这份情绪（可以说事、说你的感受，"
-            "就是**不许出现上面那个词**，也不许说「你很失落」「听起来你很难过」"
-            "这类把情绪贴到 ta 脸上的句子），再决定要不要往下问。\n"
-            "⚠️ 这只帮你选「先接哪一种情绪」。ta 具体讲了什么，仍以 ta 自己说的为准 —— "
-            "不许拿它来替 ta 编事情。"
-        )
-    else:
-        emotion_cue_line = ""
 
-    # 连贯性锚点（问题③）：把"ta 这一段正在讲的那条线"显式写进 prompt。
-    # 只在**已经有历史**时注入 —— 第一轮没有"上一句"可扣，硬造一个锚点
-    # 反而会让模型对着寒暄去接不存在的内容。
-    # ⚠️ `social_only` 在下面才计算，这里只能先算出 `thread`，成行留到那之后。
-    thread = (
-        _narrative_thread(user_message, conversation_history, scene_context)
-        if conversation_history
-        else ""
-    )
-    # 节拍轮次：对话已进行的轮数（决定本轮"接一句"还是"往下问"）。
-    turn_count = len(conversation_history) // 2
-
-    style_desc = {
-        UserStyle.INTROVERTED: '用户偏内向安静，回复要短、留白多，别连着追问',
-        UserStyle.EXTROVERTED: '用户偏外向健谈，你可以接得活一点、多来回几句',
-        UserStyle.AGITATED: '用户此刻激动/烦躁，先让 ta 落地，别急着往下走',
-        UserStyle.CALM: '用户此刻较平静，可以多聊一层',
-    }.get(style, '')
-
-    # 本轮输入是不是"纯寒暄/客套" —— 这决定 prompt 里换一套打法。
-    # 不处理的话，模型会拿情境检索的语料替用户编状态（截图里的
-    # "你今天看起来有点没精神啊"就是这么来的）。
-    #
+    # 本轮输入是不是"纯寒暄/客套" —— 决定要不要额外给一条招呼规则。
+    social_only = _is_social_only(user_message)
     # ⚠️ 必须**先判"是否已经问过好"**再判通用寒暄：问候本身就属于
     # social_only，反过来写的话第二次"你好"会落进通用分支，又去问一遍好。
-    social_only = _is_social_only(user_message)
     if _is_greeting(user_message) and _assistant_greeted_before(conversation_history):
-        social_rule = (
-            "⚠️ 本轮是打招呼，但**前面已经问过好了** —— 不要再重复问好，"
-            "回一句「嗯，我在。」或「在的，你说。」就够了，不要提情绪、不要追问。"
+        social_line = (
+            "⚠️ 这一轮 ta 又在打招呼，但前面已经问过好了："
+            "不要再问一次好，直接往下走，结尾仍然是一个关心 ta 的问题。"
         )
     elif social_only:
-        social_rule = (
-            "⚠️ 本轮用户只说了寒暄/客套话，**什么内容都没有**。"
-            "只回应这句话本身："
-            "打招呼就自然地打个招呼（「你好呀，今天想说点什么？」）；"
-            "道谢就回一句得体的（「不用谢，我在。」）；"
-            "应声「嗯/好的」就接一句（「好，你慢慢说。」）。"
-            "**绝对不要**猜测或描述 ta 的状态（不许说「看你有点累/没精神/心情不好」），"
-            "**也不要**追问「发生什么事了」—— ta 什么都还没说，问了就是硬造。"
+        social_line = (
+            "⚠️ 这一轮 ta 只说了寒暄（打招呼/道谢/应声），什么内容都没有："
+            "只回应这句招呼本身，**不要评价 ta 的状态**"
+            "（不许猜 ta 累不累、心情好不好），结尾用一句邀请 ta 开口的问题。"
         )
     else:
-        social_rule = ""
+        social_line = ""
 
-    # 连贯性锚点成行（`thread` 在 social_only 之前算好，见上）。
-    # 寒暄轮次没有"线"可扣，注入锚点只会让模型对着"你好"去接不存在的内容。
-    if thread and not social_only:
-        thread_line = (
-            "# 必须扣住的那条线（连贯性）\n"
-            f"ta 正在讲的这条线是：{thread}\n"
-            "你的回复**必须**落在这条线上：先接住这条线上的具体内容，"
-            "追问也只能顺着它往深里问。\n"
-            "⚠️ **禁止跳题**：不要另起一个跟这条线无关的问题（例如 ta 在讲一段关系，"
-            "你却去问「哪门课」「什么时候考试」）。宁可只接住不提问，也不许换话题。"
+    # 本轮不该提问的少数情形：用户明确表示不想谈 / 情绪还没平复
+    # （判据见 :func:`_ask_question_this_turn`）。
+    # ⚠️ 高风险/危机**不走这一支**：那一轮的安全确认本身就是一句要问的话。
+    if not ask_question and risk_level not in ("high", "crisis"):
+        no_question_line = (
+            "⚠️ 这一轮**不要提问**：ta 明确表示不想谈，或情绪还没平复。"
+            "用一两句实在的话把 ta 接住就好，结尾不要出现问号。"
         )
     else:
-        thread_line = ""
+        no_question_line = ""
 
-    # 连续追问：**允许连着两轮**（用户明确要求"追问要回来"），
-    # 只拦"连着三轮都在问" —— 那时对话就变成审问了。
-    #
-    # ⚠️ social_only 必须排在最前：寒暄轮次没有内容可追问，若还注入
-    # "本轮要追问"，模型就会对着"你好"问"发生什么事了"。
-    asked_repeatedly = _assistant_asked_repeatedly(conversation_history)
-    # 节拍：默认「问、问、接一句」——每三轮留一轮**只承接不提问**，
-    # 打断"陈述句+问号"的机械循环。ask_rule 与 final_reminder 必须同源，
-    # 否则会出现"中段说不用问、末尾又叫它问"的自相矛盾。beat_no_question 一处决定两者。
-    beat_no_question = (turn_count % 3 == 2)
-    if not ask_question:
-        ask_rule = (
-            "本轮**不要提问**：用户情绪还没平复，或此刻不想被追问。"
-            "只回应 ta 说的内容，让 ta 感到被听到就够了，结尾不要出现问号。"
-        )
-        beat_no_question = True
-    elif social_only:
-        ask_rule = "本轮**不要提问**：ta 只说了寒暄/客套话，没有内容可追问。"
-        beat_no_question = True
-    elif asked_repeatedly:
-        ask_rule = (
-            "⚠️ 本轮**不要提问**：前面已经连着三轮用问句结尾了。"
-            "这一轮换成一句陈述 —— 接住 ta 刚说的内容、或者说一句你的感受。"
-            "连着问会把对话变成审问。"
-        )
-        beat_no_question = True
-    elif beat_no_question:
-        ask_rule = (
-            "这一轮**先不往下问**：把 ta 接住 —— 给一两句你自己的感受、"
-            "或点出 ta 没说出口的那层。不提问不等于敷衍，别只回一个语气词。"
+    # 高风险/危机：安全确认优先，但结尾仍要落在关心 ta 的问句上。
+    if risk_level in ("high", "crisis"):
+        risk_line = (
+            f"⚠️ 这一轮风险等级 = {risk_level}：先按上面「底线」做安全确认，"
+            "结尾那句仍然要是关心 ta 的问题。"
         )
     else:
-        ask_rule = (
-            "本轮**要追问**（这是默认动作）：顺着 ta 刚说的内容问一个开放式问题，"
-            "把话头往下递。不要停在「我懂你」上就不动了。"
-        )
+        risk_line = ""
 
-    # 末尾硬约束：放在 prompt 最靠近"这一轮"的位置。
-    # 实测（2026-09-26 重放截图对话）：把"本轮不要提问"只写在中段的 ask_rule 里，
-    # 模型约一半轮次照问不误；末尾再重复一条可明显提高遵守率，
-    # 但仍是概率性的 —— 真正的不变量由 :func:`_finalize_reply` 保证。
-    if beat_no_question:
-        final_reminder = (
-            "这一轮：不提问，但要把 ta 接住 —— 用一两句陈述把 ta 说的东西"
-            "回应到位（你的感受、或点出 ta 没说出口的那层），别只丢个语气词。"
-        )
-    else:
-        final_reminder = (
-            "这一轮：先用一句实打实的话接住 ta 说的具体内容（提到 ta 说的人或事），"
-            "再顺着往下问**一个**问题，让 ta 有话可接。"
-        )
-
-    # 已经用过的套路开场 + 上轮说过的陪伴套话 —— 合成一个"硬禁用"块，
-    # 放在最靠近"这一轮"的位置。开场只看句首，套话扫整段正文：
-    # 模型爱每轮补一句"我会一直陪着你/慢慢来/你已经很棒了"，说一次是暖，
-    # 轮轮说就是机械。这里点名 + 定稿处 :func:`_trim_reply` 兜底删除。
-    #
-    # ⚠️ 这段还负责拦"把示范句/情绪线索当模板抄"（问题①的第二个来源）：
-    # 实测（`_probe_chat_quality.py`，2026-09-27）不同轮次里反复出现
-    # 「我听着是」「这话太重了」—— 它们都是 prompt 里的示范句。模型对
-    # few-shot 句子的模仿是**字面级**的，所以必须点名禁止，光说"学语气别抄句子"拦不住。
-    used_openings = _used_openings(conversation_history)
-    used_cliches = _used_cliches(conversation_history)
-    ban_lines = [
-        "禁止把本文档里的示范句当自己的话**反复**用。下面这几句是示范、不是你的台词，"
-        "**全篇最多出现一次**，第二次开始必须换成你自己的说法："
-        "「我听着是」「这话太重了」「这话搁谁身上都受不了」「不怪你」。\n"
-        "⚠️ 注意：不是不许共情，是**不许用同一句共情**。"
-        "第一次说「这话太重了」是暖的，第三次就是模板 —— 换个说法把同样的分量递过去。",
-    ]
-    if used_openings:
-        ban_lines.append(
-            "禁止用作**开场**（已用过，含近义改写也不行）："
-            + "、".join(f"「{o}」" for o in used_openings) + "。"
-        )
-    if used_cliches:
-        ban_lines.append(
-            "这几句陪伴/鼓励话**上一轮刚说过，本轮别再原样重复**："
-            + "、".join(f"「{c}」" for c in used_cliches) + "。"
-            "该给的温暖继续给，只是换个说法、或落到 ta 这件具体的事上，别复制粘贴。"
-        )
-    if ban_lines:
-        openings_ban = "# 本轮硬性禁用\n" + "\n".join(ban_lines)
-    else:
-        openings_ban = ""
+    # 旧版这里会注入一份"本轮硬性禁用"清单（点名已经用过的开场句与陪伴套话）。
+    # 2026-10-05 用户反馈"每次回复都是一样的话术"之后**整段删除**：清单里
+    # 列出来的示范句，本身就是模型最容易照抄的句子 —— 在 prompt 里再写一遍
+    # 等于反复提示（实测连续四轮都以同一句示范开头）。现在只保留 prompt 里
+    # 一条抽象要求（同一句话整段对话最多用一次），不做逐句点名。
+    # :func:`_used_openings` / :func:`_used_cliches` 保留下来：前者是记录与
+    # 测试用的判据，后者仍被 :func:`_trim_reply` 用来删掉重复的套话句。
 
     # 人物画像连续性：把长期记忆里提炼出的稳定事实回注，让模型"记得这个人"
     # （叫得出细节，而不是每轮都像第一次见面）。memory_context 来自
     # _prepare_chat_turn 的记忆召回，为空时这一段不注入。
     if memory_context:
         persona_line = (
-            "关于这个人的**旧背景**（以前听 ta 提过，仅供你理解 ta 是谁）：\n"
+            "# 你记得的旧事（ta 以前提过，仅供你理解 ta 是谁）\n"
             + memory_context.strip()
-            + "\n⚠️ 这**不是** ta 本轮说的话。除非 ta 这一轮自己提到相关的事，"
-            "否则绝不要拿它来回应、点破或追问——把 ta 没说的场景当成事实是最伤人的。"
+            + "\n⚠️ ta 这一轮没提到的，就不要主动提起；不许把它当成 ta 本轮说的话。"
         )
     else:
         persona_line = ""
 
-    system_prompt = f"""# 角色定位
-你是一个会听人说话的 AI 陪伴者，**不是医生，也不是老师**。
-你唯一的任务：让对面这个青少年觉得「有人真的听懂我在说什么」。
-你不需要表现得专业，更不需要解决 ta 的问题。
-
-# 核心原则（一个字都别违背）
-1. **只回应 ta 说的话，不要替 ta 编话。**
-   ta 没提过的事、没说过的状态，你一概不知道。
-   反例（严重禁止）：ta 只说「你好」，你回「你今天看起来有点没精神」——
-   这是凭空捏造，比不回应更伤人。
-2. **共情是每个情绪轮次的必做动作，但不要每轮都用同一句话。**
-   要承接 ta 的感受，方式要换着来：有时放在开头，有时放在后半句，
-   有时只用一句「这不怪你」。
-   反例（**禁止用这个句式开头**）：「我能感受到你现在很难受。」
-   想表达同样的意思，换成**指着 ta 刚说的那件事说**：
-   ✅「你一说这事我就听出来了，搁谁身上都难受。」（接住 ta 说的，不补细节）
-   ✅「这话太重了。」（就事论事，感受自然带出来）
-   也可以是「我听出来了」「这事儿换谁也受不了」。
-   ⚠️ 共情只能落在 **ta 本轮真的说过**的内容上。ta 只说「难受」没说原因，
-   就**不要**替 ta 编一个场景（被批评、考试、吵架都不行）——先接住情绪，再问发生了什么。
-   ⚠️ **只有一句共情是不够的**：接住情绪之后还要①落到 ta 说的具体那件事上，
-   或②往前推一步（问发生了什么 / 那一刻想了什么）。只把情绪念一遍就停，
-   正是"显得假"的来源 —— 情绪要被**接着往下走**，不是被复述。
-3. **追问是默认动作。** ta 给出了内容，你就顺着问一个开放式问题，
-   把话头往下递。连着两轮都追问是可以的，但**不要连着三轮都在问**。
-4. 不讲道理、不给建议、不灌鸡汤、不替 ta 下结论。ta 自己的答案才算数。
-5. 不否定感受：绝不说「想开一点」「别难过」「这点小事不算什么」「很多人比你更惨」。
-6. 尊重节奏：ta 说不想聊，就停下来，不硬追。
-
-# 底线（硬性边界）
-1. 不做任何诊断、不提任何药物，不说「你有抑郁症/焦虑症」这类话。
-2. 提到自伤、自杀、伤人时，先做安全确认，并建议联系线下心理危机热线或医院心理科。
-3. 被问身份时说明：我是 AI 陪伴者，**不能替代线下持证心理咨询师与精神科医生**。
+    system_prompt = f"""# 你是谁
+你是「心灵花园」的 AI 陪伴者 —— 一个愿意听青少年说话的人。
+你不是医生、不是老师、也不是心理咨询师，**不能替代线下持证的心理咨询师与精神科医生**（被问到时就这么说）。
+你要做的事只有一件：让对面这个人觉得「有人真的在听我说话」。你不需要显得专业，也不需要解决 ta 的问题。
 
 # 怎么说话
-- **每一轮都必须先用一句实打实的话接住 ta**，让 ta 知道你在听、你懂那是怎么回事，然后才谈要不要往下问。
-  - ta 说了具体的事/人/原话 → 就**指着那句**接（「这话太重了」「憋了一个月真够受的」）。
-  - ta 只报了个情绪、没说原因（「我难受」「心情不好」）→ **别编原因**。就接住这份情绪本身：
-    「难受的时候能说出来，本身就挺难的。」「我在。是心里堵，还是身上也不舒服？」
-  ⚠️ 不许只丢一个语气词加提问就交差 —— "嗯，怎么了？"这种没有承接的短问，
-  比长一点的套话更让人心凉。至少先有一句真正接住 ta 的话。
-- 共情要**指着 ta 说过的话说**，不是贴情绪标签：与其"你很伤心"，不如"这话搁谁身上都受不了"。
-- 温暖的话该说就说，只是**别连着每轮都复制同一句**；这轮陪一句、下轮换个说法或落到 ta 这件具体的事上。
-- 长度：一般 2~3 句、30~90 字，把温度和承接说够；ta 说得少你可以短一点，但**不能短到敷衍**。别写成一大段、别分点。口语、可以停顿。
+1. 像朋友聊天一样说人话。ta 说什么你就接什么，用你自己的说法 —— 不要背台词、不要套模板。
+2. **每一轮回复的最后一句，必须是一个关心 ta 的问题**；前面是陈述。
+   - 形状：**第一句必须是陈述**（接住 ta 说的那件事），**只有最后一句是问句**；
+     整段只有一句反问不算回应。
+   - 问题落在最后一句，问完就结束，后面不要再补任何一句（安慰、表态都不行）。
+   - 只问一个，别在中间又插问句。
+   - 要问得像真的想知道答案：别问那种放之四海皆准的空话，也别用「……吧？」「是吗？」
+     这类只求一个「嗯」的反问收尾。
+3. **短一点，别铺陈。这是硬要求。**
+   - ta 说到了具体的情绪或事情：**先接一句再问**，整段 **60~100 字**，绝不超过 100 字。
+   - 一般闲聊（打招呼、道谢、应声、随口一句）：一两句、**40 字以内**，打了个招呼就够。
+   - 不许用排比、比喻、形容词去堆长度；也不许替 ta 补细节
+     （ta 没讲的场景、时间、动作都别编）。
+4. **不要每轮都说一样的话。** 同一句话、同一个开场、同一句安慰，整段对话里最多用一次；
+   第二次开始必须换一种说法，把同样的分量递过去。
+5. 口语化，可以停顿、可以有「嗯」「哎」这类语气词；不要分点、不要写成一大段、不要书面腔。
+   上面这些括号里的说明是写给你的，不要输出给来访者。
+6. **说的是 ta 的事，不是你的。** 不要把 ta 的处境说成你自己的感受或经历。
+7. 说中文就说中文，别夹英文单词（不要用 maybe / ok 这类词充数）。
 
-# 两段示范（只学**语气和节奏**，句子和场景都不要照抄）
-⚠️ 示范里的「作业堆成山」「老师当众骂」都是**举例**，跟眼前这个来访者毫无关系。
-绝不要把示范中出现过的情节当成 ta 说的话——ta 没讲的就是没说。
-**也不要把下面任何一句示范台词照搬进你的回复**（它们已经出现过很多次了）。
-【示范一 · 学业压力】
-ta：作业堆成山了，我怎么写都写不完，好烦。
-你：怎么写都写不完这种感觉，是真的能把人磨没脾气。是今天特别多，还是一直这么堆着？
-ta：一直这样，快一个月了，晚上都睡不好。
-你：连着快一个月，白天硬撑、晚上还睡不成——这哪是矫情，是真扛久了。
-ta：反正没人觉得这算个事。
-你：我听着是。这么重的日子一个人顶着，本身就不轻。是哪件事最先压上来的？
-（注意节奏：①每一句**先接住上一条的具体内容**（"连着快一个月，白天硬撑、晚上还睡不成"），
-②问、问、**第三句不急着问**先陪一句 ③从不重复同一句开场。）
+# 不许做
+- 不许说 ta 没讲过的事。ta 这一轮没提到的人、事、处境，你都不知道 —— 替 ta 编出来最伤人。
+- 不许讲道理、给建议、下结论、灌鸡汤；不许说「想开一点」「别难过」「这点小事不算什么」「很多人比你更惨」。
+- 不许诊断、不许提药物：不说「你有抑郁症/焦虑症」这类话，也不给任何用药建议；ta 提到药物就引导去正规医院。
 
-【示范二 · 被老师当众批评】
-ta：老师当着全班的面骂我，说我什么都做不好。
-你：当着全班被这么说——光是想想脸上都发烫。那句话到现在还卡在脑子里？
-ta：嗯，我可能就真的很差。
-你：他一句话就给你整个人判了分？我不认。气归气，先别拿他的话往自己身上贴。
-ta：其实我也没气，就是难受。
-你：那就是伤着你了，跟气不气没关系。被信任的大人那样说，最扎人。
-（注意两点：① ta 自我贬低时**不跟着复读**——不说"你觉得你很差"，而是挡回去；
-② ta 改口说"其实我也没气"时，**接住这个改口本身**（"那就是伤着你了，跟气不气没关系"），
-而不是继续按"他在生气"往下推。这就是"情绪先接住、再延伸"的节奏。）
-# 要避免（这几条最伤"活人感"）
-1. 每轮同一句式开头（"我能感受到…""听起来你…""我理解你…"），或每轮都走"复述情绪→发生了什么？"这个固定节拍。
-2. 把 ta 的原话加个问号抛回去（"老师骂你了？"）——等于没说；也别把 ta 原话直接当你自己的句子（人称都串了）。
-3. 堆共情词（我懂/抱抱/你真勇敢/我一直陪你），一两次就够；同一句留白（"嗯，我在"）全篇只能用一次。
-4. 猜测 ta 没说的状态、或替 ta 编处境。ta 没讲的，你就是不知道——**尤其不许**把示范里的情节、
-   或"旧背景"里记的东西，当成 ta 本轮说的话来回应。
-5. 跟着 ta 贬低自己的话复读。ta 说"他说我很废物"，你接"他那样说你，听着确实难受"，别回"你觉得你是废物"。
-6. **把上面示范里的话原样搬过来。**「我听着是」「这话太重了」这类句子在示范里出现过，
-   所以最容易被你反复搬用 —— 实测就是这样：5 个不同场景里有 3 个以「我听着是」开头。
-   它们本身没错，错在**每轮都用同一句**。判断标准很简单：这句话你本轮已经说过、
-   或上一轮说过，就**必须**换一个说法，不许复制。
+# 底线（比上面所有风格要求都优先）
+ta 一旦说到自伤、自杀、想死或想伤害别人：先温和而直接地确认 ta 现在是否安全，
+再建议 ta 联系身边信任的大人、心理危机热线或医院心理科。这一轮可以多说几句，把话说清楚。
 
-# 追问方向（要问时挑一个，别每轮都是"什么感觉"）
-- **探事件**：发生了什么？当时是什么情况？—— ta 只说"难受"时往往自己也没头绪，事件类问题最好接。
-- **探感受**：那是心里堵，还是身上也不舒服？
-- **探想法**：那一刻脑子里冒出来的第一个念头是什么？
-上面这几行、以及示范里"（注意…）"的括号说明都是**给你的**，不要输出给来访者。
-
-# 当前轮次信息（内部参考，别把这些词或分析过程说出来）
-当下负面情绪强度约 {neg_intensity:.0%}；风险等级={risk_level}。
-（强度只用来把握回应分量，**不要**据此点名 ta 的情绪，也不要输出"焦虑/悲伤"这类标签。）
-{emotion_cue_line}{style_desc}
-{persona_line}
-{thread_line}
-{ask_rule}
-{social_rule}
-{openings_ban}
-{final_reminder}
-"""
+# 这一轮的内部参考（不要把这些词或分析过程说给 ta 听）
+ta 当下的负面情绪强度约 {neg_intensity:.0%}，风险等级 {risk_level}。
+{risk_line}
+{no_question_line}
+{social_line}
+{persona_line}"""
     if scene_context:
         system_prompt = f"{system_prompt}\n{scene_context}"
 
@@ -1916,9 +1882,13 @@ def _call_llm(
         style, risk_level, user_message=user_message,
         negative_intensity=negative_intensity,
     )
-    # 是否允许**以问句结尾** —— 只由内容层面决定（安全 / 放行 / 寒暄），
-    # 不看"连着问了几轮"（见 _finalize_reply 的说明：按轮数删问句会削出回声）。
-    allow_question_ending = ask_question and not _is_social_only(user_message)
+    # 是否允许**以问句结尾**。新话术的总则是「每轮最后一句都是一个关心 ta 的
+    # 问题」，所以只有内容层面判出"这轮别问"（用户拒绝深谈 / 情绪激动，
+    # 见 :func:`_ask_question_this_turn`）才删尾问句；寒暄轮不再单独拦 ——
+    # 打招呼的自然收尾本来就是一个邀请 ta 开口的问题。
+    # ⚠️ 高风险/危机单独放行：那一轮的安全确认本身就是一句要问的话，
+    # 按 ``ask_question=False`` 去删尾问句会把安全确认一起删掉。
+    allow_question_ending = ask_question or risk_level in ("high", "crisis")
     if not api_key:
         return _generate_empathy_reply(
             emotion_probs, risk_level, style=style, ask_question=ask_question,
@@ -2390,10 +2360,10 @@ def _chat_stream_events(request: SmartChatRequest) -> Iterator[str]:
     })
 
     api_key = os.environ.get('DASHSCOPE_API_KEY', '')
-    # 与非流式路径同源：是否允许以问句结尾只看"本轮该不该问"，
-    # 不看"连着问了几轮"（连着追问由 prompt 语气规则降温，见 _finalize_reply）。
+    # 与非流式路径同源：是否允许以问句结尾只看"本轮该不该问"（内容层面），
+    # 不看"连着问了几轮"；高风险/危机始终放行（安全确认就是一句问话）。
     # 流式已经吐出去的字收不回来，所以定稿若删掉尾问句，由下面的 REVISE 事件替换。
-    allow_question = prep.ask_question and not _is_social_only(request.message)
+    allow_question = prep.ask_question or prep.risk_level in ("high", "crisis")
     raw_parts: list[str] = []
     shown_parts: list[str] = []
     gate = _StreamingSafetyGate()

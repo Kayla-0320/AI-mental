@@ -22,12 +22,17 @@
     {"type":"status","available":true,"engine":"qwen3-tts",
      "sample_rate":24000,"num_speakers":1,"num_threads":0,
      "voice_prompt":"温和、共情、成熟女性…","error":""}
-    {"type":"start","seq":1,"sample_rate":24000}
-    二进制帧（1 个）= int16 小端、单声道 PCM，即整句音频
+    {"type":"start","seq":1,"sample_rate":24000,"spoken_text":"实际被念出来的文本"}
+    二进制帧（0..N 个）= int16 小端、单声道 PCM，按到达顺序拼接即整句音频
     {"type":"end","seq":1,"spoken_text":"...","audio_ms":4101.1,
      "first_chunk_ms":443.4,"synth_ms":443.4,"rtf":0.108,"cancelled":false}
     {"type":"cancelled","seq":1}
     {"type":"error","seq":1,"message":"……"}
+
+⚠️ **`start` 必须带 `spoken_text`**（2026-10-05 起）：客户端改成"边收边播"——
+第一块 PCM 一到就排进播放时间轴，不再攒到 `end`。而 `onStart` 回调需要
+`spoken_text` 做字幕定位与自回声过滤，那时 `end` 还没到，只能靠 `start` 带过来。
+术语替换在 `say` 分支里就已经算好（`prepare_for_speech`），这里直接回传即可。
 
 **为什么用 `start` / `end` 文本帧把二进制帧包起来**：二进制帧自身没有边界语义，
 客户端无法知道"这一帧属于哪一句"。
@@ -219,6 +224,10 @@ async def tts_stream(websocket: WebSocket) -> None:
 
             if not await _send_json(websocket, {
                 "type": "start", "seq": seq, "sample_rate": engine.sample_rate,
+                # `spoken_text` 必须在这里就给：客户端"边收边播"，第一块 PCM 到达时
+                # 就要用真文本触发 onStart（字幕定位 / 自回声过滤）。`end` 那时还早。
+                # 注意 `text` 是 say 分支里 `prepare_for_speech` 之后的文本。
+                "spoken_text": text,
             }):
                 return
 

@@ -145,51 +145,12 @@ const SPEAKABLE = /[\p{Script=Han}\p{L}\p{N}]/u;
 /**
  * 把一段 AI 文本切成"送合成的批次"（施工单 §S4.4）。
  *
- * 安全闸门已经按句切过，所以正常情况**不用切**；这里只处理两件事：
- *   1. 一段太长 → 在**逗号处**贪心打包成若干 ≤ MAX 字的块；
- *   2. **本轮第一段** → 只取极短的一小截，让音频尽早出声。
- *
- * ⚠️ MAX=36 是**显存**定的，不是延迟定的：实测一段 80 字的文本会让
- * `generate_voice_design` 在 RTX 5060 8GB 上抛 `CUDA out of memory`
- * （模型常驻 3.7 GB，合成期峰值随文本长度线性上涨；29 字实测安全、80 字必炸）。
- *
- * ⚠️ 也不要退回 VITS 时代的 30 字硬切：那会把完整语义单位劈成两段，
- * 而每多一段就多一次完整的合成等待，用户听到明显停顿。
- * 现在的做法是"逗号优先、打包到上限"，绝大多数句子原样成段。
- *
- * 顺带纠正一条过期结论：文件里"TTS 很慢（RTF~2.1）"的说法已经不成立。
- * 实测（2026-09-27，`_probe_tts_clock.js`，sherpa-onnx VITS）三段 15/14/20 字：
- * 合成 661 / 451 / 575 ms，对应音频 4229 / 3787 / 5241 ms —— **RTF≈0.12**，
- * 合成比播放快一个数量级。真正支配"出声时刻"的是**音频时长**，不是合成耗时；
- * 所以字幕若还是"首段出声时一次全刷"，就会比声音提前一整套音频的长度。
+ * 实现已抽到 `services/ttsSplit.ts`（纯函数、可单测），这里 import 进来供本文件
+ * 使用，并原样转出，保持既有调用点与外部引用不变。
  */
-function pack(text: string, limit: number): string[] {
-  if (text.length <= limit) return [text];
-  const parts = text.split(/(?<=[，,、：:])/).filter((s) => s.trim());
-  const out: string[] = [];
-  let buf = '';
-  for (const p of parts) {
-    if (p.length > limit) {
-      // 单个小句本身就超长（无逗号的长句）——只能按字数硬切
-      if (buf) { out.push(buf); buf = ''; }
-      out.push(...(p.match(new RegExp(`.{1,${limit}}`, 'gs')) ?? [p]));
-      continue;
-    }
-    if (buf && buf.length + p.length > limit) { out.push(buf); buf = p; }
-    else buf += p;
-  }
-  if (buf) out.push(buf);
-  return out;
-}
+import { splitSpeakable } from '../services/ttsSplit';
 
-export function splitSpeakable(unit: string, isFirst = false): string[] {
-  // MAX=36 是**显存**定的（>60 字 OOM），也恰好让绝大多数对话句**整句成段不切断**。
-  // 之前为降延迟砍到 18 + 首段硬切 4 字，实测把完整语义单位劈碎：
-  // 用户听到"句子念不完整"，且段数翻倍 → 每段各等一次 RTF~1.8，间隙更多。
-  // 韵律完整性 > 首字延迟，故回退。isFirst 不再特殊处理。
-  void isFirst;
-  return pack(unit, 36);
-}
+export { splitSpeakable, MAX_TTS_UNIT_CHARS } from '../services/ttsSplit';
 
 /** 一轮进行中的累计量（放 ref：TTS 回调与 SSE 回调不在同一作用域） */
 interface TurnAccumulator {
