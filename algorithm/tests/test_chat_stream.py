@@ -302,6 +302,41 @@ class TestChatStreamEvents:
         types = [e for e, _ in run_stream("stream_norevise_1")]
         assert "revise" not in types
 
+    def test_revise_is_not_emitted_for_whitespace_only_difference(self, fake_llm):
+        """回归（2026-10-11）：定稿只抹掉 ``"  \\n"`` 时**不得**发 revise。
+
+        真机实测：模型每轮都在句末带 ``"  \\n"``，定稿抹掉后旧代码用 ``.strip()``
+        判定"与已上屏内容不一致" → **每轮都发 revise** → 客户端每轮整体替换字幕、
+        撤回在途合成、再补念一遍，首声被推后一整个合成周期（用户反馈"延迟比以前高"）。
+        判据必须按"去掉所有空白后是否相同"。
+        """
+        fake_llm(["我在听。  \n", "你愿意说说吗？"])
+        types = [e for e, _ in run_stream("stream_ws_revise_1")]
+        assert "revise" not in types, f"空白差异不得触发改稿，实际事件: {types}"
+
+    def test_speak_plan_survives_whitespace_only_finalize(self, fake_llm):
+        """回归（2026-10-11）：定稿只抹空白时照样要下发 `speak` 计划。
+
+        旧代码在 :func:`_plan_streamed_reply` 里用严格相等判断"定稿是否改动了文本"，
+        于是每轮都判"改动了" → 每轮都拒收计划 → 客户端永远退回 delta 驱动
+        （实测两次真机调用都只有 ``meta → delta* → revise → done``，一个 speak 都没有）。
+        """
+        fake_llm(["我在听。  \n", "你愿意说说吗？"])
+        events = run_stream("stream_ws_speak_1")
+        speak = [p for e, p in events if e == "speak"]
+        assert speak, f"空白差异不该拒收计划，实际事件: {[e for e, _ in events]}"
+        # 计划的 segments 拼接必须等于计划文本（按空白归一化）——否则会被客户端拒收
+        plan = speak[0]
+        assert iv._normalize_for_compare("".join(plan["segments"])) == iv._normalize_for_compare(
+            plan["text"]
+        )
+
+    def test_normalize_for_compare_strips_all_whitespace(self):
+        assert iv._normalize_for_compare("我在听。  \n") == "我在听。"
+        assert iv._normalize_for_compare("a b\tc\nd") == "abcd"
+        assert iv._normalize_for_compare("") == ""
+        assert iv._normalize_for_compare(None) == ""  # type: ignore[arg-type]
+
     def test_crisis_disables_incremental_streaming(self, fake_llm):
         """危机轮次：meta.streaming=False，且**一个 delta 都不许有**。
 

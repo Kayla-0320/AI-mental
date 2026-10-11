@@ -102,6 +102,9 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+# 供音时间线记录器（本目录自带副本：本服务跑在独立 venv 里，不能跨包 import）
+from timeline import TtsTimeline
+
 logger = logging.getLogger(__name__)
 
 HERE = Path(__file__).resolve().parent
@@ -962,6 +965,14 @@ async def tts_stream(req: TtsStreamRequest) -> StreamingResponse:
     queue: asyncio.Queue[Optional[bytes]] = asyncio.Queue()
     loop = asyncio.get_running_loop()
     stats: dict[str, float] = {"first_ms": 0.0, "delivered": 0.0, "chunks": 0}
+    # 供音时间线（见本目录 `timeline.py`）：逐块记"生成完成时刻 + 字节数"。
+    # 用户口径：卡顿优先排查"供音速度跟不跟得上播放"，而推理端的供音速度只有这里量得准。
+    timeline = TtsTimeline(stage="produce", seq=0, sample_rate=engine.sample_rate)
+    timeline.label = f"字{len(req.text or '')}"
+    # 「产出」与「实际 yield 出去」是两条时间线，两个都记：
+    # 两者之差就是**事件循环/背压**吃掉的时间（如果是它，8002 不是瓶颈，8001 才是）。
+    yielded = TtsTimeline(stage="yield", seq=0, sample_rate=engine.sample_rate)
+    yielded.label = f"字{len(req.text or '')}"
 
     def _produce() -> None:
         """在线程里跑合成，把 PCM 块投进 asyncio 队列（None 作为结束哨兵）"""
@@ -971,7 +982,9 @@ async def tts_stream(req: TtsStreamRequest) -> StreamingResponse:
                     stats["first_ms"] = (time.perf_counter() - t0) * 1000.0
                 stats["delivered"] += len(wav)
                 stats["chunks"] += 1
-                loop.call_soon_threadsafe(queue.put_nowait, float_to_pcm16(wav))
+                pcm = float_to_pcm16(wav)
+                timeline.add_chunk(len(pcm))
+                loop.call_soon_threadsafe(queue.put_nowait, pcm)
         except Exception:  # noqa: BLE001 —— 流已开始，只能记日志并终止
             logger.exception("[TTS:cosyvoice] 流式合成中断（已推 %d 块）", stats["chunks"])
         finally:
@@ -983,6 +996,7 @@ async def tts_stream(req: TtsStreamRequest) -> StreamingResponse:
             chunk = await queue.get()
             if chunk is None:
                 break
+            yielded.add_chunk(len(chunk))
             yield chunk
         synth_ms = (time.perf_counter() - t0) * 1000.0
         audio_ms = stats["delivered"] / engine.sample_rate * 1000.0 if engine.sample_rate else 0.0
@@ -992,6 +1006,22 @@ async def tts_stream(req: TtsStreamRequest) -> StreamingResponse:
             stats["first_ms"], synth_ms, audio_ms,
             (synth_ms / audio_ms) if audio_ms else 0.0, stats["chunks"], speed,
         )
+        # ── 供音时间线（2026-10-11）───────────────────────────────────────────
+        # 有停顿或平均供音慢于播放（有效 RTF > 1）时用 WARNING 并展开逐块明细 ——
+        # 那正是"听得到的卡顿"在推理端的对应证据。
+        for tl in (timeline, yielded):
+            if tl.gaps_ms or tl.effective_rtf > 1.0:
+                logger.warning("%s\n%s", tl.summary(), tl.dump())
+            else:
+                logger.info("%s", tl.summary())
+        # 「产出」与「yield」两条时间线的差值 = 事件循环/背压吃掉的时间
+        if timeline.span_ms > 0:
+            lag = yielded.span_ms - timeline.span_ms
+            if abs(lag) > 100.0:
+                logger.warning(
+                    "cvsvc|backpressure|产出流出=%.0fms|实际流出=%.0fms|差值=%.0fms（事件循环/背压）",
+                    timeline.span_ms, yielded.span_ms, lag,
+                )
 
     return StreamingResponse(
         pcm_iter(),

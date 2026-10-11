@@ -30,6 +30,9 @@
  * **不要假设**（`voice_call_plan.md` §6.1）。
  */
 
+import { TtsBufferLog } from './ttsBufferLog';
+import { PrebufferGate } from './prebufferGate';
+
 /** 某一句的出声时刻 */
 export interface TtsStartTiming {
   /**
@@ -79,6 +82,41 @@ interface SpokenEntry {
   text: string;
   /** 开始播放的墙钟时间（`performance.now()`） */
   startedAt: number;
+}
+
+/**
+ * 播放**空洞（欠载）**的实测统计。
+ *
+ * ## 为什么要有这个读数（2026-10-11）
+ *
+ * 用户的反馈是"AI 电话有时候还是会卡顿"。卡顿有三种完全不同的病因，靠猜分不开：
+ *
+ * | 读数 | 说明 |
+ * |---|---|
+ * | `holes` / `totalHoleMs` | **音频空洞**：一块音频来晚了，播放头已经越过上一块的结尾 → 耳朵里的"卡一下" |
+ * | ASR 定稿延迟 | 说话被截断/判停晚（看 `?debug=1` 的定稿句数、端点参数） |
+ * | 首声/首 delta | 整轮反应慢（看 `firstSoundMs`），不是音频断裂 |
+ *
+ * 这里的判定是**纯客户端、纯时间轴**的：`enqueueChunk` 时若"本该接上的位置"
+ * 已经在 `ctx.currentTime` 之前，那就是一段没人补的空洞 —— 它的时长就是
+ * `currentTime` 与那个位置之差。**不需要听音频**，所以能在真机上直接量。
+ *
+ * 只统计"流中间"的空洞：队列本来就空（上一句已经自然播完）不算 ——
+ * 那时用户听到的是刻意的留白，不是卡顿。
+ */
+export interface TtsUnderrunStats {
+  /** 发生过的空洞次数（块 ≥ 1 块来晚） */
+  holes: number;
+  /** 空洞累计时长（毫秒）—— 用户听到的"卡顿"总量 */
+  totalHoleMs: number;
+  /** 单次最长空洞（毫秒） */
+  maxHoleMs: number;
+  /** 最近一次空洞的时长（毫秒）；没有过为 null */
+  lastHoleMs: number | null;
+  /** 最近一次空洞发生在哪一句（seq）；没有过为 null */
+  lastHoleSeq: number | null;
+  /** 空洞总时长占已播音频总时长的比例（0~1）；没有音频时为 0 */
+  holeRatio: number;
 }
 
 /** 一个**音频块**在队列里的排程记录（一句 = 若干块） */
@@ -158,9 +196,64 @@ const MAX_SPOKEN_LOG = 40;
 /** 跨句交叉淡化时长（毫秒）。取很短：两句是独立合成，交叠太久会互相盖住 */
 const CROSSFADE_MS = 12;
 
+/**
+ * **开场预缓冲默认值**（毫秒）：第一块音频到达之后，先攒够这么长的排程再出声。
+ *
+ * ## 为什么需要它（2026-10-11 实测，`scripts/probe_tts_supply.mjs`）
+ *
+ * 原先的模型是"**收到第一块就立刻排到 `ctx.currentTime`**"，于是第一块一响，
+ * 播放头就开始消耗；而 CosyVoice3 的**供音是阵发式的**：
+ *
+ * ```
+ * 一句 11 字：首块 1.55s 到（音频 2.4s），随后块间隔 0.6 ~ 1.5s
+ * 三句回复：块间隔 1.3 ~ 2.4s，整轮有效 RTF 0.55（平均快于播放，但每阵只补 0.3~0.8s）
+ * 一句长回复：间隔 1.5 ~ 3.2s ×7，有效 RTF 0.82
+ * ```
+ *
+ * 三句回复实测**整轮缓冲区见底 296~1211ms**（连跑 5 次，每次都见底），
+ * 与用户"中途还有些小卡顿"对得上。
+ *
+ * ## 为什么默认是 300ms（**用户真机试听后定的，不是算出来的**）
+ *
+ * 离线档位对比（同一条时间线重算 0/300/600/1000/1500ms）只看水位时，
+ * 300ms 只是"减轻"（5 次里 4 次仍见底）、600ms 更干净。但**真机上用户试听后
+ * 明确反馈 300ms 比 600ms 好**，那一通的诊断面板是：
+ *
+ * ```
+ * 缓冲·见底 句内 0 / 跨句 0 · 累计 0ms       ← 一次都没见底
+ * TTS·PCM 收到 281 帧 · 2214KB · 约 47233ms   ← 47 秒音频全部交给声卡
+ * 首段到达 1721ms（合成段 ≈0.65s）
+ * ```
+ *
+ * 原因是离线模型漏了一件真机上成立的事：**开头那一块很大**（≈1.5s 音频一次到达），
+ * 所以 300ms 之后开播时水位本来就有一秒多，首个阵间隔被它盖住了；
+ * 而 600ms 只是让首声再白等 300ms。**体感结论优先于离线水位。**
+ *
+ * ## 它治什么、不治什么
+ *
+ * * 治：开场那几下（以及紧随其后的第一个阵间隔）；
+ * * 不治：中段比水位更长的阵间隔（1.5~3.2s）—— 那要动推理或播放侧策略，
+ *   不在本常量职责内。**不要**用"预缓冲能吸收 X ms"这类经验数字评估档位：
+ *   它动的是播放起点，能否消掉某次断档必须拿同一条时间线重算。
+ *
+ * ⚠️ 这个值只影响"第一块什么时候开始播"，不碰 CROSSFADE、不碰 PCM、不碰切分规则、
+ * 不碰任何音质参数。要现场试档：`?prebuffer=0`（关）/ `?prebuffer=600`（更强）。
+ */
+const DEFAULT_PREBUFFER_MS = 300;
+
+/** 预缓冲上限：再大就只是白等（实测最险一段 2.4s，但那是极端值） */
+const MAX_PREBUFFER_MS = 2000;
+
 export class TtsPlayer {
   private ctx: AudioContext | null = null;
   private readonly cb: TtsPlayerCallbacks;
+  /**
+   * 开场预缓冲（毫秒）。见 {@link DEFAULT_PREBUFFER_MS} 的实测依据。
+   *
+   * 只在"**队列从空到有**"的那一刻生效（也就是每一轮回复的第一块），
+   * 之后的块照旧紧接排程 —— 所以它不会把整轮音频整体推后。
+   */
+  private readonly prebufferMs: number;
 
   /** 下一块的排程起点（`ctx.currentTime` 域）。0 表示队列空。 */
   private nextStartTime = 0;
@@ -173,8 +266,68 @@ export class TtsPlayer {
   private spokenLog: SpokenEntry[] = [];
   private disposed = false;
 
-  constructor(cb: TtsPlayerCallbacks = {}) {
+  // ── 欠载（空洞）统计：见 TtsUnderrunStats ──────────────────────────────
+  private holes = 0;
+  private totalHoleMs = 0;
+  private maxHoleMs = 0;
+  private lastHoleMs: number | null = null;
+  private lastHoleSeq: number | null = null;
+  /** 累计排程的音频总时长（毫秒），用于算空洞占比 */
+  private scheduledAudioMs = 0;
+  /** 累计排程的**块数**（"到底有没有东西交给声卡"的数量证据，见 outputHealth） */
+  private scheduledChunks = 0;
+  /** AudioContext 被挂起后**自动恢复**的尝试次数（>0 说明它真的被挂起过，见 resume） */
+  private resumeAttempts = 0;
+  /** 最近一次入库的 seq（判断"这一块与上一块是否同一句" ⇒ 句内 vs 跨句断档） */
+  private lastChunkSeq: number | null = null;
+  /** 播放缓冲区日志（见 `ttsBufferLog.ts`）：供音断档的现场记录，只记不决策 */
+  private readonly bufferLog = new TtsBufferLog();
+  /** 上一次开场预缓冲实际生效的毫秒数（面板读数用） */
+  private prebufferAppliedMs = 0;
+  /**
+   * 预缓冲的**开场判定状态机**（见 `prebufferGate.ts`）。
+   *
+   * ⚠️ 它是"每轮只生效一次"的唯一真源。不要退回"看 `nextStartTime` 是否为零"
+   * 那种写法 —— 那会在每次队列抽干后重新触发一次预缓冲（2026-10-11 用户指出的缺陷）。
+   */
+  private readonly prebufferGate = new PrebufferGate(true);
+  /** 最近一次预缓冲实际生效的开关次数（诊断用：一轮只该 +1，多出来就是缺陷复发） */
+  private prebufferActivations = 0;
+
+  constructor(cb: TtsPlayerCallbacks = {}, prebufferMs?: number) {
     this.cb = cb;
+    // ⚠️ 用 `??` 而不是默认参数：调用方（`TtsChannel`）会把 `undefined` **显式传进来**
+    // （它自己不设默认值、由这里兜底），而默认参数对显式 `undefined` **不会**生效 ——
+    // 那样预缓冲会静默变成 0，"改了没生效"。
+    const wanted = prebufferMs ?? DEFAULT_PREBUFFER_MS;
+    // 夹紧：负数当 0，过大只会白等（上限见 MAX_PREBUFFER_MS）
+    this.prebufferMs = Math.max(0, Math.min(MAX_PREBUFFER_MS, Math.round(wanted)));
+  }
+
+  /** 当前生效的开场预缓冲（毫秒）—— 面板/日志如实上报，避免"改了没生效" */
+  get prebuffer(): number {
+    return this.prebufferMs;
+  }
+
+  /**
+   * **新一轮开始** —— 让预缓冲重新有资格生效。
+   *
+   * ⚠️ 只能由"真正开一轮"的地方调用（`useVoiceCall.runTurn`）；
+   * **绝不能**挂在"队列播空 / 所有设备静音"这类事件上 —— 那正是原缺陷的成因：
+   * 阵发式供音的间隙里队列也会空，一挂上去就会在断档后再等一次预缓冲。
+   */
+  armPrebufferTurn(): void {
+    this.prebufferGate.armTurn();
+  }
+
+  /** 本轮是否还欠一次预缓冲（诊断用） */
+  get prebufferPending(): boolean {
+    return this.prebufferGate.pending;
+  }
+
+  /** 预缓冲累计生效次数（诊断用：一轮只该 +1） */
+  get prebufferActivationsCount(): number {
+    return this.prebufferActivations;
   }
 
   // ── 状态 ────────────────────────────────────────────────────────────────
@@ -194,6 +347,67 @@ export class TtsPlayer {
   }
 
   /**
+   * 输出侧一行的健康读数（`?debug=1` 面板）——**"音频到了但听不见"只有这里能看出来**。
+   *
+   * 2026-10-11 用户："我两次说我感觉好一些了都没有声音出来。" 排查时必须能分开三种情况：
+   *   · `ctxState = 'suspended'` → 浏览器自动播放策略把 AudioContext 挂起了：
+   *     音频**排了程也不会响**（`enqueueChunk` 里的 `resume()` 被拒绝时就是这个），
+   *     与合成链路完全无关，时间读数却一片正常；
+   *   · `ctxState = 'running'` 且 `scheduledChunks > 0` → 我们确实把音频交给了声卡，
+   *     此时"没声音"在页面之外（系统音量/输出设备/静音键）；
+   *   · `scheduledChunks = 0` → 一个块都没排上（上游没给音频，见 TtsPayloadLedger）。
+   *
+   * `scheduledAudioMs` 是**累计排程的音频时长**：它与 `pcmBytes` 同源互相印证
+   * （`pcmBytes / 48 ≈ scheduledAudioMs` @24k/16bit），两者不一致说明丢在排程前。
+   */
+  get outputHealth(): {
+    ctxState: string;
+    scheduledChunks: number;
+    scheduledAudioMs: number;
+    resumeAttempts: number;
+    prebufferMs: number;
+    prebufferAppliedMs: number;
+    prebufferPending: boolean;
+    prebufferActivations: number;
+  } {
+    return {
+      ctxState: this.ctx ? this.ctx.state : 'none',
+      scheduledChunks: this.scheduledChunks,
+      scheduledAudioMs: Math.round(this.scheduledAudioMs),
+      // >0 = 这通电话里 AudioContext 真的被挂起过（每一次都会自动尝试恢复）
+      resumeAttempts: this.resumeAttempts,
+      // 当前生效 / 最近一次实际生效的开场预缓冲（"改了没生效"最怕看不出来）
+      prebufferMs: this.prebufferMs,
+      prebufferAppliedMs: this.prebufferAppliedMs,
+      // 本轮是否还欠一次（false 且 activations 已 +1 = 正常"只用一次"）
+      prebufferPending: this.prebufferGate.pending,
+      prebufferActivations: this.prebufferActivations,
+    };
+  }
+
+  /**
+   * 播放缓冲区日志的汇总（`?debug=1` 面板）。
+   *
+   * `withinSentenceStarves` 与 `gapStarves` 的**比值**就是用户要的那个结论：
+   * 卡在句子中间（供音跟不上）还是卡在两句之间（片段调度）。
+   * 明细（逐块水位 + 见底现场）在 `bufferLogDump()`，见 `ttsBufferLog.ts`。
+   */
+  get bufferStats(): {
+    chunks: number;
+    withinSentenceStarves: number;
+    gapStarves: number;
+    starveTotalMs: number;
+    bufferMs: number;
+  } {
+    return this.bufferLog.summary();
+  }
+
+  /** 缓冲区日志明细（逐块水位 + 每次见底的现场）—— 排查卡顿时把它打出来 */
+  bufferLogDump(recentChunks = 12): string {
+    return this.bufferLog.dump(recentChunks);
+  }
+
+  /**
    * AudioContext 的播放时钟（毫秒）；未创建时为 0。
    *
    * 排程全部在这个时钟域里做，所以它是排查"句间有缝 / 排程错位"的第一手依据：
@@ -202,6 +416,35 @@ export class TtsPlayer {
    */
   get currentTimeMs(): number {
     return (this.ctx?.currentTime ?? 0) * 1000;
+  }
+
+  /**
+   * 播放空洞（欠载）的实测统计；**整通电话累计**，不是单轮。
+   *
+   * 单轮的量由 `useVoiceCall` 取两次快照相减得到（`TurnMetrics.audioHoleMs`）。
+   * 定义与判据见 {@link TtsUnderrunStats}。
+   */
+  get underrun(): TtsUnderrunStats {
+    return {
+      holes: this.holes,
+      totalHoleMs: Math.round(this.totalHoleMs * 10) / 10,
+      maxHoleMs: Math.round(this.maxHoleMs * 10) / 10,
+      lastHoleMs: this.lastHoleMs === null ? null : Math.round(this.lastHoleMs * 10) / 10,
+      lastHoleSeq: this.lastHoleSeq,
+      holeRatio: this.scheduledAudioMs > 0
+        ? Math.round((this.totalHoleMs / this.scheduledAudioMs) * 1000) / 1000
+        : 0,
+    };
+  }
+
+  /** 清空欠载统计（新通话开始时用；不要在日常轮次之间调，那会丢掉累计证据） */
+  resetUnderrunStats(): void {
+    this.holes = 0;
+    this.totalHoleMs = 0;
+    this.maxHoleMs = 0;
+    this.lastHoleMs = null;
+    this.lastHoleSeq = null;
+    this.scheduledAudioMs = 0;
   }
 
   // ── 生命周期 ────────────────────────────────────────────────────────────
@@ -218,6 +461,25 @@ export class TtsPlayer {
       const Ctor = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
       if (!Ctor) return;
       this.ctx = new Ctor();
+      // ── 挂起自愈（2026-10-11）────────────────────────────────────────────
+      // 浏览器会在这些时刻把 AudioContext 置成 `suspended`：系统音频设备切换、
+      // 来电/其它应用抢占、标签页被后台节流后回来、以及自动播放策略在**非用户手势**
+      // 里给的那一次 resume 被拒。此时音频**排了程也不会响**，而通话里所有时间读数
+      // （首声/首块/RTF）看起来完全正常 —— 表现就是用户说的"没有声音出来"，
+      // 且征兆只有 `ctx.state`（原来的面板上根本看不到）。
+      //
+      // 这里挂一个监听：一旦发现被挂起就立刻尝试恢复，并把尝试次数记进读数
+      // （`resumeAttempts`），于是"是不是它"在面板上有一手证据。
+      this.ctx.addEventListener?.('statechange', () => {
+        if (this.disposed) return;
+        const c = this.ctx;
+        if (c && c.state === 'suspended') {
+          this.resumeAttempts += 1;
+          void c.resume().catch(() => {
+            /* 被自动播放策略拒绝：保持静默，面板上有读数可查 */
+          });
+        }
+      });
     }
     if (this.ctx.state === 'suspended') {
       try {
@@ -294,9 +556,72 @@ export class TtsPlayer {
       ? Math.max(0, Math.min(CROSSFADE_MS / 1000, buffer.duration / 2, prev.durationSec / 2))
       : 0;
 
-    const base = this.nextStartTime > 0 ? this.nextStartTime : ctx.currentTime;
+    // ── 开场预缓冲（判据见 `prebufferGate.ts`，别在这里重写条件）────────
+    // ⚠️ 曾经用 `nextStartTime <= 0` 判"开场"，那是**错的**：`nextStartTime` 在
+    // 队列每次被抽干时都会归零，于是阵发间隙里又来一次 300ms —— 把要治的卡顿放大。
+    // 现在由 `PrebufferGate` 严格控制为"**每轮只生效一次**"：
+    //   · 是否欠一次预缓冲：只由 `armTurn()`（新一轮开始）决定；
+    //   · 是否清账：看"队列是否真的起飞了"（queuedAudioMs > 0），不看单个块。
+    const queuedAudioMs = Math.max(0, (this.nextStartTime - ctx.currentTime) * 1000);
+    const wantPrebuffer =
+      this.prebufferMs > 0 && this.prebufferGate.decide(queuedAudioMs);
+    const base = wantPrebuffer
+      ? ctx.currentTime + this.prebufferMs / 1000
+      : this.nextStartTime > 0
+        ? this.nextStartTime
+        : ctx.currentTime;
     const startAt = Math.max(ctx.currentTime, base - overlap);
     this.nextStartTime = startAt + buffer.duration;
+    // 把预缓冲记进读数：只说"多等了多少"，不改变判定口径（见 TtsUnderrunStats）
+    if (wantPrebuffer) {
+      this.prebufferAppliedMs = this.prebufferMs;
+      this.prebufferActivations += 1;
+    }
+
+    // ── 欠载判定（见 TtsUnderrunStats）──────────────────────────────────
+    // `base > currentTime` 说明"上一块还没播完、这一块本该接在它后面"；
+    // 而 `startAt` 被 Math.max 抬到了"现在" ⇒ 中间那一段没人补：这就是空洞。
+    // 队列本来就空（base === currentTime，上一句已自然播完）不算 ——
+    // 那时用户听到的是刻意的留白。
+    if (base > ctx.currentTime && startAt > base) {
+      const holeMs = (startAt - base) * 1000;
+      this.holes += 1;
+      this.totalHoleMs += holeMs;
+      if (holeMs > this.maxHoleMs) this.maxHoleMs = holeMs;
+      this.lastHoleMs = holeMs;
+      this.lastHoleSeq = seq;
+    }
+    this.scheduledAudioMs += buffer.duration * 1000;
+    this.scheduledChunks += 1;
+
+    // ── 播放缓冲区日志（见 ttsBufferLog.ts）──────────────────────────────
+    // 记"这块入库后缓冲区还剩多少毫秒"，并把**句内 / 跨句**分开 ——
+    // 这正是用户那两个候选病因的分界线。只记录，不改排程。
+    {
+      const starved = base > ctx.currentTime && startAt > base;
+      const starveMs = starved ? (startAt - base) * 1000 : 0;
+      const prevSeq = this.lastChunkSeq;
+      this.bufferLog.onChunk({
+        atMs: performance.now(),
+        seq,
+        chunkMs: buffer.duration * 1000,
+        // 入库后的水位：从 startAt 到"已排程末尾"还剩多少音频
+        bufferMs: Math.max(0, (this.nextStartTime - ctx.currentTime) * 1000),
+        sameSeq: prevSeq === seq,
+        starved,
+        starveMs,
+      });
+      this.lastChunkSeq = seq;
+      // 真的见底了：把现场（最近若干块 + 见底事件）打出来。
+      // ⚠️ 只在见底时打，正常播放一行都不打 —— 否则一次回复几十块会淹掉控制台。
+      if (starved) {
+        console.warn(
+          `[播放缓冲] seq=${seq} 见底 ${Math.round(starveMs)}ms`
+          + `（${prevSeq === seq ? '句内供给不足' : '跨句接缝'}）\n`
+          + this.bufferLog.dump(),
+        );
+      }
+    }
 
     if (overlap > 0 && prev) {
       gain.gain.setValueAtTime(0, startAt);
@@ -401,6 +726,32 @@ export class TtsPlayer {
     if (!this.enqueueChunk(seq, pcm, sampleRate, text)) return false;
     this.endSegment(seq);
     return true;
+  }
+
+  /**
+   * 当前还挂在播放器里（`end` 已到但还没播完，或正在收块）的句号。
+   *
+   * 必须在 `stopAll()` **之前**取：`stopAll()` 会清空 `open`，之后那些
+   * "已经 `start` 过、`end` 还没到"的句子就查不到了 —— 而它们的 `end`
+   * 稍后仍会到达，`endSegment()` 会返回 0，被误判成"没合成出音频"。
+   * 调用方（`TtsChannel.stopFrom`）据此把"我们掐断的"登记给会话层。
+   */
+  openSeqs(): number[] {
+    return [...this.open.keys()];
+  }
+
+  /**
+   * **还排在队列里、没播到**的音频总时长（毫秒）。0 = 当下没有待播音频。
+   *
+   * 为什么需要它（2026-10-11 真机：一轮的首声 **6159 ms**，而合成本身只有
+   * 1.5 s 左右）：用户听到的"停顿"有两个来源，对策完全不同 ——
+   *   · **合成慢**：服务端自己报的 `first_chunk_ms` 就大；
+   *   · **前面还排着音频**：本函数大（上一轮的句子还没播完就被排到了前面）。
+   * 只把两者分开量，才能知道该修哪一头。
+   */
+  pendingAudioMs(): number {
+    if (!this.ctx || this.nextStartTime <= 0) return 0;
+    return Math.max(0, Math.round((this.nextStartTime - this.ctx.currentTime) * 1000));
   }
 
   /**

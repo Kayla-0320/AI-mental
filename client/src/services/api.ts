@@ -39,7 +39,18 @@ api.interceptors.response.use(
         window.location.href = '/login';
       }
     }
-    return Promise.reject(error.response?.data || error);
+    // 拒绝时把 HTTP 状态码**附在响应体上一起抛出**。
+    //
+    // 原来只透传 `error.response.data`，调用方拿到 `{code, message}` 后无法区分
+    // "404 会话不存在" 与 "网络断了/500"（两种情况都只是 catch 到一个对象）。
+    // 于是只能拿中文文案做判断 —— 文案一改判断就失效（2026-10-11：通话页要按
+    // 404 决定"自动换一个新会话"，不能再靠猜）。
+    // `code` 只当业务码用，**不要**拿它代替 HTTP 状态。
+    const payload = error.response?.data;
+    if (payload && typeof payload === 'object') {
+      return Promise.reject(Object.assign(payload, { status: error.response?.status }));
+    }
+    return Promise.reject(payload || error);
   }
 );
 

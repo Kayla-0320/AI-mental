@@ -35,7 +35,8 @@
  * 会让比对失配，把 AI 自己的声音误判成用户插话。
  */
 
-import { TtsPlayer, type TtsPlayerCallbacks, type TtsStartTiming } from './ttsPlayer';
+import { TtsPlayer, type TtsPlayerCallbacks, type TtsStartTiming, type TtsUnderrunStats } from './ttsPlayer';
+import { normalizeForCompare } from './ttsSplit';
 
 /** 服务端握手回来的状态 */
 export interface TtsStreamStatus {
@@ -55,10 +56,91 @@ export interface TtsSegmentMeta {
   spokenText: string;
   sampleRate: number;
   audioMs: number;
-  /** 服务端合成耗时；实测等于 first_chunk_ms（VITS 不流式） */
+  /** 服务端合成耗时；流式引擎下它是**整段**合成耗时（含全部块） */
   synthMs: number;
+  /**
+   * 服务端自报的「请求 → 第一块音频」耗时（CosyVoice3 流式路径才有意义）。
+   *
+   * 与客户端 {@link TtsStreamSession.takeFirstPcmMs} 相减 = 下行/客户端那一段。
+   */
+  firstChunkMs: number;
   /** 实时率；判据 < 0.4 */
   rtf: number;
+}
+
+/** TTS 通道的**对账/隔离**诊断（`?debug=1` 与真机排查用） */
+export interface TtsStreamDiagnostics {
+  /** 取消后仍在路上、被丢弃的残留帧数（>0 说明取消确实截住了旧音频） */
+  drainedFrames: number;
+  /** 被丢弃的残留字节数 */
+  drainedBytes: number;
+  /** 收到过多少个"水位线之下"的陈旧 `start`（旧轮次的回声） */
+  staleStarts: number;
+  /**
+   * 疑似**串单**次数：某一句收到的 `spoken_text` 与请求文本不符，
+   * **且**与另一句待播文本相符（能对上别人 = 音频串到了别的片段）。
+   * 术语规范化（`CBT → 认知行为疗法`）导致的正常差异不计入这里。
+   */
+  crossTalk: number;
+  /** 术语规范化等"预期差异"的次数（同上条件但不指向别的片段） */
+  normalizedText: number;
+  /** 取消水位线：`seq <= cancelledThrough` 的音频一律不再接收/播放 */
+  cancelledThrough: number;
+  /**
+   * 被**我们自己掐断**、因此没有音频可播的句数（打断 / 改稿 / 危机）。
+   *
+   * 与"真的没合成出音频"必须分开算：前者是我们主动丢的，不该弹错误；
+   * 后者要如实上报。判据见 {@link TtsStreamSession.stoppedSeqs}。
+   */
+  stoppedWithoutAudio: number;
+}
+
+/**
+ * 「这一通电话到底发出去了几个字、收回来了多少个音频字节」——**载荷级**读数。
+ *
+ * ## 为什么必须有它（2026-10-11 用户："我两次说我感觉好一些了都没有声音出来"）
+ *
+ * 现有读数全是**时间**（首声 / 首块 / RTF），只能回答"慢不慢"；而"完全没有声音"
+ * 是一个**数量**问题：是根本没发 `say`，还是发了但服务端一个 PCM 字节都没回，
+ * 还是收到了却被我们自己的取消丢掉了。三者的处置完全不同，而光看时间读数是
+ * 一片 `—`，分不出来（真机截图就是这种情况）。
+ *
+ * 判据（面板上并排看）：
+ *   · `say` > 0 而 `收帧` = 0        → 服务端没回音频（合成/OOV/取消）
+ *   · `收帧` > 0 而 `丢帧` ≈ `收帧`  → 被取消水位线丢光（我们自己掐的）
+ *   · `收帧` > 0 且 `丢帧` = 0        → 音频到了客户端，问题在播放层（见 `underrun`）
+ *
+ * ⚠️ `cancelled` 帧也计进 `endFrames`（它就是服务端对"我们取消了"的确认），
+ * 所以 `endFrames` 与 `sayFrames` 应当逐句对齐。
+ */
+export interface TtsPayloadLedger {
+  /** 发出去的 `say` 句数 */
+  sayFrames: number;
+  /** 收到的二进制 PCM 帧数与总字节数（**服务端真的产出了音频**的证据） */
+  pcmFrames: number;
+  pcmBytes: number;
+  /** 收到的 `start` / `end`（含 `cancelled`）句数 */
+  startFrames: number;
+  endFrames: number;
+  /** 服务端自报"合成成功但一个字节都没出"的句数 */
+  emptyAudioSegments: number;
+  /** 因为取消水位线/残留排空而**被我们丢弃**的帧数与字节数 */
+  droppedFrames: number;
+  droppedBytes: number;
+  /**
+   * **文本对不上**的次数：服务端 `spoken_text` 与本次 `say` 请求的文本不一致
+   * （术语规范化那种预期差异已排除）。
+   *
+   * 这是"AI 偶尔说出乱话"最直接的证据类型 —— 耳朵里那段话**送出去的时候就是那句**，
+   * 而不是播放错位。见 {@link TtsStreamSession.auditSpokenText}。
+   */
+  textMismatch: number;
+  /**
+   * 最近几组"请求文本 → 实际念出的文本"（供面板展示）。
+   *
+   * ⚠️ 只在**疑似异常**时填（文本对不上 / 疑似串单），正常合成不占内存、不进面板。
+   */
+  textMismatchSamples: Array<{ seq: number; requested: string; spoken: string; reason: string }>;
 }
 
 /** `TtsChannel` 的回调 */
@@ -69,6 +151,14 @@ export interface TtsChannelCallbacks extends TtsPlayerCallbacks {
   onSegment?: (meta: TtsSegmentMeta) => void;
   /** 出错；`seq` 缺省表示连接级错误 */
   onError?: (message: string, seq?: number) => void;
+  /**
+   * 对账/隔离诊断发生变化（串单、丢弃残留帧等）。
+   *
+   * 单独一个回调而不是塞进 `onError`：这些多半**不是错误**（术语规范化、
+   * 取消后正常排空），但必须能在面板上看到 —— 否则"文字与语音不匹配"
+   * 只能靠人耳猜。
+   */
+  onDiagnostics?: (info: TtsStreamDiagnostics) => void;
 }
 
 /** 连接建立前的待发上限；超出丢最旧的，避免无限增长 */
@@ -143,6 +233,52 @@ export class TtsStreamSession {
   /** 最近一个收到 `start` 的 seq —— 二进制帧靠它归属（服务端串行合成，所以唯一） */
   private lastStartedSeq: number | null = null;
   /**
+   * **取消水位线**：`seq <= cancelledThrough` 的音频一律不再接收、不再播放。
+   *
+   * 为什么需要它（2026-10-11，"文字与语音不匹配"的一条真因）：
+   * 取消是**异步**的 —— `cancel` 控制帧发出去之后，服务端那边**已经在队列里/正在发**
+   * 的 PCM 还会到达。二进制帧本身**不带 seq**，客户端只能按"最近一个 `start`"归属，
+   * 于是一旦旧帧和新一轮的 `start` 撞在一起，旧音频就会被当成**新一轮的语音**播出来
+   * —— 听起来就是"说的话和字幕对不上、还缺一块"。
+   *
+   * 水位线 + {@link awaitingFreshStart} 一起把这段窗口封死：
+   * 取消之后，**必须先看到一个水位线之上的 `start`**，才重新接受二进制帧。
+   */
+  private cancelledThrough = 0;
+  /** 取消后是否还在"排空残留"：true 时到达的二进制帧一律丢弃 */
+  private awaitingFreshStart = false;
+  private drainedFrames = 0;
+  private drainedBytes = 0;
+  private staleStarts = 0;
+  private crossTalk = 0;
+  private normalizedText = 0;
+  private stoppedWithoutAudio = 0;
+  /** 载荷级账（见 {@link TtsPayloadLedger}）：发了几句、回了多少字节、丢了多少 */
+  private ledger: TtsPayloadLedger = {
+    sayFrames: 0,
+    pcmFrames: 0,
+    pcmBytes: 0,
+    startFrames: 0,
+    endFrames: 0,
+    emptyAudioSegments: 0,
+    droppedFrames: 0,
+    droppedBytes: 0,
+    textMismatch: 0,
+    textMismatchSamples: [],
+  };
+  /**
+   * 被**我们自己掐断**（播放器 `stopAll()`）的句号。
+   *
+   * 为什么需要它（2026-10-11 用户截图："语音合成出错：这一句没有合成出音频"）：
+   * 一句回复是**一次把所有句都 `say` 出去**的，服务端串行合成。收到 `revise`
+   * （或打断）时 `TtsChannel.stopFrom()` 先 `player.stopAll()` —— 播放器的 `open`
+   * 表被清空，于是那些**已经 `start` 过、`end` 还没到**的句子后来走 `end` 分支时
+   * `endSegment()` 查不到记录、返回 0，被当成"合成成功但没音频"弹了一条错误。
+   * 其实那几句的音频是**我们主动丢的**（用户听到的正是被掐断的效果）。
+   * 记下这批句号：`end` 到了只计入 {@link stoppedWithoutAudio} 读数，不报错。
+   */
+  private stoppedSeqs = new Set<number>();
+  /**
    * `connect()` 的兑现函数。**由服务端的 `status` 帧触发**，不是 `onopen`。
    *
    * 为什么不能只在 `onopen` 兑现：`onopen` 只说明 TCP/WS 握手成功，
@@ -170,6 +306,18 @@ export class TtsStreamSession {
    * （「用户停口 → 第一个 PCM **到达播放器** < 2.4 s」）。
    */
   private readonly pcmReadyMs = new Map<number, number>();
+
+  /**
+   * 每个 seq 的**第一块** PCM 到达时刻（毫秒，相对 `say()`）。
+   *
+   * 与 {@link pcmReadyMs}（最后一块到手）配成一对：
+   *   · 第一块 = "听到声音要等多久"的下限（还需要播放器排程）；
+   *   · `end` 消息自带服务端自报的 `first_chunk_ms` —— 两者一减，
+   *     就能看出慢在**服务端合成**还是慢在下行/客户端。
+   * （2026-10-11 真机：某轮首声 6159 ms，而离线实测合成本身只要 1.4~1.7 s，
+   *   必须把这段差额拆开，见 docs/voice_call_audio_stutter.md §1.2。）
+   */
+  private readonly firstPcmMs = new Map<number, number>();
 
   constructor(
     private readonly cb: TtsChannelCallbacks,
@@ -276,8 +424,26 @@ export class TtsStreamSession {
       // 服务端串行合成，所以"最近一个 start 过的 seq"就是它。
       const seq = this.lastStartedSeq;
       if (seq === null || !this.ws) return;
+      // ── 取消后的残留排空（见 cancelledThrough / awaitingFreshStart）──
+      // 这两道闸合起来保证：取消那一轮还在路上的 PCM **绝不会**被当成下一轮的语音播出去。
+      if (this.awaitingFreshStart || seq <= this.cancelledThrough) {
+        this.drainedFrames += 1;
+        this.drainedBytes += (ev.data as ArrayBuffer).byteLength ?? 0;
+        // 载荷级账：这一帧**收到了**却被我们丢了（与"服务端没回"必须分开）
+        this.ledger.droppedFrames += 1;
+        this.ledger.droppedBytes += (ev.data as ArrayBuffer).byteLength ?? 0;
+        this.emitDiagnostics();
+        return;
+      }
       const seg = this.segments.get(seq);
       if (!seg) return;
+      // 载荷级账：服务端真的产出了音频（这是"没声音"排查里最关键的一个数）
+      this.ledger.pcmFrames += 1;
+      this.ledger.pcmBytes += (ev.data as ArrayBuffer).byteLength ?? 0;
+      // 第一块到手（面板"首段到达"读数）：只记一次
+      if (!this.firstPcmMs.has(seq)) {
+        this.firstPcmMs.set(seq, Math.round(performance.now() - seg.sentAt));
+      }
       const int16 = bytesToInt16(ev.data as ArrayBuffer);
       const sr = seg.sampleRate || this.status.sampleRate;
       if (sr <= 0) {
@@ -330,14 +496,27 @@ export class TtsStreamSession {
     if (seq < 0) return;
 
     if (type === 'start') {
+      // 水位线之下的 `start` = 被取消那一轮的残留，直接忽略（见 cancelledThrough）
+      if (seq <= this.cancelledThrough) {
+        this.staleStarts += 1;
+        this.emitDiagnostics();
+        return;
+      }
       this.lastStartedSeq = seq;
+      // 载荷级账：这一句服务端开始合成
+      this.ledger.startFrames += 1;
+      // 看到了水位线之上的新段 ⇒ 残留已排空，重新接受二进制帧
+      if (this.awaitingFreshStart) this.awaitingFreshStart = false;
       const sr = Number(msg.sample_rate ?? this.status.sampleRate ?? 0);
       const existing = this.segments.get(seq);
+      const spokenText = String(msg.spoken_text ?? existing?.spokenText ?? existing?.text ?? '');
+      const requested = existing?.text ?? '';
+      this.auditSpokenText(seq, requested, spokenText);
       this.segments.set(seq, {
-        text: existing?.text ?? '',
+        text: requested,
         // 服务端**在 start 就带上 spoken_text**（术语替换后的真文本）。
         // 没有它，边收边播时 onStart 只能拿到原文，字幕定位与回声过滤会失配。
-        spokenText: String(msg.spoken_text ?? existing?.spokenText ?? existing?.text ?? ''),
+        spokenText,
         sampleRate: sr,
         frames: existing?.frames ?? [],
         sentAt: existing?.sentAt ?? performance.now(),
@@ -347,6 +526,7 @@ export class TtsStreamSession {
 
     if (type === 'cancelled') {
       this.segments.delete(seq);
+      this.stoppedSeqs.delete(seq);
       if (this.lastStartedSeq === seq) this.lastStartedSeq = null;
       return;
     }
@@ -366,6 +546,7 @@ export class TtsStreamSession {
         sampleRate,
         audioMs: Number(msg.audio_ms ?? 0),
         synthMs: Number(msg.synth_ms ?? 0),
+        firstChunkMs: Number(msg.first_chunk_ms ?? 0),
         rtf: Number(msg.rtf ?? 0),
       };
 
@@ -383,11 +564,32 @@ export class TtsStreamSession {
 
       // 收尾：这一句不会再有新块了。`onEnd` 由播放器在**最后一块播完**时触发。
       const chunks = this.player.endSegment(seq);
+      // ⚠️ 先判"这一句是不是我们主动掐断的"，再决定要不要报"没合成出音频"：
+      // 掐断过的句子在播放器里已经查不到记录（`stopAll` 清了表），`chunks` 必然是 0
+      // —— 那是**故意丢弃**，不是合成失败。混在一起报会每次都弹一条假错误
+      // （2026-10-11 截图：改稿停播后同一轮的句子被误报）。
+      const stoppedByUs = this.stoppedSeqs.delete(seq)
+        || seq <= this.cancelledThrough
+        || this.awaitingFreshStart;
+      // 载荷级账：这一句收尾（含被取消的句 —— 服务端的 `cancelled` 帧也记在这里）
+      this.ledger.endFrames += 1;
       if (chunks === 0) {
-        // 合成成功但没音频（空文本 / 全被 OOV 吞掉）。如实上报，不假装播过。
-        this.cb.onError?.('这一句没有合成出音频', seq);
+        if (stoppedByUs) {
+          this.stoppedWithoutAudio += 1;
+          this.emitDiagnostics();
+        } else {
+          // 合成成功但没音频（空文本 / 全被 OOV 吞掉）。如实上报，不假装播过。
+          this.ledger.emptyAudioSegments += 1;
+          this.emitDiagnostics();
+          this.cb.onError?.('这一句没有合成出音频', seq);
+        }
       }
       this.cb.onSegment?.(meta);
+      // 真机排查"没有声音"的落点：这一句到底**有没有音频**、被我丢了没有。
+      // （`chunks` 是播放器里这一句收到的块数；0 且不是我们掐的 = 服务端没出音频。）
+      console.log(
+        `[TTS] end seq=${seq} audio=${meta.audioMs}ms chunks=${chunks} stoppedByUs=${stoppedByUs}`,
+      );
     }
   }
 
@@ -410,6 +612,7 @@ export class TtsStreamSession {
    */
   say(seq: number, text: string): void {
     if (this.closed || !text.trim()) return;
+    this.ledger.sayFrames += 1;
     this.segments.set(seq, {
       text,
       // 先按原文占位；`start` 事件到达时会换成服务端的 spoken_text
@@ -439,12 +642,69 @@ export class TtsStreamSession {
     }
   }
 
+  /**
+   * 中止「seq ≥ `minSeq`」的**全部**在途合成 —— 打断 / 改稿 / 危机用（S5 / S6）。
+   *
+   * ## 为什么需要它（2026-10-11 补的洞）
+   *
+   * 通话页在收到 `speak` 计划时**一次把所有句子都 `say` 出去**（一句话一个 seq），
+   * 服务端串行合成、边合成边推 PCM。而客户端原先的"打断"只做了 `stopAll()`
+   * ——那只清掉了**本地已经排上时间轴**的音频。于是：
+   *
+   * ```
+   *   打断 → stopAll() 静音
+   *        → 服务端还在合成第 3、4、5 句（客户端从没告诉它别做了）
+   *        → 几百毫秒后 PCM 到 → 客户端照常入队播放
+   *        → 用户听到"AI 停了一下又自己说起来"，且是从半句开始的
+   * ```
+   *
+   * `docs/call_implementation_steps.md` 的 S5/S6 一直写着"中止在途合成（WS 发 cancel）"，
+   * 但客户端从来没调用过 `cancel` —— 这条不变式一直只写在文档里。
+   *
+   * 现在两步一起做：① 服务端 `cancel`（`api/tts.py` 会从待合成队列里摘掉、并让
+   * 正在跑的合成回调返回非 0 提前结束）；② 本地 `segments.delete`，
+   * 于是**已经在路上的**二进制帧到了也会被 `onMessage` 丢掉（它查不到 segment）。
+   *
+   * 两条路径都不依赖对方：WS 断了也能保证本地不再出声（代价是服务端白合成几句）。
+   *
+   * @param minSeq 起算句号（含）。调用方传"当前已发出的最大 seq"即可中止整轮。
+   * @returns 被中止的句号列表（空数组表示本来就没有在途音频）
+   */
+  cancelFrom(minSeq: number): number[] {
+    const targets = [...this.segments.keys()].filter((seq) => seq >= minSeq);
+    if (targets.length === 0) return targets;
+    for (const seq of targets) this.cancel(seq);
+    // 抬高水位线 + 进入"排空残留"：取消前已经上路的那几帧，绝不能当成下一轮的语音。
+    // （二进制帧不带 seq，只能靠"先看到水位线之上的 start"来判断残留排空了。）
+    this.cancelledThrough = Math.max(this.cancelledThrough, minSeq);
+    this.awaitingFreshStart = true;
+    this.emitDiagnostics();
+    return targets;
+  }
+
+  /**
+   * 登记"**被我们自己掐断**"的句号（调用方：`TtsChannel.stopAll` / `stopFrom`
+   * 在 `player.stopAll()` 之前把播放器当时还挂着的句号取下来传进来）。
+   *
+   * 这些句子的 `end` 稍后仍会到达，但播放器里的记录已经被 `stopAll()` 清掉了，
+   * 不登记就会被误报成"这一句没有合成出音频"（见 {@link stoppedSeqs}）。
+   * 只登记 seq **小于**取消水位线的那批；`cancelFrom` 覆盖的 seq 会收到
+   * `cancelled` 帧，走另一条分支（那一条本来就不报错）。
+   *
+   * @param seqs 被掐断时仍在播放队列里的句号
+   */
+  markPlayerStopped(seqs: number[]): void {
+    for (const seq of seqs) this.stoppedSeqs.add(seq);
+  }
+
   close(): void {
     this.closed = true;
     this.closing = true;
     this.pendingSays = [];
     this.segments.clear();
     this.pcmReadyMs.clear();
+    this.firstPcmMs.clear();
+    this.stoppedSeqs.clear();
     const ws = this.ws;
     if (ws && ws.readyState === WebSocket.OPEN) {
       try {
@@ -477,10 +737,105 @@ export class TtsStreamSession {
     return v;
   }
 
+  /** 取某一句「请求 → **第一块** PCM 到手」的耗时；还没到过任何块时为 undefined */
+  takeFirstPcmMs(seq: number): number | undefined {
+    const v = this.firstPcmMs.get(seq);
+    this.firstPcmMs.delete(seq);
+    return v;
+  }
+
+  /**
+   * 已发出 `say`、但服务端还没回 `end` 的句数 —— "TTS 队列里还堆着几句"。
+   *
+   * 服务端是**串行**合成：这个数 > 0 就说明我们要等前面那几句合成完，
+   * 与"合成本身慢"是两件事。
+   */
+  pendingUnits(): number {
+    return this.segments.size;
+  }
+
   private fail(reason: string): void {
     this.status = { ...this.status, available: false, reason };
     this.cb.onStatus?.(this.status);
     this.cb.onError?.(reason);
+  }
+
+  // ── 对账 / 隔离（见 TtsStreamDiagnostics）────────────────────────────────
+  private emitDiagnostics(): void {
+    this.cb.onDiagnostics?.(this.diagnostics);
+  }
+
+  /** 当前对账/隔离读数（面板用；不触发回调） */
+  get diagnostics(): TtsStreamDiagnostics {
+    return {
+      drainedFrames: this.drainedFrames,
+      drainedBytes: this.drainedBytes,
+      staleStarts: this.staleStarts,
+      crossTalk: this.crossTalk,
+      normalizedText: this.normalizedText,
+      cancelledThrough: this.cancelledThrough,
+      stoppedWithoutAudio: this.stoppedWithoutAudio,
+    };
+  }
+
+  /** 载荷级账（"发了几句 / 回了多少字节 / 丢了多少"）—— 见 {@link TtsPayloadLedger} */
+  get payloadLedger(): TtsPayloadLedger {
+    return { ...this.ledger };
+  }
+
+  /**
+   * 校验 `start.spoken_text` 与**本 seq 请求的文本**是否对得上。
+   *
+   * 为什么要单独判一次：这一步是"文字与语音不匹配"唯一能在客户端本地抓住的地方。
+   *
+   *   · 两种情况都算**正常**：术语规范化（服务端把 `CBT` 读成"认知行为疗法"）、
+   *     服务端在 `prepare_for_speech` 里做的其它规范化。差别记进读数，不当作故障。
+   *   · 真正危险的是**串单**：这一段收到的文本，恰好是**另一个待播 seq** 的请求文本
+   *     —— 那说明音频串到了别的片段上（或 seq 关联错了）。此时**不能照常播放**：
+   *     删掉本段，它的 PCM 会被 `!seg` 那一关丢掉，宁可这一句没声音，
+   *     也不要让用户听到"另一句话的声音配这几句字幕"。
+   */
+  private auditSpokenText(seq: number, requested: string, spokenText: string): void {
+    if (!requested || !spokenText) return;
+    const a = normalizeForCompare(requested);
+    const b = normalizeForCompare(spokenText);
+    if (a === b) return;
+    // 是不是"别人的文本"？
+    for (const [other, seg] of this.segments) {
+      if (other === seq) continue;
+      const otherText = normalizeForCompare(seg.text || seg.spokenText);
+      if (otherText && otherText === b) {
+        this.crossTalk += 1;
+        this.ledger.textMismatch += 1;
+        this.recordMismatch(seq, requested, spokenText, '疑似串单：收到的是别的 seq 的文本');
+        console.warn(
+          `[TTS] 疑似串单：seq=${seq} 收到的是 seq=${other} 的文本`,
+          { requested, spokenText },
+        );
+        this.segments.delete(seq);
+        if (this.lastStartedSeq === seq) this.lastStartedSeq = null;
+        this.emitDiagnostics();
+        return;
+      }
+    }
+    this.normalizedText += 1;
+    // 术语规范化之外的差异也要记账 —— "AI 偶尔说出乱话"时，
+    // 这一格就是"送出去的就是那句"还是"念错了"的分界线。
+    this.ledger.textMismatch += 1;
+    this.recordMismatch(seq, requested, spokenText, '文本与请求不一致（非串单）');
+    this.emitDiagnostics();
+  }
+
+  /** 记一组"请求 → 实际念出"（上限 5 组，面板展示用） */
+  private recordMismatch(seq: number, requested: string, spoken: string, reason: string): void {
+    const clip = (s: string): string => (s.length > 48 ? `${s.slice(0, 48)}…` : s);
+    this.ledger.textMismatchSamples.push({
+      seq,
+      requested: clip(requested),
+      spoken: clip(spoken),
+      reason,
+    });
+    if (this.ledger.textMismatchSamples.length > 5) this.ledger.textMismatchSamples.shift();
   }
 }
 
@@ -493,13 +848,20 @@ export class TtsStreamSession {
 export class TtsChannel {
   private readonly player: TtsPlayer;
   private readonly stream: TtsStreamSession;
+  private readonly cb: TtsChannelCallbacks;
   private playerReady = false;
 
   /** 每个 seq 从 `say()` 到**真正出声**的耗时（毫秒）—— 端到端首声，最该被量的数 */
   private readonly firstSoundMs = new Map<number, number>();
   private readonly saySentAt = new Map<number, number>();
 
-  constructor(private readonly cb: TtsChannelCallbacks = {}) {
+  /**
+   * @param cb 回调
+   * @param prebufferMs **开场预缓冲**（毫秒）。不传就用 {@link DEFAULT_PREBUFFER_MS}
+   *   （300ms，用户真机试听后定的档位）；实测依据与边界见 `ttsPlayer.ts` 的同名常量。
+   */
+  constructor(cb: TtsChannelCallbacks = {}, prebufferMs?: number) {
+    this.cb = cb;
     this.player = new TtsPlayer({
       onStart: (seq, text, timing: TtsStartTiming) => {
         const sentAt = this.saySentAt.get(seq);
@@ -514,7 +876,7 @@ export class TtsChannel {
       },
       onEnd: (seq, text) => this.cb.onEnd?.(seq, text),
       onDrained: () => this.cb.onDrained?.(),
-    });
+    }, prebufferMs);
     this.stream = new TtsStreamSession(cb, this.player);
   }
 
@@ -527,8 +889,14 @@ export class TtsChannel {
 
   /** 合成并播放一句。非阻塞 —— 绝不能 await，否则会把轮次编排卡住。 */
   say(seq: number, text: string): void {
-    if (!this.playerReady) return;
+    if (!this.playerReady) {
+      // 静默返回是原来最难查的一种"没声音"：看着什么错都没有，其实一个字都没发。
+      // 真机排查（2026-10-11 "两次都没有声音"）需要能一眼看到它，所以出一条日志。
+      console.warn(`[TTS] 通道还没就绪，这一句没有送合成（seq=${seq}）：`, text.slice(0, 40));
+      return;
+    }
     this.saySentAt.set(seq, performance.now());
+    console.log(`[TTS] say seq=${seq}（${text.length} 字）：`, text.slice(0, 60));
     this.stream.say(seq, text);
   }
 
@@ -540,7 +908,43 @@ export class TtsChannel {
 
   /** 立刻掐断全部播放 —— **打断路径**，同步完成 */
   stopAll(): void {
+    // 与 stopFrom 同一个理由：先把还在播放器里的句号登记成"我们掐断的"，
+    // 否则它们稍后到达的 `end` 会被误报成"没合成出音频"。
+    const inFlight = this.player.openSeqs();
     this.player.stopAll();
+    this.stream.markPlayerStopped(inFlight);
+  }
+
+  /**
+   * 「这一轮到此为止」—— 本地立刻静音 **且** 通知服务端取消在途合成。
+   *
+   * 打断（自动/手动）、审计改稿、危机切换都用它，替代裸的 `stopAll()`：
+   * 只用 `stopAll()` 时服务端仍会把这一轮剩下的句子合成完再推过来，
+   * 客户端会把它们照常播出来 —— 用户听到的是"停一下又自己说起来"。
+   * 判据与两条路径的细节见 {@link TtsStreamSession.cancelFrom}。
+   *
+   * ⚠️ 两步必须在**同一个同步块**里：中间的 await/事件回调会让一个已经在路上的
+   * PCM 帧挤进来重新入队（JS 单线程，同步块内不可能发生）。
+   *
+   * @param minSeq 起算句号（含）；调用方传"当前已发出的最大 seq"即中止整轮。
+   * @returns 被中止的在途句数（0 = 本来就没有在途音频）
+   */
+  stopFrom(minSeq: number): number {
+    // ⚠️ 顺序不能变：**先**取"此刻还挂在播放器里的句号"，**再** stopAll()（它会清表）。
+    // 这批句号里 `seq < minSeq` 的那几句不会被 cancelFrom 取消 —— 它们的 `end` 稍后
+    // 仍会到达，必须让会话层知道"是我们掐断的"，否则每条都会误报
+    // "这一句没有合成出音频"（真机截图 2026-10-11，见 TtsStreamSession.stoppedSeqs）。
+    const inFlight = this.player.openSeqs();
+    this.player.stopAll();
+    this.stream.markPlayerStopped(inFlight);
+    const cancelled = this.stream.cancelFrom(minSeq);
+    // 被取消的句子不会再出声，通道级的两个计时 Map 也要跟着清 —— 不清就是
+    // 每打断一次留几条永不回收的条目（长通话里会一直涨）。
+    for (const seq of cancelled) {
+      this.saySentAt.delete(seq);
+      this.firstSoundMs.delete(seq);
+    }
+    return cancelled.length;
   }
 
   /** 最近播出去的文本，供文本级自回声过滤比对 */
@@ -560,8 +964,57 @@ export class TtsChannel {
     return this.stream.takePcmReadyMs(seq);
   }
 
+  /** 取某一句的「请求 → **第一块** PCM 到手」耗时（毫秒）；还没到过块时为 undefined */
+  takeFirstPcmMs(seq: number): number | undefined {
+    return this.stream.takeFirstPcmMs(seq);
+  }
+
+  /**
+   * 播放器里**还排着**的音频时长（毫秒）。
+   *
+   * 「首声为什么这么晚」的两个候选之一（另一个是服务端 `first_chunk_ms`）：
+   * 本值大 = 前面还有别的音频要播完，用户听到的等待是**排队**，不是合成慢。
+   */
+  pendingAudioMs(): number {
+    return this.player.pendingAudioMs();
+  }
+
+  /** 已 `say` 但服务端还没回 `end` 的句数（服务端串行合成，>0 就是还堆着几句） */
+  pendingUnits(): number {
+    return this.stream.pendingUnits();
+  }
+
   get isSpeaking(): boolean {
     return this.player.isPlaying;
+  }
+
+  /**
+   * 播放空洞（欠载）的**累计**实测统计 —— 「通话卡不卡」的第一手读数。
+   *
+   * 判据、字段含义与"为什么不需要听音频就能量"写在
+   * `ttsPlayer.ts` 的 {@link TtsUnderrunStats} 上。单轮的增量由调用方取两次快照相减。
+   */
+  get underrun(): TtsUnderrunStats {
+    return this.player.underrun;
+  }
+
+  /**
+   * 合成链路的**对账/隔离**读数（串单次数、取消后丢弃的残留帧/字节、陈旧 start）。
+   *
+   * 与 `underrun`（播放侧空洞）分开：这两个读数一条量"音频与文本对不对得上"，
+   * 另一条量"音频有没有断"。用户看到的"不匹配 + 输出不全"正好是这两条线上的病。
+   */
+  get diagnostics(): TtsStreamDiagnostics {
+    return this.stream.diagnostics;
+  }
+
+  /**
+   * 载荷级账（发了几句 / 回了多少字节 / 丢了多少）—— 见 {@link TtsPayloadLedger}。
+   *
+   * 这是"**完全没声音**"和"慢"的分界线：时间读数在那一种情况下只会是一片 `—`。
+   */
+  get payloadLedger(): TtsPayloadLedger {
+    return this.stream.payloadLedger;
   }
 
   /** 是否已释放；释放后 `say()` 是空操作（不会静默重建连接） */
@@ -575,6 +1028,60 @@ export class TtsChannel {
 
   get deviceSampleRate(): number {
     return this.player.deviceSampleRate;
+  }
+
+  /**
+   * 输出侧健康读数（AudioContext 状态 + 累计排程块数/时长）——见 `TtsPlayer.outputHealth`。
+   *
+   * "音频到了客户端却没听见"与"根本没合成出音频"的**分界线**就在这里。
+   */
+  get outputHealth(): {
+    ctxState: string;
+    scheduledChunks: number;
+    scheduledAudioMs: number;
+    resumeAttempts: number;
+    prebufferMs: number;
+    prebufferAppliedMs: number;
+    prebufferPending: boolean;
+    prebufferActivations: number;
+  } {
+    return this.player.outputHealth;
+  }
+
+  /**
+   * **新一轮开始**：让开场预缓冲重新有资格生效一次。
+   *
+   * 调用点必须是"真正开一轮"的地方（`useVoiceCall.runTurn`）。见
+   * `prebufferGate.ts` 顶部那段：挂到"队列播空"上会在阵发间隙里重复触发。
+   */
+  armPrebufferTurn(): void {
+    this.player.armPrebufferTurn();
+  }
+
+  /** 当前生效的开场预缓冲（毫秒）。0 = 收到第一块就播（既有行为） */
+  get prebufferMs(): number {
+    return this.player.prebuffer;
+  }
+
+  /**
+   * 播放缓冲区统计（见 `ttsBufferLog.ts`）：句内见底 vs 跨句见底 —— 卡顿病因的分界线。
+   *
+   * `bufferMs` 是**当前水位**：它一路贴着 0 就是"供音跟不上播放"（该预缓冲或提速），
+   * 只有跨句那一下空就是"片段调度"（该提前发下一句）。
+   */
+  get bufferStats(): {
+    chunks: number;
+    withinSentenceStarves: number;
+    gapStarves: number;
+    starveTotalMs: number;
+    bufferMs: number;
+  } {
+    return this.player.bufferStats;
+  }
+
+  /** 缓冲区日志明细（逐块水位 + 见底现场）；用户要"卡顿那一刻的日志"就是它 */
+  bufferLogDump(recentChunks = 12): string {
+    return this.player.bufferLogDump(recentChunks);
   }
 
   /** AudioContext 播放时钟（毫秒）—— 与墙钟一起看可判断排程是否错位 */

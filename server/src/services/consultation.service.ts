@@ -351,8 +351,14 @@ class ConsultationService {
     });
 
     // 获取最近 30 条对话用于上下文（降序取最新，再反转为时间正序）
+    //
+    // ⚠️ **必须排除刚刚落库的这一条用户消息**（2026-10-11 用户截图："为什么显示
+    // 我说了两遍？我每个句子都只说了一遍"）：调用方（算法侧 `_build_llm_messages`
+    // 与 `ai.service` 的两个 chat）都会把本轮 `message` 作为最后一条 user 轮次**追加**，
+    // 历史里再带一份就等于同一个用户轮次连着出现两次 —— 模型据实回一句
+    // "你连着说了两遍"，用户看到的就是 AI 在无中生有。
     const historyMessages = await prisma.message.findMany({
-      where: { conversationId },
+      where: { conversationId, id: { not: userMessage.id } },
       orderBy: { createdAt: 'desc' },
       take: 30,
     }).then(msgs => msgs.reverse());
@@ -591,8 +597,13 @@ class ConsultationService {
     emit('user', { userMessage });
 
     // 获取最近 30 条对话用于上下文（降序取最新，再反转为时间正序）
+    //
+    // ⚠️ **必须排除刚刚落库的这一条用户消息**（2026-10-11 用户截图："为什么显示
+    // 我说了两遍？我每个句子都只说了一遍"）：算法侧 `_build_llm_messages` 会把本轮
+    // `message` 作为最后一条 user 轮次再追加一次，历史里再带一份就等于同一个用户
+    // 轮次连着出现两次 —— 模型据实回一句"你连着说了两遍"，用户看到的就是 AI 在无中生有。
     const historyMessages = await prisma.message.findMany({
-      where: { conversationId },
+      where: { conversationId, id: { not: userMessage.id } },
       orderBy: { createdAt: 'desc' },
       take: 30,
     }).then(msgs => msgs.reverse());
@@ -746,8 +757,14 @@ class ConsultationService {
     });
 
     // 获取最近 30 条对话用于上下文（降序取最新，再反转为时间正序）
+    //
+    // ⚠️ **必须排除刚刚落库的这一条用户消息**（2026-10-11 用户截图："为什么显示
+    // 我说了两遍？我每个句子都只说了一遍"）：调用方（算法侧 `_build_llm_messages`
+    // 与 `ai.service` 的两个 chat）都会把本轮 `message` 作为最后一条 user 轮次**追加**，
+    // 历史里再带一份就等于同一个用户轮次连着出现两次 —— 模型据实回一句
+    // "你连着说了两遍"，用户看到的就是 AI 在无中生有。
     const historyMessages = await prisma.message.findMany({
-      where: { conversationId },
+      where: { conversationId, id: { not: userMessage.id } },
       orderBy: { createdAt: 'desc' },
       take: 30,
     }).then(msgs => msgs.reverse());

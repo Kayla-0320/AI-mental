@@ -42,6 +42,15 @@ export type AudioEnergyCallback = (rmsEnergy: number) => void;
  */
 const LAST_FINAL_TIMEOUT_MS = 2500;
 
+/**
+ * 能量历史的滑动窗口长度（帧）。
+ *
+ * 60 fps × 30 s = 1800。取这个数是为了让"每约 1 秒算一次"的均值/标准差
+ * 反映**最近半分钟**，而不是被整通电话的平均稀释；同时给内存一个上界
+ * （1800 × 8 B ≈ 14 KB，与通话时长无关）。
+ */
+const ENERGY_HISTORY_MAX = 1800;
+
 /** 语音识别结束语义。见 `StreamingAsrSession` 的文件头。 */
 export type VoiceAsrMode = 'utterance' | 'streaming';
 
@@ -92,7 +101,29 @@ export function useVoiceAnalysis(
    */
   const startingRef = useRef<Promise<void> | null>(null);
   const startTimeRef = useRef(0);
-  const frameDataRef = useRef<Float32Array[]>([]);
+  /**
+   * 复用的时域/频域暂存缓冲。
+   *
+   * ⚠️ 这里踩过两个坑，都跟"每帧新建数组"有关（2026-10-11 修）：
+   *
+   * 1. **每帧 `new Float32Array(2048)`** → 60 次/秒 × 8 KB ≈ 0.5 MB/s 的垃圾，
+   *    全在通话最吃 CPU 的时候交给 GC。改成两个复用的缓冲后，稳态零分配。
+   * 2. **旧代码把每帧的时域数据 `push` 进一个数组且从不清空**，
+   *    而那个数组**没有任何读者** —— 8 KB/帧 × 60 帧/秒 = 0.5 MB/s 的**常驻**增长：
+   *    10 分钟通话能堆到约 300 MB 活对象（ArrayBuffer 外部内存），
+   *    V8 只能靠越来越频繁的 major GC 顶着，主线程被 GC 暂停几十到几百毫秒，
+   *    表现就是"电话打一会儿就开始卡"。删掉它，不留"以后可能用得上"的缓冲。
+   */
+  const timeBufRef = useRef<Float32Array<ArrayBuffer> | null>(null);
+  const freqBufRef = useRef<Float32Array<ArrayBuffer> | null>(null);
+  /**
+   * 能量历史（dB）。
+   *
+   * 每 60 帧（约 1 秒）用整段历史算一次均值/标准差。以前只增不减 ——
+   * 30 分钟通话会攒到 10 万个数；更糟的是统计口径会随通话时长漂移
+   * （后段被整通平均稀释）。现在按 {@link ENERGY_HISTORY_MAX} 截断成
+   * **滑动窗口**：内存有界，统计也只反映最近约 30 秒。
+   */
   const energyHistoryRef = useRef<number[]>([]);
   const silenceCountRef = useRef(0);
   const pauseCountRef = useRef(0);
@@ -163,9 +194,12 @@ export function useVoiceAnalysis(
 
     const analyser = analyserRef.current;
     const bufferLength = analyser.fftSize;
-    const dataArray = new Float32Array(bufferLength);
+    // 复用缓冲（见 timeBufRef 的注释）：稳态下这里不产生任何新对象
+    if (!timeBufRef.current || timeBufRef.current.length !== bufferLength) {
+      timeBufRef.current = new Float32Array(bufferLength);
+    }
+    const dataArray = timeBufRef.current;
     analyser.getFloatTimeDomainData(dataArray);
-    frameDataRef.current.push(dataArray);
 
     // 计算 RMS 能量
     let sum = 0;
@@ -175,6 +209,13 @@ export function useVoiceAnalysis(
     const rms = Math.sqrt(sum / dataArray.length);
     const energyDb = 20 * Math.log10(rms + 1e-10);
     energyHistoryRef.current.push(energyDb);
+    if (energyHistoryRef.current.length > ENERGY_HISTORY_MAX) {
+      // 超一点再截（不是每次 shift）：摊薄成 O(1)，也别把均值算在抖动里
+      energyHistoryRef.current.splice(
+        0,
+        energyHistoryRef.current.length - ENERGY_HISTORY_MAX,
+      );
+    }
     frameCountRef.current++;
 
     // 通知呼吸模式分析 Hook
@@ -224,8 +265,12 @@ export function useVoiceAnalysis(
       }
       const pitchEstimate = bestLag > 0 ? sampleRate / bestLag : 0;
 
-      // 频谱质心 (使用频域数据)
-      const freqData = new Float32Array(analyser.frequencyBinCount);
+      // 频谱质心 (使用频域数据) —— 同样复用缓冲
+      const binCount = analyser.frequencyBinCount;
+      if (!freqBufRef.current || freqBufRef.current.length !== binCount) {
+        freqBufRef.current = new Float32Array(binCount);
+      }
+      const freqData = freqBufRef.current;
       analyser.getFloatFrequencyData(freqData);
       let spectralSum = 0;
       let spectralWeight = 0;

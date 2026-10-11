@@ -14,7 +14,7 @@
  *                                     │
  *             delta（已是过闸的完整句）┼──► AI 字幕 + 送 TTS 合成（F-2：不需要切句器）
  *                                     │
- *             revise（审计改稿）──────┼──► 停播 + 只改字幕，**不重说**
+ *             revise（审计改稿）──────┼──► 保留已听全的前缀 + **补念剩余部分**（见取舍 4）
  *                                     │
  *             done ───────────────────┼──► 等播放队列排空 ──► 回到 listening
  *                                     └──► 有插话排队 → 顺序发下一轮（不并发）
@@ -33,9 +33,12 @@
  *    要持续说话才打断；急着抢话的人用控制栏的「打断并发送」（零等待 + 立刻定稿）。
  * 3. **回声过滤是文本级的（S5.2）**：阈值与时间窗都是 `docs/echo_calibration.md`
  *    里 40 组真实配对标定出来的，不是拍的。
- * 4. **revise 只改字幕不重说**：话已经播出去收不回来（`voice_call_plan.md` §4.4）。
- *    完整策略（比对最长公共前缀后决定"补说剩余部分"）是**产品判断**，
- *    施工单 §S4.5 标了 ⚠️ 需人工过眼；在有人拍板之前取保守的这半边。
+ * 4. **revise 也要出声（2026-10-11 用户拍板）**：口径是"**每一次输出的内容都需要
+ *    语音合成**" —— 屏幕上有的字，耳朵里必须有。所以不再"只改字幕不重念"，改成
+ *    **前缀对齐后补念剩余部分**（`planReviseSpeech`）：已完整播完且仍是新稿前缀的段
+ *    不重念，从第一段没播完/对不上的地方撤回，只合成新稿剩下没念的部分。
+ *    旧的保守半边（`voice_call_plan.md` §4.4 的"已播出去收不回来"）仍然成立 ——
+ *    撤回的那半句收不回来，所以对齐点只取"**听全了**"的段，宁可重念半句也不吞字。
  * 5. **设备归属**：ASR 走 `useVoiceAnalysis`（消费者名 `'perception-voice'`），
  *    它自己 `mediaStreamManager.acquire('microphone', ...)` —— 通话页**不再**单独持一份
  *    `'call'` 引用（同一份流被两个消费者各持一次是多余的，且给静音与释放增加歧义）。
@@ -55,7 +58,17 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { sendChatMessageStream } from '../services/chatStream';
-import { TtsChannel, type TtsStreamStatus } from '../services/ttsStream';
+import {
+  TtsChannel,
+  type TtsStreamStatus,
+  type TtsPayloadLedger,
+} from '../services/ttsStream';
+import type { TtsUnderrunStats } from '../services/ttsPlayer';
+import {
+  buildVoiceTextLedger as buildLedger,
+  type SpeakPlanMode,
+  type VoiceTextLedger,
+} from '../services/voiceLedger';
 import { EchoFilter, ECHO_OVERLAP_THRESHOLD, scoreAgainstSpoken } from '../services/echoFilter';
 import { useVoiceAnalysis } from './useVoiceAnalysis';
 import type { FacialLiveState } from '../services/facialLiveState';
@@ -82,6 +95,42 @@ export interface TurnMetrics {
   firstPcmReadyMs: number | null;
   /** 本轮第一段真正出声（含排队） */
   firstSoundMs: number | null;
+  /**
+   * 首段 `say` 发出时，播放器里**还排着**的音频时长（毫秒）与**还没合成完**的句数。
+   *
+   * 为什么要有这两个数（2026-10-11 真机：某轮首声 **6159 ms**，而合成本身只要
+   * 1.4~1.7 s）：用户听到的"停顿"有两个来源，对策完全不同 ——
+   *   · 排队 → 本字段大（上一轮的句子还没播完）；
+   *   · 合成慢 → `firstServerFirstChunkMs` 大（排队为 0 时才是它）。
+   * 只报一个 `firstSoundMs` 时，这两种情况长得一模一样。
+   */
+  queueAheadAtFirstSayMs: number | null;
+  pendingUnitsAtFirstSay: number | null;
+  /** 首段「`say` → 第一块 PCM 到手」（客户端观测） */
+  firstPcmAtMs: number | null;
+  /**
+   * 首段服务端自报的合成读数（`end` 帧带来）：请求→第一块、整段耗时、实时率。
+   *
+   * 它们与客户端观测（`firstPcmAtMs` / `firstPcmReadyMs`）相减，就能把
+   * "慢在服务端合成"与"慢在下行/客户端"分开 —— 离线实测 CosyVoice3 首块
+   * 1.44~1.68 s、RTF 0.89~1.01（9 次采样），所以首声远大于它时**不该**怪合成。
+   */
+  firstServerFirstChunkMs: number | null;
+  firstServerSynthMs: number | null;
+  firstRtf: number | null;
+  /**
+   * `speak` 计划到达的时刻（相对本轮开始）；未收到为 null。
+   *
+   * 为什么要单独记它：协议实测顺序是 `meta → delta* → speak → [revise] → done`，
+   * 计划**总是在全部 delta 之后**才到。而客户端在第一个 delta 后只等
+   * `SPEAK_PLAN_GRACE_MS`（350ms）就启动 delta 回退合成 —— 所以这 350ms 到底
+   * "等到了计划"还是"白等"，只能靠 ③ 与 ① 两个时刻比出来（见下面两格）。
+   */
+  speakAtMs: number | null;
+  /** 宽限计时器**触发**的时刻（相对本轮开始）；没走 delta 回退则为 null */
+  graceFiredAtMs: number | null;
+  /** 本轮第一个 `say` 真正发出去的时刻（相对本轮开始）—— "用户说完 → 送合成"的终点 */
+  firstSayAtMs: number | null;
   /** 定稿 → 本轮 `done` */
   doneMs: number | null;
   /** 插话（partial）被判定为真打断 → **本地已经静音** 的耗时（S5.5 判据：< 200 ms） */
@@ -107,6 +156,58 @@ export interface TurnMetrics {
   voiceAllowedAtFirstDelta: boolean | null;
   /** 第一个 `delta` 的原文（截断），用于确认切分输入长什么样 */
   firstDeltaText: string;
+  /**
+   * 本轮播放里出现的**音频空洞**次数与累计时长（毫秒）。
+   *
+   * 判据见 `ttsPlayer.ts` 的 `TtsUnderrunStats`：一块音频来晚了、播放头已经越过
+   * 上一块结尾，中间那段没人补 —— 就是耳朵里的"卡一下"。
+   * **这是"卡顿"与"反应慢"的分界线**：空洞多 ⇒ 音频断裂；
+   * 空洞为 0 而 `firstSoundMs` 大 ⇒ 只是整体慢，不是卡。
+   */
+  audioHoleCount: number;
+  audioHoleMs: number;
+  /**
+   * 本轮被**我们自己掐断**、因此没出声的句数（打断 / 改稿 / 危机切换）。
+   *
+   * ⚠️ 与 `audioHoleCount` 不是一回事：空洞是"该有声音却没有"（缺陷），
+   * 这里是"有意丢掉"（设计）。它单独占一格的意义是：面板上出现数字时，
+   * 用户能分辨"这一句是我不让念的"还是"这一句根本合成不出来" ——
+   * 后者才会弹「语音合成出错」（见 `TtsStreamSession.stoppedSeqs`）。
+   */
+  audioStoppedCount: number;
+  /**
+   * 本轮**载荷级**音频账：发出了几句 `say`、服务端回了多少 PCM 字节。
+   *
+   * ⚠️ 这是"没有声音"这类问题的**唯一直接证据**（时间读数在那情况下全是 `—`）：
+   *   · `says > 0 && pcmBytes === 0` → 服务端一个字节都没回（合成/OOV/取消）
+   *   · `pcmBytes > 0` 却没听到   → 音频到了客户端，问题在播放层
+   * 见 `ttsStream.ts` 的 {@link TtsPayloadLedger}。
+   */
+  says: number;
+  pcmBytes: number;
+  /**
+   * 本轮**送合成过短的单元**个数（< {@link SHORT_UNIT_CHARS} 字）与最短的那一段。
+   *
+   * ## 为什么量它（2026-10-11 用户："AI 回复时偶尔会说出一些乱说的话，然后才能说出回复的内容"）
+   *
+   * `onDelta` 的 delta 回退路径会把**宽限期到点时手上已有的 delta** 送去合成。
+   * 模型流式吐字是逐字的，所以宽限期到点时手上可能只有「嗯」「我」「那个」这么两三个字
+   * —— 那段字会被当成一个**独立合成单元**念出来，听感就是"先说一句莫名其妙的短话，
+   * 然后才说正文"。这不是模型乱说，是**切分切在了一个不成立的位置**。
+   *
+   * 服务端只对"一段太长"负责（`splitSpeakable` 按字数硬切），**管不了"太短"**；
+   * 而"太短的单元"只有这里能观察到，所以先把证据摆出来。
+   */
+  shortUnits: number;
+  /** 最短的那个单元原文（便于一眼看出是什么被打碎念了） */
+  shortestUnit: string;
+  /**
+   * 本轮是否出现过"首段太短、先不送合成、等凑齐"（见 `flushByDelta` 的短单元守卫）。
+   *
+   * 这是"AI 先说一句莫名其妙的话"那件事的**处理记录**：为 1 说明本轮真的差点
+   * 把两三个字单独念出来，被守卫拦住了。
+   */
+  shortHeld: boolean;
 }
 
 /** 挂断时等这一轮跑完的上限；超时也要让用户走得了 */
@@ -141,42 +242,57 @@ const HALF_DUPLEX_WINDOW_MS = 400;
 const BARGE_IN_CONFIRM_MS = 600;
 
 /**
- * 送 TTS 前的最后一道保险（施工单 §S6.3）：**含电话号码特征的片段一律不合成**。
+ * 送 TTS 前的最后一道保险（施工单 §S6.3）：**含电话号码特征的片段不合成**。
  *
  * 为什么必须落成代码而不是靠自觉：实测（`docs/echo_calibration.md` §4.3）
  * `400 161 9995` 被念成「四百六十一九九九九五」—— TTS 把它当成一个 11 位数读，
  * 而不是分组电话号码。危机场景下念错热线号码的后果不可接受，所以号码**只以文字卡片呈现**。
  *
- * 比施工单里那条正则多收了几个字符：全角括号与破折号（中文排版里很常见），
- * 以及"7 位以上连续数字"（不含分隔符的写法）。
+ * ⚠️ 2026-10-11 修正粒度：旧实现是在**整段（最多 100 字、按逗号打包）**上测这个正则，
+ * 命中就把**整段**丢掉 —— 一句里带号码，等于整句都没有声音（而字幕是完整的），
+ * 这正是"语音输出不全"的一个真凶。现在正则只用来**摘出号码本身**，
+ * 前后文照常合成，被跳过的片段连原因一起记进对账链（见 `splitForSpeech`）。
  */
-export const PHONE_LIKE = /\d[\d\s\-—–()（）]{5,}\d|\d{7,}/;
+export const PHONE_LIKE = PHONE_LIKE_REGEX;
+export { PHONE_LIKE_SOURCE } from '../services/ttsSplit';
 
 /**
- * "这句话里有能发音的东西吗" —— 只有标点/符号的片段不送合成。
- *
- * 实测（网关日志）：AI 的回复里带书名号，`splitSpeakable` 会把 `「` `」` 切成
- * **独立的 1 字片段**送合成，而 sherpa 的词表里没有这两个符号：
- *
- * ```
- * Ignore OOV '「' / Ignore OOV '」'  →  Failed to convert 」 to token IDs
- * [TTS] 合成结果为空白音频：seq=3（文本 1 字），已跳过
- * ```
- *
- * 每一轮都会白发 2 次注定失败的请求（还各带回一次 `error` 回调）。
- * 汉字 / 字母 / 数字都算"能发音"；纯标点直接不入队。
- */
-const SPEAKABLE = /[\p{Script=Han}\p{L}\p{N}]/u;
-
-/**
- * 把一段 AI 文本切成"送合成的批次"（施工单 §S4.4）。
+ * 把一段 AI 文本切成"送合成的批次"（施工单 §S4.4），并逐片段记账。
  *
  * 实现已抽到 `services/ttsSplit.ts`（纯函数、可单测），这里 import 进来供本文件
  * 使用，并原样转出，保持既有调用点与外部引用不变。
  */
-import { splitSpeakable } from '../services/ttsSplit';
+import {
+  splitSpeakable,
+  splitForSpeech,
+  planJoinMatchesText,
+  unitsToCancelForPlan,
+  planReviseSpeech,
+  PHONE_LIKE as PHONE_LIKE_REGEX,
+  type SkippedSpeechFragment,
+} from '../services/ttsSplit';
 
 export { splitSpeakable, MAX_TTS_UNIT_CHARS } from '../services/ttsSplit';
+
+/**
+ * 通话过程记录（时间轴上的消息流）。
+ *
+ * 为什么要有它：页面原来只有 `userLines` / `aiLines` 两个**扁平字符串数组** ——
+ * 它们回答"现在显示什么字"，回答不了"这一通电话聊了什么"（没有讲话人、没有时刻、
+ * 两个数组各自追加因而看不出轮次）。用户口径是"每轮对话过程都像文字对话那样"，
+ * 所以这里旁路再记一条**带讲话人与时刻**的时间轴，页面按轮渲染。
+ *
+ * ⚠️ 它**只做编排**：文本取的是同一个字符串（改稿后的文本原样进来），不改字、不丢字；
+ * 也不参与风险等级 / 融合权重 / 画像分数。实现与回归见 `services/callTranscript.ts`
+ * 与 `scripts/verify_call_transcript.ts`。
+ */
+import {
+  appendAssistantDelta,
+  appendUserMessage,
+  createTranscript,
+  nextTranscriptId,
+  type CallTranscriptEntry,
+} from '../services/callTranscript';
 
 /** 一轮进行中的累计量（放 ref：TTS 回调与 SSE 回调不在同一作用域） */
 interface TurnAccumulator {
@@ -185,6 +301,21 @@ interface TurnAccumulator {
   firstDeltaMs: number | null;
   firstPcmReadyMs: number | null;
   firstSoundMs: number | null;
+  /** 首段 `say` 时"前面还排着多少音频 / 几句没合成完"（排队 vs 合成慢的分界线） */
+  queueAheadAtFirstSayMs: number | null;
+  pendingUnitsAtFirstSay: number | null;
+  /** 首段「`say` → 第一块 PCM」（客户端） */
+  firstPcmAtMs: number | null;
+  /** 首段服务端自报：请求→第一块 / 整段合成 / 实时率 */
+  firstServerFirstChunkMs: number | null;
+  firstServerSynthMs: number | null;
+  firstRtf: number | null;
+  /** `speak` 计划到达时刻（相对本轮开始）；未收到为 null —— 与 `graceFiredAtMs` 比出"白等" */
+  speakAtMs: number | null;
+  /** 宽限计时器触发时刻（相对本轮开始）；没走 delta 回退为 null */
+  graceFiredAtMs: number | null;
+  /** 本轮第一个 `say` 发出时刻（相对本轮开始） */
+  firstSayAtMs: number | null;
   /** 本轮第一段的 seq —— 只有它算"首段"（见施工单 §1 F-7） */
   firstSeq: number | null;
   units: number;
@@ -204,6 +335,79 @@ interface TurnAccumulator {
   firstDeltaText: string;
   /** 本轮字幕与音频的逐段对齐状态（见 {@link SubtitleSyncState}） */
   subtitle: SubtitleSyncState;
+  /**
+   * 本轮开始时播放器的**累计**空洞读数（`TtsPlayer.underrun`）。
+   *
+   * 单轮增量 = 收尾时的累计值 − 这里的快照。为什么不直接用播放器自己的计数：
+   * 播放器是整通电话一个实例，而 `TurnMetrics` 是**按轮**的读数。
+   */
+  holeBaseCount: number;
+  holeBaseMs: number;
+  /** 本轮开始时"被我们掐断未播"的累计读数（口径同上，见 TurnMetrics.audioStoppedCount） */
+  stoppedBaseCount: number;
+  /**
+   * 本轮是否已经因为"首段太短"扣过一次（见 `TurnMetrics.shortHeld`）。
+   * 每个轮次清一次；用来保证"扣一次、最多再等一个宽限期就照发"，绝不长期扣住文本。
+   */
+  shortHeld: boolean;
+  /**
+   * 本轮开始时**载荷级账**的基线（`say` 句数 / 收到的 PCM 字节数）。
+   *
+   * 为什么要它（2026-10-11 用户："我两次说我感觉好一些了都没有声音出来"）：
+   * 时间读数（首声/首块/RTF）只能回答"慢不慢"；"**完全没有声音**"必须靠数量回答——
+   * 是没发 `say`、还是发了但服务端没回音频、还是回了被取消丢掉。
+   * 见 `ttsStream.ts` 的 {@link TtsPayloadLedger}。
+   */
+  sayBase: number;
+  pcmBytesBase: number;
+
+  // ── 文本 ↔ 语音对账链（见 VoiceTextLedger）──────────────────────────────
+  /** 本轮序号（单调递增，只在日志/面板里用来把四份文本对上号） */
+  turnId: number;
+  /**
+   * 本轮合成由谁驱动。**同一轮只允许一个来源**（见 `planModeRef` 的注释）：
+   * `pending` 还在等计划、`speak-plan` 由定稿计划驱动、`delta-fallback` 由 delta 驱动。
+   */
+  planMode: SpeakPlanMode;
+  /** B：`speak` 计划（没收到为 null） */
+  planText: string | null;
+  planSegments: string[] | null;
+  /** C：实际发出的每个 `say`（按序）—— 拼接起来就是"文本层认为要念的内容" */
+  saidUnits: { seq: number; text: string }[];
+  /** D：实际出声的 `spoken_text`（按播放顺序） */
+  spokenUnits: { seq: number; text: string }[];
+  /** 有意跳过的片段（号码 / 纯标点）：对账时算**预期例外** */
+  skippedFragments: SkippedSpeechFragment[];
+  /** 计划迟到/重复/违约等异常（人能读的一句话） */
+  ledgerNotes: string[];
+  /**
+   * 被打断/改稿时**没有念出来**的那一段（页面据此明确标注，不再让字幕假装念过）。
+   * null 表示本轮从头到尾都念完了。
+   */
+  unspokenTail: string | null;
+}
+
+/** 单轮合成的来源（同一轮只允许一个） */
+export type { SpeakPlanMode, VoiceTextLedger } from '../services/voiceLedger';
+
+/**
+ * 把"响应头写出之前"的流式失败翻译成用户能行动的一句话。
+ *
+ * `onError` 只覆盖**流内部**下发的 `error` 事件；服务端在 `writeHead(200)` 之前失败
+ * （会话已被删除 → 404、鉴权失效、上游 500）时，`completed` 是 reject 的，
+ * 必须另接一条 catch —— 否则本轮永远停在"正在思考…"，控制台只有一条
+ * unhandled rejection（2026-10-11 实测）。
+ */
+function describeStreamFailure(err: unknown): string {
+  const status = (err as { status?: number } | null)?.status;
+  if (status === 404) {
+    return '这通电话的会话已经不存在了（可能已被删除）。请返回后重新发起通话。';
+  }
+  if (status === 401 || status === 403) {
+    return '登录状态已失效，请重新登录后再发起通话。';
+  }
+  const detail = err instanceof Error ? err.message : String(err);
+  return `这一轮没能生成回复（${detail}）。麦克风仍然开着，你可以再说一次。`;
 }
 
 function newAccumulator(): TurnAccumulator {
@@ -213,6 +417,15 @@ function newAccumulator(): TurnAccumulator {
     firstDeltaMs: null,
     firstPcmReadyMs: null,
     firstSoundMs: null,
+    queueAheadAtFirstSayMs: null,
+    pendingUnitsAtFirstSay: null,
+    firstPcmAtMs: null,
+    firstServerFirstChunkMs: null,
+    firstServerSynthMs: null,
+    firstRtf: null,
+    speakAtMs: null,
+    graceFiredAtMs: null,
+    firstSayAtMs: null,
     firstSeq: null,
     units: 0,
     sawRevise: false,
@@ -226,7 +439,48 @@ function newAccumulator(): TurnAccumulator {
     voiceAllowedAtFirstDelta: null,
     firstDeltaText: '',
     subtitle: newSubtitleSync(),
+    holeBaseCount: 0,
+    holeBaseMs: 0,
+    stoppedBaseCount: 0,
+    sayBase: 0,
+    pcmBytesBase: 0,
+    shortHeld: false,
+    turnId: 0,
+    planMode: 'pending',
+    planText: null,
+    planSegments: null,
+    saidUnits: [],
+    spokenUnits: [],
+    skippedFragments: [],
+    ledgerNotes: [],
+    unspokenTail: null,
   };
+}
+
+/**
+ * 把一轮的对账记录整理成"人能读的差异清单"。
+ *
+ * 实现是**纯函数**，放在 `services/voiceLedger.ts`（不依赖 React/DOM/网络），
+ * 因此能在 Node 里直接跑回归：`scripts/verify_tts_text_ledger.ts`。
+ *
+ * @param acc 本轮累计量
+ * @param shown 页面最终显示的文本（A）
+ * @returns 对账记录
+ */
+export function buildVoiceTextLedger(acc: TurnAccumulator, shown: string): VoiceTextLedger {
+  return buildLedger({
+    turnId: acc.turnId,
+    source: acc.planMode,
+    shown,
+    planText: acc.planText,
+    planSegments: acc.planSegments,
+    saidUnits: acc.saidUnits,
+    spokenUnits: acc.spokenUnits,
+    skipped: acc.skippedFragments,
+    notes: acc.ledgerNotes,
+    unspokenTail: acc.unspokenTail,
+    sawRevise: acc.sawRevise,
+  });
 }
 
 /** 半双工窗口（见 {@link HALF_DUPLEX_WINDOW_MS}）之外，等 `speak` 计划的宽限时长。
@@ -242,8 +496,44 @@ function newAccumulator(): TurnAccumulator {
  *
  * 取 350 ms：足够覆盖实测的 delta→speak 间隔（~200ms），又不至于让"没有计划"的
  * 路径明显变慢。
+ *
+ * ⚠️ **2026-10-11：这个值已可逐通话覆盖**（`UseVoiceCallOptions.graceMs`，
+ * 通话页用 `?grace=250`）。原因是排查发现 **`speak` 计划实际上从来没在宽限期内到达过**
+ * （真机 `speak 到达 = 未收到`），也就是这 350ms 基本是**纯等待**：
+ * 用户决定下一轮做 350 → 250 的 A/B，所以先把旋钮做出来，**默认值仍然是 350 不动**。
+ * 注意缩短它有可能让首段更早送去合成、但**首段更短、片段数变多**，反而加重句中卡顿 ——
+ * 所以对比要看四项读数：`首个 say` / 首段出声 / `本轮合成段数` / `缓冲·见底`。
  */
 const SPEAK_PLAN_GRACE_MS = 350;
+
+/** 宽限期的允许范围（防止误配把首段切得太碎或白等太久） */
+const MIN_SPEAK_PLAN_GRACE_MS = 0;
+const MAX_SPEAK_PLAN_GRACE_MS = 1000;
+
+/**
+ * "太短的合成单元"阈值（字符数）。
+ *
+ * 为什么用 4：中文里一格完整的语义单位极少只有 1~3 个字（"嗯""那个""我想"），
+ * 而**独立合成**这几个字会读出一段突兀的短话 —— 用户听到的"先冒出一句乱话"
+ * 最可能就是它。这里只**计量并展示**，不改变切分行为（改切分是产品判断，见
+ * `TurnMetrics.shortUnits` 的说明）。
+ */
+const SHORT_UNIT_CHARS = 4;
+
+/**
+ * **首段合成的最小字数**：不足它就先扣住、再等一个宽限期凑齐（见 `flushByDelta`）。
+ *
+ * 为什么需要（2026-10-11 用户："AI 回复时偶尔会说出一些乱说的话，然后才能说出回复的内容"）：
+ * delta 是**逐字**到达的，宽限期到点时手上可能只有「嗯」「不过」这种两三个字。
+ * 原实现会把它当**一个独立合成单元**送去念 —— 于是用户先听到一句莫名其妙的短话，
+ * 然后才是正文。这与"模型乱说"完全不同：文本没错，是**切在了一个不成立的位置**。
+ *
+ * 边界（**一个字都不丢**）：
+ *   · 扣住的文本放回队列，下一个 delta 到达时继续累积；
+ *   · 若又等满一个宽限期还没凑齐，**照原样送出去**（`allowShort`），只是白等 ≤1 个宽限期；
+ *   · 一轮只扣一次（`TurnAccumulator.shortHeld`），不会把文本长期压住。
+ */
+const MIN_FIRST_UNIT_CHARS = 6;
 
 /**
  * 字幕与音频的**逐段对齐**状态（通话语音模式下）。
@@ -319,6 +609,25 @@ export interface UseVoiceCallOptions {
    * @returns 快照；没有新鲜读数时返回 `null`（本轮就**不**带面部字段上行）
    */
   getFacialLiveState?: () => FacialLiveState | null;
+  /**
+   * **开场预缓冲**（毫秒）：第一块音频到达后先攒这么久再出声，用来吸收
+   * CosyVoice3 阵发式供音（块间隔 1.5~3.2s）造成的短时断档。
+   *
+   * 实测依据与默认值见 `services/ttsPlayer.ts` 的 `DEFAULT_PREBUFFER_MS`
+   * （**默认 300ms**，用户真机试听后定的）。通话页可用 `?prebuffer=0` 关掉、
+   * `?prebuffer=600` 加强。**不传 = 用 ttsPlayer 的默认值**（不要在这里写 0 兜底，
+   * 那会把默认值静默吃掉）。
+   */
+  prebufferMs?: number;
+  /**
+   * **等 `speak` 计划的宽限期**（毫秒）。不传就用 {@link SPEAK_PLAN_GRACE_MS}（350）。
+   *
+   * 为什么要可覆盖：实测 `speak` 计划从未在宽限期内到达（真机 `speak 到达 = 未收到`），
+   * 这 350ms 基本是纯等待。但它不是"越小越好"：扣住的 delta 越早放出去，
+   * 首段可能越短、合成片段数越多，反而加重句中卡顿。所以做成旋钮做 A/B，
+   * **默认值不动**（用户要求先验收预缓冲修复、再单独测这一项）。
+   */
+  graceMs?: number;
 }
 
 export interface UseVoiceCallResult {
@@ -369,6 +678,74 @@ export interface UseVoiceCallResult {
   /** 麦克风实际生效的设置；未启动时为 null */
   micSettings: MicSettings | null;
   turn: TurnMetrics | null;
+  /**
+   * **载荷级** TTS 账（整通电话累计）：`say` 发出几句、服务端回了多少 PCM 字节、
+   * 有多少帧/字节被取消丢掉、有多少句"合成成功但没音频"。
+   *
+   * 与 `turn.says / turn.pcmBytes`（单轮增量）配着看：
+   * 整通累计回答"到底出没出过声音"，单轮增量回答"是哪一轮没出声"。
+   * 见 `ttsStream.ts` 的 {@link TtsPayloadLedger}。
+   */
+  ttsLedger: TtsPayloadLedger | null;
+  /**
+   * **输出侧**健康读数：浏览器 `AudioContext` 的实际状态 + 累计排程的音频块数与时长。
+   *
+   * 它是"音频到了客户端却没听见"与"根本没合成出音频"的分界线：
+   * `suspended` 表示自动播放策略把播放器挂起了（排了程也不会响），
+   * 而这时所有时间读数（首声/首块/RTF）看起来都正常。
+   */
+  outputHealth: {
+    ctxState: string;
+    scheduledChunks: number;
+    scheduledAudioMs: number;
+    resumeAttempts: number;
+    prebufferMs: number;
+    prebufferAppliedMs: number;
+    prebufferPending: boolean;
+    prebufferActivations: number;
+  } | null;
+  /**
+   * 播放缓冲区统计（`?debug=1` 面板）：**句内见底 vs 跨句见底**。
+   *
+   * 用户口径（2026-10-11）："小卡顿优先排查供音速度是否跟得上播放，以及两个片段之间
+   * 有没有短暂断档" —— 这两个数就是那两件事的判据：
+   *   · `withinSentenceStarves` 大 ⇒ 供音跟不上播放（该预缓冲 / 该优化推理）；
+   *   · `gapStarves` 大 ⇒ 片段之间空着等（该提前发下一句的合成请求）；
+   *   · `bufferMs` 是当前水位，它一路贴 0 就是前者。
+   */
+  bufferStats: {
+    chunks: number;
+    withinSentenceStarves: number;
+    gapStarves: number;
+    starveTotalMs: number;
+    bufferMs: number;
+  } | null;
+  /** 缓冲区日志明细（逐块水位 + 见底现场）—— 面板上的「导出缓冲日志」按钮用它 */
+  dumpBufferLog: (recentChunks?: number) => string;
+  /** 整通电话累计的播放空洞统计（`?debug=1` 面板；判据见 `TtsUnderrunStats`） */
+  audioStats: TtsUnderrunStats | null;
+  /**
+   * **整通电话的完整过程**：时间轴上的每一条消息（谁 + 什么时刻 + 第几轮 + 说了什么）。
+   *
+   * 与 `userLines` / `aiLines` 的关系：后两者是"字幕区现在该显示什么"的扁平视图，
+   * 本字段是"这一通电话聊了什么"的可读记录 —— 页面按轮铺开、按时间读（用户口径：
+   * "把每轮对话过程都像文字对话那样弄出来"）。已说出的内容**只增不删**，
+   * 断网重连、打断、改稿都不会清空它。
+   */
+  transcript: CallTranscriptEntry[];
+  /**
+   * 最近一轮「文本 ↔ 语音」对账（A 显示 / B 计划 / C 发出 / D 出声 + 差异清单）。
+   *
+   * 这是排查"回复和语音不匹配"的第一手数据：先看 `exceptions`，
+   * 它直接写出**第一处不一致在哪一层**（见 `buildVoiceTextLedger`）。
+   */
+  voiceLedger: VoiceTextLedger | null;
+  /**
+   * 本轮**没有被念出来**的那一段（打断/改稿/危机/挂断时非空）。
+   *
+   * 页面据此明确标注「以下未朗读」—— 字一个不丢，但界面不再假装它出过声。
+   */
+  unspokenTail: string | null;
   startCall: () => Promise<void>;
   /** 挂断：冲刷最后一段定稿 → 等本轮跑完（有上限）→ 释放资源 */
   endCall: () => Promise<void>;
@@ -387,11 +764,41 @@ export interface UseVoiceCallResult {
 }
 
 export function useVoiceCall(options: UseVoiceCallOptions): UseVoiceCallResult {
-  const { conversationId, getFacialLiveState } = options;
+  const { conversationId, getFacialLiveState, prebufferMs, graceMs } = options;
+  /**
+   * 本次通话实际生效的宽限期。放 ref：`runTurn` 是个大 `useCallback`，
+   * 不想因为一个数值变化就把它重建（它与轮次编排绑在一起）。
+   */
+  const graceMsRef = useRef(
+    Math.max(
+      MIN_SPEAK_PLAN_GRACE_MS,
+      Math.min(MAX_SPEAK_PLAN_GRACE_MS, Math.round(graceMs ?? SPEAK_PLAN_GRACE_MS)),
+    ),
+  );
+  graceMsRef.current = Math.max(
+    MIN_SPEAK_PLAN_GRACE_MS,
+    Math.min(MAX_SPEAK_PLAN_GRACE_MS, Math.round(graceMs ?? SPEAK_PLAN_GRACE_MS)),
+  );
 
   const [phase, setPhase] = useState<CallPhase>('idle');
   const [userLines, setUserLines] = useState<string[]>([]);
   const [aiLines, setAiLines] = useState<string[]>([]);
+  /**
+   * 通话过程记录（见 `UseVoiceCallResult.transcript`）。
+   *
+   * ⚠️ 与 `userLines` / `aiLines` **同源同刻**更新：凡是往那两个字幕数组写的地方，
+   * 这里都跟着写一条。字幕数组是既有行为（不动），本字段是旁路的可读记录。
+   */
+  const [transcript, setTranscript] = useState<CallTranscriptEntry[]>(() => createTranscript());
+  /** 消息 id 计数器（整通电话单调递增；重置时机见下面的 startCall 清空 effect） */
+  const transcriptIdRef = useRef(0);
+  /**
+   * 用户开口的次数（从 1 开始）。AI 的一条回复与前一条用户消息**同号**，
+   * 页面据此把"一次提问 + 它的一次回答"分成同一轮。
+   */
+  const transcriptTurnRef = useRef(0);
+  /** 本次通话是否已经开过一次（真源 `phase !== 'idle'`；见下面清空时间轴的 effect） */
+  const transcriptSessionRef = useRef(false);
   const [revised, setRevised] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [ttsStatus, setTtsStatus] = useState<TtsStreamStatus | null>(null);
@@ -417,6 +824,46 @@ export function useVoiceCall(options: UseVoiceCallOptions): UseVoiceCallResult {
    */
   const [lastRisk, setLastRisk] = useState<string | null>(null);
   const [turn, setTurn] = useState<TurnMetrics | null>(null);
+  /**
+   * 播放空洞的**整通电话累计**读数（`?debug=1` 面板看它）。
+   *
+   * 与 `turn.audioHoleMs`（单轮增量）的区别：轮次读数会被下一轮覆盖，
+   * 而"这通电话一共卡了多少下"需要累计量才对得上用户的体感。
+   */
+  const [audioStats, setAudioStats] = useState<TtsUnderrunStats | null>(null);
+  /** 载荷级 TTS 账（见 {@link TtsPayloadLedger}）—— 面板上回答"到底出没出过声音" */
+  const [ttsLedger, setTtsLedger] = useState<TtsPayloadLedger | null>(null);
+  /** 输出侧健康（见 {@link UseVoiceCallResult.outputHealth}）—— 面板上区分"没合成"与"没听见" */
+  const [outputHealth, setOutputHealth] = useState<{
+    ctxState: string;
+    scheduledChunks: number;
+    scheduledAudioMs: number;
+    resumeAttempts: number;
+    prebufferMs: number;
+    prebufferAppliedMs: number;
+    prebufferPending: boolean;
+    prebufferActivations: number;
+  } | null>(null);
+  /** 播放缓冲区统计（句内/跨句见底）—— 见 {@link UseVoiceCallResult.bufferStats} */
+  const [bufferStats, setBufferStats] = useState<{
+    chunks: number;
+    withinSentenceStarves: number;
+    gapStarves: number;
+    starveTotalMs: number;
+    bufferMs: number;
+  } | null>(null);
+  /**
+   * 最近一轮的「文本 ↔ 语音」对账记录（A/B/C/D 四份文本 + 差异清单）。
+   *
+   * 用户要求的第一条就是这个：**先让数据指出是哪一层不一致**，而不是猜。
+   * 见 {@link buildVoiceTextLedger} 与 `docs/voice_call_text_voice_ledger.md`。
+   */
+  const [voiceLedger, setVoiceLedger] = useState<VoiceTextLedger | null>(null);
+  /**
+   * 「本轮哪一段没被念出来」—— 与台账同源，但单独放 state：
+   * 页面要在**打断发生的当下**立刻标注，而不是等这一轮结束后的对账快照。
+   */
+  const [unspokenTailState, setUnspokenTailState] = useState<string | null>(null);
   /** 正在飞的轮次数（与 `maxConcurrentTurns` 一起构成"无并发轮次"的硬证据） */
   const activeTurnsRef = useRef(0);
   const maxConcurrentTurnsRef = useRef(0);
@@ -433,6 +880,26 @@ export function useVoiceCall(options: UseVoiceCallOptions): UseVoiceCallResult {
     phaseRef.current = next;
     setPhase(next);
   }, []);
+
+  /**
+   * 通话开始时清空过程记录（**只在"从 idle 进入通话"这一次**）。
+   *
+   * 为什么按 `phase !== 'idle'` 判：这正是页面计时器的口径（顶栏 `mm:ss` 从
+   * "离开 idle"开始走）。若在 `startCall` 里清，`connecting → error → 再点一次`
+   * 会把上一次失败通话的残留也带进来；而"重试"（error → connecting）时
+   * `phase` 一直是非 idle，所以**不会**清掉用户已经看到的过程 —— 与页面计时一致。
+   */
+  useEffect(() => {
+    if (phase === 'idle') {
+      transcriptSessionRef.current = false;
+      return;
+    }
+    if (transcriptSessionRef.current) return;
+    transcriptSessionRef.current = true;
+    transcriptIdRef.current = 0;
+    transcriptTurnRef.current = 0;
+    setTranscript(createTranscript());
+  }, [phase]);
 
   const ttsRef = useRef<TtsChannel | null>(null);
   /** 送合成的段序号，整通电话内只增不减 */
@@ -518,18 +985,110 @@ export function useVoiceCall(options: UseVoiceCallOptions): UseVoiceCallResult {
   const deferredDeltaRef = useRef('');
   const deferTimerRef = useRef(0);
   /**
+   * 本轮在**过程记录**里的轮次号（1 起）。
+   *
+   * 口径：AI 的回复跟前一条用户消息同号；若这一轮还没归属用户消息（异常路径），
+   * 退化成"用户已开口数 + 1"，至少保证单调不串轮。读 ref，身份恒定。
+   */
+  const accTurnNo = useCallback((): number => {
+    const n = accRef.current.turnId;
+    return n > 0 ? n : transcriptTurnRef.current + 1;
+  }, []);
+
+  /**
    * 轮的收尾：把还没随音频上屏的部分兑现。
    *
    * 四种收尾路径都必须调用它，否则会吞字：轮 `done`、审计改稿、用户插话打断、
    * 进入危机分支、挂断（见各调用点的注释）。
    */
-  const flushSubtitleRemainder = useCallback((state?: SubtitleSyncState) => {
-    const st = state ?? subtitleRef.current;
-    const rest = subtitleRemainder(st);
-    if (!rest) return;
-    st.shownChars = st.full.length;
-    setAiLines((prev) => (prev.length === 0 ? [st.full] : [...prev.slice(0, -1), st.full]));
-  }, []);
+  const flushSubtitleRemainder = useCallback(
+    (state?: SubtitleSyncState, flags: { unspoken?: boolean } = {}) => {
+      const st = state ?? subtitleRef.current;
+      const rest = subtitleRemainder(st);
+      if (!rest) return;
+      st.shownChars = st.full.length;
+      const full = st.full;
+      setAiLines((prev) => (prev.length === 0 ? [full] : [...prev.slice(0, -1), full]));
+      // 过程记录：字幕尾部被整体兑现成全文 —— 时间轴上也是**替换**尾部那条 AI 消息
+      // （同一条回复的后续增量，不是新的一条）。`unspoken` 表示这一轮剩下的字
+      // 确实不会再出声了（打断 / 改稿 / 危机 / 挂断）。
+      transcriptIdRef.current += 1;
+      setTranscript((prev) =>
+        appendAssistantDelta(
+          prev,
+          full,
+          accTurnNo(),
+          Date.now(),
+          nextTranscriptId(transcriptIdRef.current),
+          'replace',
+          flags.unspoken === true ? { unspoken: true } : {},
+        ),
+      );
+    },
+    // `accTurnNo` 读 ref、身份恒定（写成依赖不改变行为，只为与既有风格一致）
+    [accTurnNo],
+  );
+
+  /**
+   * 「这一段不会再出声了」—— 先记账，再照旧把剩余字幕兑现上屏。
+   *
+   * ## 为什么必须有它（用户报告："回复和语音内容完全不匹配"）
+   *
+   * 打断 / 审计改稿 / 危机切换都会**立刻停掉**本轮剩余的音频。而字幕的既有策略是
+   * "内容不藏"—— 停播后仍把剩下的字一次性刷上屏。两者叠加的后果是：
+   * **屏幕上是一整段完整回复，耳朵里只听到了前半句**，用户读到的和听到的不是一回事。
+   *
+   * 现在把"未朗读的那一段"记进本轮台账（`TurnAccumulator.unspokenTail`），
+   * 页面据此明确标注「以下未朗读」；字一个都不丢（仍然是原样上屏），
+   * 但界面不再假装它被念过。
+   *
+   * @param reason 停播原因（打断 / 改稿 / 危机 / 挂断），写进台账便于复盘
+   * @returns 未朗读的文本（没有剩余时为空串）
+   */
+  const markUnspokenTail = useCallback(
+    (reason: 'barge-in' | 'revise' | 'crisis' | 'hangup'): string => {
+      const acc = accRef.current;
+      const rest = subtitleRemainder(acc.subtitle);
+      if (!rest) return '';
+      acc.unspokenTail = rest;
+      acc.ledgerNotes.push(`停播原因=${reason}，未朗读 ${rest.length} 字`);
+      setUnspokenTailState(rest);
+      // 兑现上屏的同时把"这一段没念出来"记进过程记录（两者同一次写入，不会错位）
+      flushSubtitleRemainder(acc.subtitle, { unspoken: true });
+      return rest;
+    },
+    [flushSubtitleRemainder],
+  );
+
+  /**
+   * AI 文本到达时写进**过程记录**（时间轴）。
+   *
+   * 与页面字幕同步改写：`mode='delta'` 是流式增量（同一轮追加到尾部那条），
+   * `mode='replace'` 是整轮替换（`speak` 计划 / 审计改稿 / 分段揭示的全文）。
+   * 轮次取 {@link accTurnNo} —— 与"前一条用户消息同号"。
+   */
+  const pushAiTranscript = useCallback(
+    (
+      text: string,
+      mode: 'delta' | 'replace',
+      flags: { revised?: boolean; unspoken?: boolean } = {},
+    ) => {
+      if (!text) return;
+      transcriptIdRef.current += 1;
+      setTranscript((prev) =>
+        appendAssistantDelta(
+          prev,
+          text,
+          accTurnNo(),
+          Date.now(),
+          nextTranscriptId(transcriptIdRef.current),
+          mode,
+          flags,
+        ),
+      );
+    },
+    [accTurnNo],
+  );
   /** `runTurn` 的 ref —— 定稿回调需要调用它，而它定义在后面 */
   const runTurnRef = useRef<(text: string) => void>(() => undefined);
 
@@ -633,6 +1192,8 @@ export function useVoiceCall(options: UseVoiceCallOptions): UseVoiceCallResult {
   //    （`stopAll` 不会触发播放器的 `onEnd`，见 EchoFilter 的注释）。
   const handleDrained = useCallback(() => {
     echoRef.current?.retireAll(performance.now());
+    // 队列空了：这一刻的空洞累计量是"这一轮最终的"读数，刷新给诊断面板
+    setAudioStats(ttsRef.current?.underrun ?? null);
     settleToListening();
   }, [settleToListening]);
 
@@ -660,13 +1221,20 @@ export function useVoiceCall(options: UseVoiceCallOptions): UseVoiceCallResult {
     // 本轮剩下的句子**不再出声**：已经"立刻静音"了，几百毫秒后又自己说起来
     // 会让人以为打断失败了。字幕照旧追加（内容不藏），回答由队列里的插话开新一轮。
     mutedByBargeInRef.current = true;
-    // 打断前还没随音频上屏的字幕不会再有音频了，立刻兑现（内容不藏）
-    flushSubtitleRemainder(acc.subtitle);
+    // 打断前还没随音频上屏的字幕不会再有音频了：兑现上屏 + **记账为"未朗读"**
+    // （否则屏幕上是一整段、耳朵里只有前半句 —— 用户报告的就是这个）
+    markUnspokenTail('barge-in');
     acc.interruptMs = Math.round(now - acc.startedAt);
     // S5.5 的判据：**从"判定为真打断"到"本地已经不响了"**（这一段全是客户端可控的），
-    // 要求 < 200ms。`stopAll()` 同步掐断，不 await、不回调。
+    // 要求 < 200ms。`stopFrom()` 同步掐断，不 await、不回调。
+    //
+    // ⚠️ 用 `stopFrom` 而不是 `stopAll`：只清本地队列的话，**服务端仍在合成这一轮
+    // 剩下的句子**（一句一个 seq，客户端在收到计划时就全发出去了），几百毫秒后
+    // PCM 到齐会被照常播出来 —— 用户听到"停了一下又自己说起来"。
+    // `stopFrom` 同时发 WS `cancel`（服务端从待合成队列摘掉 + 让在途合成提前结束），
+    // 并让已经在路上的帧因查不到 segment 被丢弃。见 `TtsStreamSession.cancelFrom`。
     const stopAt = performance.now();
-    ttsRef.current?.stopAll();
+    ttsRef.current?.stopFrom(ttsSeqRef.current);
     acc.interruptStopMs = Math.round(performance.now() - stopAt);
     echoRef.current?.retireAll(now);
     setBargeIns((n) => n + 1);
@@ -674,7 +1242,7 @@ export function useVoiceCall(options: UseVoiceCallOptions): UseVoiceCallResult {
     // 用户能立刻看到自己的话被听见了（本轮 SSE 仍在跑，F-4）
     applyPhase('listening');
     return true;
-  }, [applyPhase]);
+  }, [applyPhase, markUnspokenTail]);
 
   const handleVoicePartial = useCallback(
     (text: string) => {
@@ -736,6 +1304,19 @@ export function useVoiceCall(options: UseVoiceCallOptions): UseVoiceCallResult {
     }
 
     setUserLines((prev) => [...prev, t]);
+    // 过程记录：用户的每一次开口是时间轴上的一条消息，也是新一轮的开始
+    // （AI 的回复会带着同一个轮次号跟上来，页面据此按轮铺开）。
+    transcriptTurnRef.current += 1;
+    transcriptIdRef.current += 1;
+    setTranscript((prev) =>
+      appendUserMessage(
+        prev,
+        t,
+        transcriptTurnRef.current,
+        Date.now(),
+        nextTranscriptId(transcriptIdRef.current),
+      ),
+    );
     // 记住用户自己说了什么：AI 复述用户时，那句不能当回声指纹（见 isParrotingUser）
     userSaidRef.current = [t, ...userSaidRef.current].slice(0, 3);
 
@@ -759,6 +1340,8 @@ export function useVoiceCall(options: UseVoiceCallOptions): UseVoiceCallResult {
   voiceGetMicSettingsRef.current = voice.getMicSettings;
   const voiceFlushRef = useRef(voice.flush);
   voiceFlushRef.current = voice.flush;
+  /** 对账编号：整通电话单调递增（不重置，避免日志里两轮同名） */
+  const turnIdRef = useRef(0);
 
   /**
    * 「打断并发送」—— 用户手动抢话的按钮（控制栏那个）。
@@ -806,11 +1389,21 @@ export function useVoiceCall(options: UseVoiceCallOptions): UseVoiceCallResult {
    */
   const publishTurn = useCallback(() => {
     const acc = accRef.current;
+    const holes = ttsRef.current?.underrun;
     setTurn({
       userText: acc.userText,
       firstDeltaMs: acc.firstDeltaMs,
       firstPcmReadyMs: acc.firstPcmReadyMs,
       firstSoundMs: acc.firstSoundMs,
+      queueAheadAtFirstSayMs: acc.queueAheadAtFirstSayMs,
+      pendingUnitsAtFirstSay: acc.pendingUnitsAtFirstSay,
+      firstPcmAtMs: acc.firstPcmAtMs,
+      firstServerFirstChunkMs: acc.firstServerFirstChunkMs,
+      firstServerSynthMs: acc.firstServerSynthMs,
+      firstRtf: acc.firstRtf,
+      speakAtMs: acc.speakAtMs,
+      graceFiredAtMs: acc.graceFiredAtMs,
+      firstSayAtMs: acc.firstSayAtMs,
       doneMs: acc.doneMs,
       interruptStopMs: acc.interruptStopMs,
       interruptMs: acc.interruptMs,
@@ -821,29 +1414,106 @@ export function useVoiceCall(options: UseVoiceCallOptions): UseVoiceCallResult {
       ttsPresentAtFirstDelta: acc.ttsPresentAtFirstDelta,
       voiceAllowedAtFirstDelta: acc.voiceAllowedAtFirstDelta,
       firstDeltaText: acc.firstDeltaText,
+      // 单轮空洞 = 累计值 − 本轮开始时的快照（见 TurnAccumulator.holeBaseCount）
+      audioHoleCount: holes ? Math.max(0, holes.holes - acc.holeBaseCount) : 0,
+      audioHoleMs: holes
+        ? Math.max(0, Math.round((holes.totalHoleMs - acc.holeBaseMs) * 10) / 10)
+        : 0,
+      // 单轮"掐断未播" = 累计值 − 本轮基线（打断/改稿时故意丢掉的句数）
+      audioStoppedCount: Math.max(
+        0,
+        (ttsRef.current?.diagnostics.stoppedWithoutAudio ?? 0) - acc.stoppedBaseCount,
+      ),
+      // 载荷级：本轮发出去的 `say` 句数与服务端回回来的 PCM 字节数
+      says: Math.max(0, (ttsRef.current?.payloadLedger.sayFrames ?? 0) - acc.sayBase),
+      pcmBytes: Math.max(0, (ttsRef.current?.payloadLedger.pcmBytes ?? 0) - acc.pcmBytesBase),
+      // 本轮送合成里"太短"的单元（见 TurnMetrics.shortUnits：这是"先冒出一句乱话"的候选）
+      ...(() => {
+        const units = acc.saidUnits.map((u) => u.text);
+        const short = units.filter((t) => t.trim().length < SHORT_UNIT_CHARS);
+        return {
+          shortUnits: short.length,
+          shortestUnit: [...units].sort((a, b) => a.length - b.length)[0] ?? '',
+          shortHeld: acc.shortHeld,
+        };
+      })(),
     });
+    // 累计读数一并刷新（面板用；与单轮增量是两个口径，见 audioStats 的注释）
+    setAudioStats(holes ?? null);
+    // 载荷级累计账（"到底出没出过声音"的直接证据）
+    setTtsLedger(ttsRef.current?.payloadLedger ?? null);
+    // 输出侧：AudioContext 是否真的在跑、有几个块交给了声卡
+    setOutputHealth(ttsRef.current?.outputHealth ?? null);
+    // 播放缓冲区：句内/跨句见底次数与当前水位（卡顿病因的分界线）
+    setBufferStats(ttsRef.current?.bufferStats ?? null);
+    // 文本 ↔ 语音对账（A/B/C/D）：每一轮都把四份文本摆出来，差异写成人能读的清单。
+    // 一条 console 也打出来 —— 真机排查时"哪一层先不一致"要能一眼看到。
+    const ledger = buildVoiceTextLedger(acc, acc.subtitle.full);
+    setVoiceLedger(ledger);
+    if (ledger.exceptions.length > 0) {
+      console.warn(`[通话][对账] 第 ${ledger.turnId} 轮：`, ledger.exceptions, {
+        A_shown: ledger.shown,
+        B_plan: ledger.planText,
+        C_said: ledger.said,
+        D_spoken: ledger.spoken,
+        skipped: ledger.skipped,
+        notes: ledger.notes,
+      });
+    }
   }, []);
 
   /**
-   * 送合成 —— **S6.3 的最后一道保险就这里**。
+   * 送合成 —— **S6.3 的最后一道保险就这里**，同时也是对账链的 C 端点。
    *
-   * 含号码特征的片段只上屏、不合成。实测 `400 161 9995` 会被念成
-   * 「四百六十一九九九九五」，危机场景下念错热线号码不可接受。
+   * 一个"文本单元"可能被切成多段送合成（号码被摘掉之后前后文分开、超长句按字数硬切），
+   * **每段一个独立 seq** —— 服务端按 seq 区分句子，复用 seq 会让两段音频互相覆盖
+   * （`segments` 是 Map，同 seq 后写覆盖先写）。
+   *
+   * 台账：
+   *   · 真正送出去的每段写进 `acc.saidUnits`（C：实际发出去的文本）；
+   *   · 有意跳过的片段（号码 / 纯标点）写进 `acc.skippedFragments`，带原因 ——
+   *     对账时算**预期例外**，不是故障。**这一步不能吞掉整句**（旧实现就会）。
+   *
+   * @param raw 一个合成单元（可能含号码/纯标点）
+   * @returns 实际发出的 seq 列表（按序）
    */
-  const ttsSay = useCallback((seq: number, unit: string) => {
+  const speakUnit = useCallback((raw: string): number[] => {
     const tts = ttsRef.current;
-    if (!tts) return;
-    if (!SPEAKABLE.test(unit)) {
-      // 纯标点（「」——……）：合成只会得到空白音频，直接不入队
-      setSkippedUnspeakableUnits((n) => n + 1);
-      return;
+    const acc = accRef.current;
+    const { spoken, skipped } = splitForSpeech(raw);
+    for (const s of skipped) {
+      acc.skippedFragments.push(s);
+      if (s.reason === 'phone') {
+        console.warn('[通话] 号码片段只上屏不朗读:', s.text.slice(0, 20));
+        setSkippedPhoneUnits((n) => n + 1);
+      } else if (s.reason === 'unspeakable') {
+        setSkippedUnspeakableUnits((n) => n + 1);
+      }
     }
-    if (PHONE_LIKE.test(unit)) {
-      console.warn('[通话] 片段含号码特征，跳过合成（只上屏）:', unit.slice(0, 30));
-      setSkippedPhoneUnits((n) => n + 1);
-      return;
+    const seqs: number[] = [];
+    if (!tts) return seqs;
+    for (const unit of spoken) {
+      acc.units += 1;
+      ttsSeqRef.current += 1;
+      const seq = ttsSeqRef.current;
+      if (acc.firstSeq === null) acc.firstSeq = seq;
+      if (acc.units === 1) {
+        // 第一段即将送出去之前的两条"排队"读数（**必须在 `tts.say` 之前取**：
+        // `say` 之后本句也会进队列，就分不出"前面排着的"和"本句"了）。
+        // 它们把"首声 6159 ms"拆成「排队」还是「合成慢」—— 见 TurnMetrics 的字段说明。
+        acc.queueAheadAtFirstSayMs = tts.pendingAudioMs();
+        acc.pendingUnitsAtFirstSay = tts.pendingUnits();
+      }
+      acc.saidUnits.push({ seq, text: unit });
+      seqs.push(seq);
+      // 本轮**第一个** `say` 发出的时刻（面板读数④）：用户说完 → 真正开始合成。
+      // 与「首个 delta」「宽限触发」并排看，就能算出这 350ms 宽限值不值。
+      if (acc.firstSayAtMs === null) {
+        acc.firstSayAtMs = Math.round(performance.now() - acc.startedAt);
+      }
+      tts.say(seq, unit);
     }
-    tts.say(seq, unit);
+    return seqs;
   }, []);
 
   // ── 一轮：发文本 → 收流 → 出声 ─────────────────────────────────────────
@@ -856,6 +1526,21 @@ export function useVoiceCall(options: UseVoiceCallOptions): UseVoiceCallResult {
       acc.userText = userText;
       acc.startedAt = performance.now();
       acc.active = true;
+      // 本轮对账编号（面板/日志用它把 A/B/C/D 四份文本对上号）
+      turnIdRef.current += 1;
+      acc.turnId = turnIdRef.current;
+      acc.planMode = 'pending';
+      // 新一轮开始：上一轮的"未朗读标注"清空（它属于上一轮）
+      setUnspokenTailState(null);
+      // 本轮空洞计数的基线（见 TurnAccumulator.holeBaseCount）
+      const holeBase = ttsRef.current?.underrun;
+      acc.holeBaseCount = holeBase?.holes ?? 0;
+      acc.holeBaseMs = holeBase?.totalHoleMs ?? 0;
+      // "被我们掐断未播"的基线（口径同上；这一格用来区分有意丢弃与合成失败）
+      acc.stoppedBaseCount = ttsRef.current?.diagnostics.stoppedWithoutAudio ?? 0;
+      // 载荷级基线（见 TurnMetrics.pcmBytes）：本轮"发了几句 / 回了多少音频字节"的起点
+      acc.sayBase = ttsRef.current?.payloadLedger.sayFrames ?? 0;
+      acc.pcmBytesBase = ttsRef.current?.payloadLedger.pcmBytes ?? 0;
       accRef.current = acc;
       mutedByReviseRef.current = false;
       mutedByBargeInRef.current = false;
@@ -888,6 +1573,34 @@ export function useVoiceCall(options: UseVoiceCallOptions): UseVoiceCallResult {
       const finish = (): void => {
         acc.active = false;
         acc.doneMs = Math.round(performance.now() - acc.startedAt);
+        // ── 本轮的音频裁决（**只报事实，不改行为**）──────────────────────────
+        // "屏幕上有字、耳朵里没声音"这件事在时间读数上是一片 `—`，只能靠载荷数判：
+        // `says > 0` 而 `pcmBytes === 0` ⇒ 服务端一个字节都没回（合成/OOV/取消），
+        // 这条日志就是那件事的第一手证据（真机排查 2026-10-11）。
+        {
+          const led = ttsRef.current?.payloadLedger;
+          if (led) {
+            const says = Math.max(0, led.sayFrames - acc.sayBase);
+            const bytes = Math.max(0, led.pcmBytes - acc.pcmBytesBase);
+            const dropped = Math.max(0, led.droppedFrames);
+            const shown = acc.subtitle.full.length;
+            if (says > 0 && bytes === 0) {
+              // 用 `error` 级：控制台默认要展开看警告，而这条是"没有声音"的第一手判据，
+              // 必须一眼可见、能直接复制给排查的人（见 docs/voice_call_no_audio_probe.md）。
+              console.error(
+                `[无声音排查] 第 ${acc.turnId} 轮：发出 ${says} 句合成请求，服务端回了 0 字节音频。`
+                + `字幕 ${shown} 字 · 累计丢弃帧 ${dropped} · 请把这一行和诊断面板一起发出`,
+              );
+            } else if (says > 0) {
+              const out = ttsRef.current?.outputHealth;
+              console.log(
+                `[通话音频] 第 ${acc.turnId} 轮：发出 ${says} 句 · 收到 ${bytes} 字节`
+                + `（约 ${Math.round(bytes / 48)} ms @24k/16bit）· 字幕 ${shown} 字`
+                + `${out ? ` · 输出 ${out.ctxState}/已排程 ${out.scheduledChunks} 块` : ''}`,
+              );
+            }
+          }
+        }
         // 本轮结束：确认窗口作废（否则它会在下一轮里凭空打断一次）
         window.clearTimeout(bargeConfirmTimerRef.current);
         bargeConfirmTimerRef.current = 0;
@@ -902,6 +1615,11 @@ export function useVoiceCall(options: UseVoiceCallOptions): UseVoiceCallResult {
       };
 
       applyPhase('thinking');
+
+      // ── 开场预缓冲：**每轮只生效一次**的"欠账"就在这里挂上 ──────────────
+      // 判据与反例见 `services/prebufferGate.ts`：绝不能挂在"队列播空"上
+      // （阵发式供音的间隙里队列也会空，那会让每次断档后又多等一整个预缓冲）。
+      ttsRef.current?.armPrebufferTurn();
 
       // ── 提取声学特征摘要，随本轮消息一起上报（供风险研判）──────────────
       // 只取聚合统计量，不传原始帧数据（体积大且含 PII）。
@@ -923,7 +1641,7 @@ export function useVoiceCall(options: UseVoiceCallOptions): UseVoiceCallResult {
       // ⚠️ 它只是算法层的低权重内部参考，不进风险等级、不进融合权重。
       const facialFeatures = getFacialLiveState?.() ?? undefined;
 
-      sendChatMessageStream(convId, userText, {
+      const pendingTurn = sendChatMessageStream(convId, userText, {
         onMeta: (meta) => {
           acc.sawMeta = true;
           // F-3：零新增阈值 —— 高风险时 `streaming` 恒为 false
@@ -933,42 +1651,91 @@ export function useVoiceCall(options: UseVoiceCallOptions): UseVoiceCallResult {
         onSpeak: (plan) => {
           // 定稿合成计划：**按它合成、也按它上屏**。
           //
-          // ⚠️ 为什么字幕在这里就整段上屏，而不是再等音频逐段揭示：
-          // 服务端的 `delta` 是**闸门放行的原文**，它可能比定稿长（例如模型一轮问了
-          // 两个问题，定稿按"只能问一个"删掉尾部整句）。实测第 2 轮：delta 共 51 字，
-          // 定稿 37 字。若字幕仍按"音频念到哪儿显示到哪儿"，被删掉的那 14 字就永远不会
-          // 上屏 —— 服务端下了 `speak`，客户端却没显示，等于**丢字**。
+          // ## 服务端的真实时序（2026-10-11 核对，与"计划在第一个 delta 之前"的说法相反）
           //
-          // 现在以 `plan.text`（服务端定稿全文，与 `done.text` 逐字相同）为唯一来源：
-          // 文本从收到计划起就是完整的；音频按 `plan.segments` 顺序出声。
-          // 代价是文字先于声音出现（已知的、可接受的取舍），换来的是
-          // "绝不丢字 + 念出来的一定是屏幕上这段"。
+          // `_chat_stream_events` 先流式吐 delta（LLM 逐字），**等整段生成完**才调
+          // `_plan_streamed_reply` 定稿、再下发 `speak`。所以实际顺序是：
+          //
+          //     meta → delta* → speak{text,segments} → [revise] → done
+          //
+          // 也就是说：计划总是**最后一个 delta 之后几十毫秒**才到，而 delta 可能已经
+          // 流了好几秒。`SPEAK_PLAN_GRACE_MS`（350ms）只够覆盖"计划紧跟在 delta 后面"
+          // 的短回复；长回复必然先走 delta 合成。**所以"同一轮只能有一个合成来源"
+          // 必须显式管起来**（见 planModeRef / SpeakPlanMode），否则同一段文本会被
+          // 合成两遍（delta 一遍 + 计划一遍），用户听到"这句话念两遍"。
+          //
+          // 现在三条规则：
+          //   ① `pending`（delta 还没送出去）→ 计划成为唯一来源，扣住的 delta 作废；
+          //   ② `delta-fallback`（delta 已经送出去了）→ **绝不把计划再入队**；
+          //      若定稿文本是"已发文本的前缀"（删尾），就把多出来的尾段撤掉
+          //      （`unitsToCancelForPlan` + `stopFrom`），让听到的回到定稿文本；
+          //   ③ 计划自相矛盾（`segments` 拼接 ≠ `text`）→ 记录并**拒收**，
+          //      不能让一份对不上的计划驱动 TTS。
+          const acc2 = accRef.current;
+          // `speak` 计划**到达**的时刻（面板读数②）—— 协议上它总在全部 delta 之后到，
+          // 记下来就能和「宽限触发」比：计划先到 ⇒ 宽限有用；后到/没到 ⇒ 纯等待。
+          if (acc2.speakAtMs === null) {
+            acc2.speakAtMs = Math.round(performance.now() - acc2.startedAt);
+          }
+          const mode = acc2.planMode;
+
+          // ③ 契约校验：对不上就拒收（记录原因，别静默）
+          if (!planJoinMatchesText(plan.text, plan.segments)) {
+            acc2.ledgerNotes.push('speak 计划违约：segments 拼接 ≠ text，已拒收（退回 delta 路径）');
+            console.warn('[通话] speak 计划自相矛盾，已拒收:', {
+              text: plan.text, segments: plan.segments,
+            });
+            return;
+          }
+          if (acc2.sawRevise) {
+            // 改稿先到：那一轮的真话已经在 `onRevise` 里按新稿念过了。
+            // 这份计划是**改稿前**的文本，绝不能入队（否则旧说法会被念一遍），
+            // 也不能拿它去撤回 —— 它和补念的尾段本就对不上。
+            acc2.ledgerNotes.push('speak 计划在改稿之后才到：已按改稿补念，未再入队');
+            return;
+          }
+          if (mode !== 'pending') {
+            // ② 计划迟到：不再入队，但可以用它把"多念的尾段"收回来
+            acc2.ledgerNotes.push(`speak 计划迟到（当前来源=${mode}），未再入队`);
+            acc2.planText = plan.text;
+            acc2.planSegments = plan.segments;
+            const cancelFrom = unitsToCancelForPlan(acc2.saidUnits, plan.text);
+            if (cancelFrom !== null) {
+              acc2.ledgerNotes.push(`按定稿文本撤回 seq≥${cancelFrom} 的多余尾段`);
+              ttsRef.current?.stopFrom(cancelFrom);
+              // 只把**确实没出声**的那些段从台账里划掉：
+              // 已经进了 D（真的响过）的段留在 C 里，否则 C≠D 会误报成"串单"。
+              const heard = new Set(acc2.spokenUnits.map((u) => u.seq));
+              acc2.saidUnits = acc2.saidUnits.filter((u) => u.seq < cancelFrom || heard.has(u.seq));
+            }
+            return;
+          }
+
+          // ① 正常路径：计划就是唯一来源
+          acc2.planMode = 'speak-plan';
+          acc2.planText = plan.text;
+          acc2.planSegments = [...plan.segments];
           speakPlanRef.current = plan;
           speakCursorRef.current = 0;
-          // 计划到了：撤掉"按 delta 送合成"的宽限定时器与已扣住的文本 ——
-          // 本轮的字幕与音频从这一刻起**只由计划驱动**（见 spokeFromPlanRef）。
+          // 计划到了：撤掉"按 delta 送合成"的宽限定时器与扣住的文本 ——
+          // 扣住的 delta 一个字都没送出去，直接作废（这正是"只能有一个来源"）。
           window.clearTimeout(deferTimerRef.current);
           deferTimerRef.current = 0;
           deferredDeltaRef.current = '';
-          acc.subtitle.full = plan.text;
-          acc.subtitle.shownChars = plan.text.length;
+          acc2.subtitle.full = plan.text;
+          acc2.subtitle.shownChars = plan.text.length;
           setAiLines([plan.text]);
-          const willSpeak = acc.voiceAllowed && !mutedByReviseRef.current
+          // 过程记录：定稿计划就是本轮回复的**全文**（整体替换尾部那条 AI 消息）
+          pushAiTranscript(plan.text, 'replace');
+          const willSpeak = acc2.voiceAllowed && !mutedByReviseRef.current
             && !mutedByBargeInRef.current && !crisisRef.current
             && ttsStatusRef.current?.available === true;
           if (!willSpeak) return;   // 纯文字模式：字幕已在上方上屏，没有音频要送
           spokeFromPlanRef.current = true;
           // 立即按计划送合成 —— 不再等 delta，也不再按 delta 切分
           for (const seg of plan.segments) {
-            for (const unit of splitSpeakable(seg, acc.units === 0)) {
-              if (!unit.trim()) continue;
-              acc.units += 1;
-              ttsSeqRef.current += 1;
-              const seq = ttsSeqRef.current;
-              if (acc.firstSeq === null) acc.firstSeq = seq;
-              speakCursorRef.current += 1;
-              ttsSay(seq, unit);
-            }
+            speakCursorRef.current += 1;
+            speakUnit(seg);
           }
         },
         onDelta: (text) => {
@@ -980,9 +1747,9 @@ export function useVoiceCall(options: UseVoiceCallOptions): UseVoiceCallResult {
             acc.voiceAllowedAtFirstDelta = acc.voiceAllowed;
             acc.firstDeltaText = text.slice(0, 60);
           }
-          // 有合成计划时：delta 只用来做"首字延迟"之类的观测，**不再**驱动字幕与合成
-          // —— 文本与音频都已由 plan 定死（见 speakPlanRef 的注释）。
-          if (speakPlanRef.current) return;
+          // 有合成计划（或计划已迟到处置过）时：delta 只用来做"首字延迟"之类的观测，
+          // **不再**驱动字幕与合成 —— 同一轮只能有一个合成来源（见 onSpeak 的注释）。
+          if (acc.planMode === 'speak-plan') return;
 
           // 无计划（纯文字端 / 非流式回退 / 计划不可信）：按 delta 自行切分。
           // 语音模式下字幕仍**随音频逐段**上屏（不再在 delta 到达时抢跑）。
@@ -997,61 +1764,152 @@ export function useVoiceCall(options: UseVoiceCallOptions): UseVoiceCallResult {
             acc.subtitle.full += text;
           } else {
             setAiLines((prev) => [...prev, text]);
+            // 过程记录：没有音频驱动的纯文字路径 —— 每个 delta 都是本轮回复的**增量**
+            pushAiTranscript(text, 'delta');
           }
 
           if (!willSpeak) return;
 
-          // ⚠️ 按 `speak` 计划送过合成之后，delta **永久**不许再送 —— 否则同一段
-          // 文本会被合成两遍，用户听到"这句话念两遍"（见 spokeFromPlanRef）。
+          // 已经按 `speak` 计划送过合成的轮次，delta **永久**不许再送（见 spokeFromPlanRef）
           if (spokeFromPlanRef.current) return;
 
-          const flushByDelta = () => {
+          const flushByDelta = (target: TurnAccumulator, allowShort = false) => {
             deferTimerRef.current = 0;
+            // 宽限计时器**触发**的时刻（面板读数③）—— 与 `speakAtMs` 比就知道
+            // 这 350ms 到底等到了计划，还是纯等待（见 TurnMetrics 的说明）。
+            if (target.graceFiredAtMs === null) {
+              target.graceFiredAtMs = Math.round(performance.now() - target.startedAt);
+            }
             const pending = deferredDeltaRef.current;
             deferredDeltaRef.current = '';
             if (!pending) return;
-            for (const unit of splitSpeakable(pending, acc.units === 0)) {
+            // ⚠️ 宽限期内**改稿（或计划）已经把这一轮的字送出去合成过了**：
+            // 这份扣住的 delta 是改稿前的旧文本，再送一遍就是"同一段念两遍"
+            // （用户口径：每一次输出的内容都要合成，但**不是**每份来源都合成）。
+            // 判据用 `spokeFromPlanRef`（改稿/计划路径会置上），与 `onDelta` 里
+            // 哨兵 `if (spokeFromPlanRef.current) return` 同一口径。
+            if (spokeFromPlanRef.current) {
+              target.ledgerNotes.push('宽限期扣住的 delta 已被改稿/计划接管，未再送合成');
+              return;
+            }
+            // ── 太短的单元**不单独送合成**（2026-10-11 "AI 偶尔说出乱话"的候选真因）────
+            // delta 是逐字到达的：宽限期到点时手上可能只有「嗯」「不过」这么两三个字，
+            // 而**一个独立合成单元**会把它们念成一句突兀的短话 ——
+            // 听感正是用户报的"先说一句莫名其妙的，然后才说正文"。
+            // ⚠️ 什么都不丢：把短文本**放回队列**、再等一个宽限期凑齐；
+            // 若一直凑不齐，`allowShort`（第二次触发）时照样送出去，文本一个字都不少。
+            const short = pending.trim().length < MIN_FIRST_UNIT_CHARS;
+            if (short && !allowShort && !target.shortHeld) {
+              target.shortHeld = true;
+              target.ledgerNotes.push(
+                `首段只有 ${pending.trim().length} 字（<${MIN_FIRST_UNIT_CHARS}），先不送合成、等凑齐`,
+              );
+              deferredDeltaRef.current = pending;
+              deferTimerRef.current = window.setTimeout(
+                () => flushByDelta(target, true),
+                graceMsRef.current,
+              );
+              return;
+            }
+            if (short && allowShort) {
+              target.ledgerNotes.push(`首段仍只有 ${pending.trim().length} 字，为不丢字照原样送合成`);
+            }
+            // 宽限期到点仍没有计划 ⇒ 本轮正式进入 delta-fallback（此后计划只会用来收尾）
+            target.planMode = 'delta-fallback';
+            target.ledgerNotes.push(
+              `speak 计划未在 ${graceMsRef.current}ms 内到达，音频改由 delta 驱动`,
+            );
+            for (const unit of splitSpeakable(pending, target.units === 0)) {
               if (!unit.trim()) continue;
-              acc.units += 1;
-              ttsSeqRef.current += 1;
-              const seq = ttsSeqRef.current;
-              if (acc.firstSeq === null) acc.firstSeq = seq;
-              ttsSay(seq, unit);
+              speakUnit(unit);
             }
           };
 
           // 第一个 delta 到达后先扣住一小段时间等 `speak` 计划；之后（宽限期已过、
           // 计划仍没来）就回到原来的"边到边送"，延迟不变。
-          if (deferTimerRef.current === 0 && !spokeFromPlanRef.current) {
+          // ⚠️ `spokeFromPlanRef` 已置上（本轮的音频已由改稿/计划驱动）时**不要**再
+          // 起这个定时器：那份 delta 永远不会被送出去，留着只会白等 350ms。
+          if (deferTimerRef.current === 0 && acc.planMode === 'pending' && !spokeFromPlanRef.current) {
             deferredDeltaRef.current += text;
-            deferTimerRef.current = window.setTimeout(flushByDelta, SPEAK_PLAN_GRACE_MS);
+            deferTimerRef.current = window.setTimeout(() => flushByDelta(acc), graceMsRef.current);
             return;
           }
-          if (deferredDeltaRef.current) {
+          if (acc.planMode === 'pending' && deferredDeltaRef.current && !spokeFromPlanRef.current) {
             deferredDeltaRef.current += text;
             return;
           }
+          acc.planMode = 'delta-fallback';
           for (const unit of splitSpeakable(text, acc.units === 0)) {
             if (!unit.trim()) continue;
-            acc.units += 1;
-            ttsSeqRef.current += 1;
-            const seq = ttsSeqRef.current;
-            if (acc.firstSeq === null) acc.firstSeq = seq;
-            // ⚠️ 非阻塞入队：绝不能 await 合成结果，否则整轮被首句合成卡住
-            ttsSay(seq, unit);
+            speakUnit(unit);
           }
         },
         onRevise: (text) => {
-          // 已经播出去的声音收不回来：**停播 + 只改字幕，不重说**（文件头取舍 4）
+          // ── 用户口径（2026-10-11）：「**每一次输出的内容都需要语音合成**」────────
+          // 所以旧的"停播 + 只改字幕、不重念"被换掉：屏幕上有的字，耳朵里必须有。
+          // 但整段重念会让用户把开头听第二遍，于是做**前缀对齐**：
+          //   ① 保留"已经**完整播完**、且仍是新稿前缀"的那几段 —— 不重念；
+          //   ② 从第一段"没播完 / 与新稿对不上"的地方起全部撤回（含它本身，
+          //      它后半句没听到，重念比吞字安全）；
+          //   ③ 剩余部分按正常 `speakUnit` 路径补念。
+          // 判据与边界见 `ttsSplit.ts::planReviseSpeech` 与真机回归
+          // `scripts/verify_tts_text_ledger.ts`（组 5）。
           acc.sawRevise = true;
-          mutedByReviseRef.current = true;
-          // 改稿文本整体取代已到达的流式文本：游标重置到全文
+          const canSpeak =
+            acc.voiceAllowed &&
+            !crisisRef.current &&
+            !mutedByBargeInRef.current &&      // 用户已经在插话：别再抢回话轮
+            ttsRef.current !== null &&
+            ttsStatusRef.current?.available === true;
+
+          // 改稿文本整体取代已到达的流式文本（"内容不藏"：屏幕上的字一个不丢）
           acc.subtitle.full = text;
           acc.subtitle.shownChars = text.length;
-          ttsRef.current?.stopAll();
+
+          if (!canSpeak) {
+            // 纯文字模式 / 已被打断 / 危机切换：本轮本来就没有音频，如实标注即可
+            mutedByReviseRef.current = true;
+            acc.ledgerNotes.push('安全审计改稿：本轮没有语音（纯文字或已切换），新稿只上屏');
+            acc.unspokenTail = null;
+            ttsRef.current?.stopFrom(ttsSeqRef.current);
+            echoRef.current?.retireAll(performance.now());
+            setAiLines([text]);
+            setRevised(true);
+            // 过程记录：改稿后的新稿整体替换本轮那条 AI 消息（事实位记下来）
+            pushAiTranscript(text, 'replace', { revised: true });
+            return;
+          }
+
+          const plan = planReviseSpeech(acc.saidUnits, text);
+          if (plan.cancelFrom !== null) {
+            // 停播 + 中止在途合成（服务端从待合成队列摘掉 + 让在途合成提前结束）
+            ttsRef.current?.stopFrom(plan.cancelFrom);
+            acc.ledgerNotes.push(`改稿：从 seq≥${plan.cancelFrom} 撤回未播完/对不上的段`);
+          }
+          acc.ledgerNotes.push(
+            plan.keptChars > 0
+              ? `改稿：前 ${plan.keptChars} 字沿用已播出的说法，不重念`
+              : '改稿：没有已听全的前缀，新稿从头补念',
+          );
           echoRef.current?.retireAll(performance.now());
+          // 改稿之后的语音由这里驱动：delta 不许再送（否则新稿和 delta 稿会各念一遍）
+          spokeFromPlanRef.current = true;
           setAiLines([text]);
           setRevised(true);
+          // 过程记录：同上 —— 改稿全文整体替换本轮那条 AI 消息
+          pushAiTranscript(text, 'replace', { revised: true });
+          // ③ 补念剩余部分：走同一条 `speakUnit`（新 seq、进 C/D 台账、同样受回声过滤）
+          const tail = plan.tail;
+          if (!tail.trim()) {
+            acc.ledgerNotes.push('改稿：新稿已被已播内容覆盖，无需补念');
+            return;
+          }
+          // 补念的文本也交给同一个切分器：号码照样只上屏、超长照样按字数切
+          for (const unit of splitSpeakable(tail, acc.units === 0)) {
+            if (unit.trim()) speakUnit(unit);
+          }
+          acc.ledgerNotes.push(`改稿：未播出的剩余部分已按新稿补念（${tail.length} 字）`);
+          // 补念的音频同样要驱动字幕定位（shownChars 已在上面推到全文，不会回退）
         },
         onDone: (payload) => {
           const risk = String((payload as { riskLevel?: string }).riskLevel ?? '');
@@ -1069,25 +1927,33 @@ export function useVoiceCall(options: UseVoiceCallOptions): UseVoiceCallResult {
           finish();
         },
       }, 'voice', voiceFeatures, facialFeatures);
-      // 刻意不保存/调用 handle.abort()：见文件头取舍 1（F-4）
+      // ⚠️ 传输层失败（响应头之前就 404/401/500，或压根没连上）不会走上面的 onError，
+      //    只会让 `completed` reject。不接住的话本轮既不落通知也不复位状态 ——
+      //    界面永远停在"正在思考…"，录音却还在继续（实测就是这样"卡死"的）。
+      void pendingTurn.completed.catch((err: unknown) => {
+        if (!acc.active) return; // onError 已经收过尾（流内 error 事件），不要重复 finish
+        setNotice(describeStreamFailure(err));
+        finish();
+      });
+      // 句柄只用来接 `completed`；**刻意不调用** `handle.abort()`：见文件头取舍 1（F-4）
 
       /** 危机分支：立刻静音 + 会话切纯文字（S6.2） */
       function enterCrisis(turnAcc: TurnAccumulator): void {
         turnAcc.voiceAllowed = false;
         crisisRef.current = true;
         setCrisisTriggered(true);
-        // 1) 立刻 stopAll + 中止在途合成
-        ttsRef.current?.stopAll();
+        // 1) 立刻 stopAll + 中止在途合成（S6.2 第 1 步：客户端从没做过后半句，
+        //    于是危机轮的剩余句子仍会被合成推来并播出去 —— 见 TtsStreamSession.cancelFrom）
+        ttsRef.current?.stopFrom(ttsSeqRef.current);
         echoRef.current?.retireAll(performance.now());
-        // 缓冲的字幕不会再有音频了，立刻兑现
-        flushSubtitleRemainder(turnAcc.subtitle);
+        // 缓冲的字幕不会再有音频了，立刻兑现 + 记账为"未朗读"
+        markUnspokenTail('crisis');
         // 2) 会话切纯文字；麦克风保持可用（用户还要说话）
         applyPhase('crisis');
         setNotice('这一轮涉及较高风险，已暂停语音，继续用文字陪伴你。');
       }
     },
-    [applyPhase, conversationId, publishTurn, settleToListening, ttsSay, getFacialLiveState],
-  );
+    [applyPhase, conversationId, publishTurn, settleToListening, speakUnit, markUnspokenTail, getFacialLiveState, pushAiTranscript],  );
   runTurnRef.current = runTurn;
 
   // ── 开始 / 结束 ────────────────────────────────────────────────────────
@@ -1128,6 +1994,9 @@ export function useVoiceCall(options: UseVoiceCallOptions): UseVoiceCallResult {
           // （见 `advanceSubtitleOnSegment`），轮结束/打断/改稿/挂断时剩余部分
           // 一律由 `flushSubtitleRemainder` 兑现 —— 字幕最终必然等于模型全文。
           const acc = accRef.current;
+          // 对账链的 **D**：这一段**真的出声了**、实际念的是 `spoken_text`（服务端术语替换后的文本）.
+          // 按出声顺序追加 —— `said`（C）与 `spoken`（D）不一致就是"发出去的和念出来的不是一回事"。
+          if (acc.spokenUnits.length < 200) acc.spokenUnits.push({ seq, text });
           if (!mutedByReviseRef.current && !mutedByBargeInRef.current && !crisisRef.current) {
             const before = acc.subtitle.shownChars;
             const after = advanceSubtitleOnSegment(acc.subtitle, text);
@@ -1135,6 +2004,9 @@ export function useVoiceCall(options: UseVoiceCallOptions): UseVoiceCallResult {
               setAiLines((prev) =>
                 prev.length === 0 ? [acc.subtitle.full] : [...prev.slice(0, -1), acc.subtitle.full],
               );
+              // 过程记录：字幕随音频**逐段**揭示 —— 每次揭示都是"本轮回复的当前全文"
+              // （整体替换，不是新增一条），与上面 setAiLines 的语义严格一致。
+              pushAiTranscript(acc.subtitle.full, 'replace');
             }
           }
           // S5：登记"这句话已经进了房间"（回声过滤的唯一输入，必须用 spoken_text）
@@ -1156,10 +2028,29 @@ export function useVoiceCall(options: UseVoiceCallOptions): UseVoiceCallResult {
           // 天然包含前面几段的音频时长（实测差 20 倍，施工单 §1 F-7）。
           if (seq !== acc.firstSeq || acc.firstSoundMs !== null) return;
           const pcm = tts.takePcmReadyMs(seq);
+          const firstPcm = tts.takeFirstPcmMs(seq);
           const sound = tts.takeFirstSoundMs(seq);
           if (pcm !== undefined) acc.firstPcmReadyMs = pcm;
+          if (firstPcm !== undefined) acc.firstPcmAtMs = firstPcm;
           if (sound !== undefined) acc.firstSoundMs = Math.round(sound);
-          if (pcm !== undefined || sound !== undefined) publishTurn();
+          if (pcm !== undefined || firstPcm !== undefined || sound !== undefined) publishTurn();
+        },
+        onSegment: (meta) => {
+          // 服务端 `end` 帧自报的合成读数（请求→第一块 / 整段 / RTF）——**只记不判断**。
+          // ⚠️ 必须用 `meta.seq === firstSeq` 认领：`end` 可能在**下一轮已经开始之后**
+          //    才到（服务端串行合成），不认领就会把上一段的读数记到新轮上。
+          const a = accRef.current;
+          if (a.firstSeq === null || meta.seq !== a.firstSeq) return;
+          if (a.firstServerFirstChunkMs === null) a.firstServerFirstChunkMs = meta.firstChunkMs;
+          if (a.firstServerSynthMs === null) a.firstServerSynthMs = meta.synthMs;
+          if (a.firstRtf === null) a.firstRtf = meta.rtf;
+          const pcm = tts.takePcmReadyMs(meta.seq);
+          if (pcm !== undefined && a.firstPcmReadyMs === null) a.firstPcmReadyMs = pcm;
+          publishTurn();
+          // 面板要能"边听边看"：每句收尾都刷新一次载荷级账、输出侧与缓冲区读数
+          setTtsLedger(tts.payloadLedger);
+          setOutputHealth(tts.outputHealth);
+          setBufferStats(tts.bufferStats);
         },
         onEnd: (_seq, text) => {
           // 这一句说完了：再记 2 秒就退出回声窗口（`ECHO_TAIL_MS`）
@@ -1167,7 +2058,10 @@ export function useVoiceCall(options: UseVoiceCallOptions): UseVoiceCallResult {
         },
         onDrained: handleDrained,
         onError: (message) => setNotice(`语音合成出错：${message}`),
-      });
+        },
+        // 开场预缓冲（见 UseVoiceCallOptions.prebufferMs 与 ttsPlayer 的实测依据）
+        prebufferMs,
+      );
       ttsRef.current = tts;
       try {
         await tts.start();
@@ -1203,7 +2097,7 @@ export function useVoiceCall(options: UseVoiceCallOptions): UseVoiceCallResult {
     } finally {
       startingRef.current = false;
     }
-  }, [applyPhase, conversationId, handleDrained, isParrotingUser, openHalfDuplexWindow, publishTurn]);
+  }, [applyPhase, conversationId, handleDrained, isParrotingUser, openHalfDuplexWindow, publishTurn, prebufferMs]);
 
   const endCall = useCallback(async () => {
     applyPhase('ended');
@@ -1220,8 +2114,10 @@ export function useVoiceCall(options: UseVoiceCallOptions): UseVoiceCallResult {
     deferredDeltaRef.current = '';
     echoRef.current?.clear();
     pendingRef.current = [];
-    // 挂断时把还没来得及随音频上屏的字幕全部兑现（用户挂断前可能还有没看到的文字）
-    flushSubtitleRemainder(accRef.current.subtitle);
+    // 挂断时把还没来得及随音频上屏的字幕全部兑现（用户挂断前可能还有没看到的文字），
+    // 同时记账为"未朗读" —— 挂断后那半句确实不会再出声了。
+    if (accRef.current.active) markUnspokenTail('hangup');
+    else flushSubtitleRemainder(accRef.current.subtitle);
     // 冲刷最后一段定稿：`stop()` 会等服务端 finalize + 离线复识别（~600ms）再交文本。
     // ⚠️ 顺序很关键：**先**把状态置成 ended（定稿回调因此丢弃），**再**取返回值 ——
     //    否则同一段会被"回调 + 返回值"送两次，落库两条用户消息。
@@ -1234,6 +2130,18 @@ export function useVoiceCall(options: UseVoiceCallOptions): UseVoiceCallResult {
     const trimmed = lastText.trim();
     if (trimmed && !accRef.current.active) {
       setUserLines((prev) => [...prev, trimmed]);
+      // 过程记录：挂断前冲刷出来的最后一句同样是这条时间轴上的一条用户消息
+      transcriptTurnRef.current += 1;
+      transcriptIdRef.current += 1;
+      setTranscript((prev) =>
+        appendUserMessage(
+          prev,
+          trimmed,
+          transcriptTurnRef.current,
+          Date.now(),
+          nextTranscriptId(transcriptIdRef.current),
+        ),
+      );
       runTurnRef.current(trimmed);
     }
 
@@ -1267,7 +2175,7 @@ export function useVoiceCall(options: UseVoiceCallOptions): UseVoiceCallResult {
         /* 正在挂断，出声与连接都已经不重要 */
       }
     }
-  }, [applyPhase]);
+  }, [applyPhase, markUnspokenTail, flushSubtitleRemainder]);
 
   // ── 卸载清理（幂等）────────────────────────────────────────────────────
   useEffect(() => {
@@ -1296,6 +2204,7 @@ export function useVoiceCall(options: UseVoiceCallOptions): UseVoiceCallResult {
     // 中间结果在"正在聆听"时上屏：AI 说话时麦克风照开，但那些字多半是它自己的回声
     partialText: phase === 'listening' ? voice.metrics.asrPartialText : '',
     aiLines,
+    transcript,
     revised,
     notice,
     dismissNotice: () => setNotice(null),
@@ -1314,6 +2223,21 @@ export function useVoiceCall(options: UseVoiceCallOptions): UseVoiceCallResult {
     maxConcurrentTurns,
     lastRisk,
     turn,
+    ttsLedger,
+    outputHealth,
+    bufferStats,
+    /**
+     * 导出缓冲区日志明细：既写控制台（可直接复制），也把字符串返回给调用方
+     * （页面上的「导出缓冲日志」按钮把它渲染在面板里，供截图）。
+     */
+    dumpBufferLog: (recentChunks = 12) => {
+      const text = ttsRef.current?.bufferLogDump(recentChunks) ?? '（通道未建立，暂无缓冲日志）';
+      console.log(text);
+      return text;
+    },
+    audioStats,
+    voiceLedger,
+    unspokenTail: unspokenTailState,
     startCall,
     endCall,
     interruptAndSend,
