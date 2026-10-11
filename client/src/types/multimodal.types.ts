@@ -149,6 +149,100 @@ export interface VoiceAnalysis {
 }
 
 // ===== 面部微表情分析 (Facial Micro-expression Analysis) =====
+
+/**
+ * 浏览器内三分类表情模型的三个类别（**展示口径**）。
+ *
+ * 这里是"上屏词汇"，顺序固定；模型自己的类别顺序与折叠关系在
+ * `services/faceEmotionClassifier.ts` 的 `FACE_EMOTION_SPEC.labels` / `.fold` 里。
+ *
+ * ⚠️ 历史坑：本类型曾经同时兼职"模型输出索引顺序"。实测（validation n=1615，
+ * 扫全部 6 种排列）当前模型是 `neutral(0) / happy(1) / sad(2)` —— 训练脚本用的是
+ * `os.listdir` 而不是 `sorted()`，所以**不能按目录名的字典序推断**（按
+ * `happy, neutral, sad` 假设会让准确率从 95.2% 掉到 40.6%）。
+ */
+export type FaceEmotionLabel = 'happy' | 'neutral' | 'sad';
+
+/** 表情模型通道的状态（与 `useFaceEmotion` 一致） */
+export type FaceEmotionModelStatus = 'disabled' | 'loading' | 'ready' | 'unavailable';
+
+/**
+ * 浏览器内表情模型的最近一次读数。
+ *
+ * 它与 `emotionMapping`（MediaPipe AU 规则映射）是**两条独立证据**，不要混用：
+ *   - `emotionMapping`：AU 启发式，7 个维度，参与风险融合（沿历史行为）；
+ *   - `faceEmotion`：本机跑的 CNN 分类，**只展示与上报，不进 riskScore**。
+ * 之所以不参与风险：该模型的训练集与输入尺寸在本机都没有留档、精度未做标定，
+ * 按本仓库的安全约定（阈值类变更需人工审核）先只观测。
+ *
+ * 2026-10-10 起模型可以是**任意类别数**的 FER 模型（见 `FACE_EMOTION_SPEC`）：
+ * `probabilities` 永远是折叠后的 three-way 占比，多出来的类走 `offMapProbability`。
+ */
+export interface FaceEmotionReading {
+  /** 三类概率（softmax 后折叠、重新归一化，和为 1）——**模型原始输出**，未经任何平滑 */
+  probabilities: { happy: number; neutral: number; sad: number };
+  /** 概率最大的类别 */
+  dominant: FaceEmotionLabel;
+  /** 最大类概率 0–1 */
+  confidence: number;
+  /**
+   * 折叠不进三类（neutral/happy/sad）的概率总量，0–1。
+   *
+   * 外部 FER 模型常有 7~8 类（惊讶/恐惧/愤怒/厌恶/轻蔑…）。这些类既不映射到三类，
+   * 也不该被悄悄丢掉：`probabilities` 是"三类内部的占比"，本字段是"被排除在外的占比"。
+   * 界面可以据此说明"另有 X% 属于其他表情"，而不是让用户以为三类一定穷尽了所有可能。
+   * 当前三分类模型恒为 0。
+   */
+  offMapProbability?: number;
+  /** 单次推理耗时 ms */
+  latencyMs: number;
+  /** 模型输入边长（排查预处理不一致用） */
+  inputSize: number;
+  /** 采样时刻（`Date.now()`） */
+  sampledAt: number;
+  /**
+   * **展示用**平滑概率（时间常数 `FACE_EMOTION_SMOOTH_TAU_MS` 的指数滑动平均）。
+   *
+   * 由 `useFaceEmotion` 在发布读数时补充，**不是模型输出**：它只是对
+   * `probabilities` 序列做低通滤波，让 5~10Hz 的读数看起来是连续变化的，
+   * 不引入新信息。任何判定都必须用 `probabilities` / `dominant`，不要用这个。
+   */
+  smoothedProbabilities?: { happy: number; neutral: number; sad: number } | null;
+  /**
+   * 本次读数的有效期 ms（由实测推理耗时推导，见 `faceEmotionReadingTtlMs`）。
+   *
+   * 慢后端下采样周期会变长，写死的 3 秒会让读数在两次成功之间就过期、
+   * 界面闪成「暂无新读数」。所以有效期必须随耗时自适应并随读数一起传下去。
+   */
+  ttlMs?: number;
+  /**
+   * 裁出来的源矩形边长（**源画面像素**，见 `FacePatchExtractor` 的 `box.size`）。
+   *
+   * 为什么必须如实上报：patch 会被缩放到模型的 `inputSize`（当前 224）。如果
+   * `sourceSize < inputSize`，就是**放大**喂模型 —— 等于让模型看一张插值出来的糊图。
+   * 实测（早期 96px 模型、validation n=240）把 patch 分辨率降到 1/2（等价源只有 48px）
+   * 会把开心召回从 96.2% 打到 77.5%，降到 1/3 只剩 47.5%。界面据此提示"离摄像头近一点"才是**可操作**的建议。
+   */
+  sourceSize?: number;
+}
+
+/**
+ * 由**外部异步通道**写入、在下一拍随 `FacialAnalysis` 一起发布的字段。
+ *
+ * `useFacialAnalysis` 每拍 `setMetrics` 时会把这些字段原样并入，因此
+ * 它们能安全地进入 `facialMetrics`/`comprehensiveState.facial`，不会被
+ * `AnxietyContext` 的 JSON 同步 effect 覆盖（详见 `useFaceEmotion` 的说明）。
+ */
+export interface FacialMetricsOverlay {
+  faceEmotion?: FaceEmotionReading | null;
+  faceEmotionStatus?: FaceEmotionModelStatus;
+  faceEmotionUnavailableReason?: string;
+  /** 表情模型实际跑在哪个后端（`webgpu` / `wasm-proxy` / `wasm-main-thread`）；未加载为 null */
+  faceEmotionProvider?: string | null;
+  /** 实测采样率（Hz）：界面据此如实说明"多久刷新一次"，而不是假装实时 */
+  faceEmotionSampleHz?: number;
+}
+
 export interface FacialAnalysis {
   // 面部动作单元 (Action Units, FACS)
   // 基于 Ekman & Friesen (1978) 面部动作编码系统
@@ -208,6 +302,23 @@ export interface FacialAnalysis {
     disgust: number;
     distress: number;
   };
+
+  /**
+   * 本机三分类表情模型（ResNet50，happy/neutral/sad）的最近一次读数。
+   * **只展示与上报，不参与风险融合**；模型不可用时为 `null`（不是默认值）。
+   */
+  faceEmotion?: FaceEmotionReading | null;
+  /** 该通道状态：`disabled`(=多模态未开/开关关闭) / `loading` / `ready` / `unavailable` */
+  faceEmotionStatus?: FaceEmotionModelStatus;
+  /** 通道不可用时的中文原因（可直接上屏）；正常为空串 */
+  faceEmotionUnavailableReason?: string;
+  /**
+   * 表情模型实际跑在哪个后端。慢后端（wasm 单线程）单次推理可达上千毫秒，
+   * 直接决定界面能刷新多快，所以必须如实展示，不能只显示"识别中"。
+   */
+  faceEmotionProvider?: string | null;
+  /** 实测采样率（Hz，4 秒滑动窗口） */
+  faceEmotionSampleHz?: number;
 
   // 状态
   /** 采集循环是否在跑（**会话级**状态；不等于"画面里有人"）。 */
@@ -465,6 +576,8 @@ export const defaultFacial: FacialAnalysis = {
   emotionMapping: { happiness: 0, sadness: 0, anger: 0, fear: 0, surprise: 0, disgust: 0, distress: 0 },
   isDetecting: false, facePresent: false, confidence: null, frameCount: 0, timestamp: 0,
   unavailableReason: '',
+  faceEmotion: null, faceEmotionStatus: 'disabled', faceEmotionUnavailableReason: '',
+  faceEmotionProvider: null, faceEmotionSampleHz: 0,
 };
 
 // ===== 新增 7 模态默认值 =====

@@ -2,18 +2,56 @@ import prisma from '../config/database';
 import { AppError } from '../middlewares/errorHandler';
 
 export class SleepService {
-  async record(userId: string, data: { bedTime: string; wakeTime: string; quality: number; dreamRecall?: string; notes?: string }) {
-    const bedTime = new Date(data.bedTime);
-    const wakeTime = new Date(data.wakeTime);
-    const duration = (wakeTime.getTime() - bedTime.getTime()) / (1000 * 60 * 60); // 小时
+  /**
+   * 记录睡眠。
+   *
+   * 修掉的历史问题（`sleep_records` 全表 0 行就是这么来的）：
+   *  - 首页睡眠步骤传的是 `bedTime: ''` / `wakeTime: ''`，`new Date('')` 是 Invalid Date，
+   *    Prisma 直接抛错 → 接口 500 → 前端 `.catch` 静默吞掉，用户点完没有任何反应；
+   *  - 首页还按 0-100 传 `quality`（80/60/40），而字段与消费方（`×10` 换算）都按 1-10，
+   *    真写进去会得到「睡眠质量 800 分」这种脏数据。
+   * 现在：允许只给 `hours`（「昨晚睡了 8 小时」），并把 quality 一律收敛到 1-10。
+   */
+  async record(userId: string, data: {
+    bedTime?: string;
+    wakeTime?: string;
+    /** 只报时长时的简写入口（首页睡眠步骤用） */
+    hours?: number;
+    quality: number;
+    dreamRecall?: string;
+    notes?: string;
+  }) {
+    const bed = data.bedTime ? new Date(data.bedTime) : null;
+    const wake = data.wakeTime ? new Date(data.wakeTime) : null;
+    const bedValid = !!bed && !Number.isNaN(bed.getTime());
+    const wakeValid = !!wake && !Number.isNaN(wake.getTime());
+
+    let durationHours: number;
+    if (bedValid && wakeValid) {
+      durationHours = (wake!.getTime() - bed!.getTime()) / (1000 * 60 * 60);
+      if (durationHours <= 0) throw new AppError('起床时间需要晚于入睡时间', 400);
+    } else if (typeof data.hours === 'number' && data.hours > 0 && data.hours <= 24) {
+      durationHours = data.hours;
+    } else {
+      throw new AppError('请提供有效的入睡/起床时间，或直接给 hours（睡眠小时数）', 400);
+    }
+
+    // 质量统一按 1-10 存；>10 视为旧调用方传来的 0-100 分制，收敛回来
+    const rawQuality = Number(data.quality);
+    const quality = Number.isFinite(rawQuality)
+      ? Math.max(1, Math.min(10, Math.round(rawQuality > 10 ? rawQuality / 10 : rawQuality)))
+      : 5;
+
+    const wakeTime = wakeValid ? wake! : new Date();
+    const bedTime = bedValid ? bed! : new Date(wakeTime.getTime() - durationHours * 60 * 60 * 1000);
 
     return prisma.sleepRecord.create({
       data: {
         userId,
         bedTime,
         wakeTime,
-        duration: Math.round(duration * 10) / 10,
-        quality: data.quality,
+        duration: Math.round(durationHours * 10) / 10,
+        quality,
         dreamRecall: data.dreamRecall,
         notes: data.notes,
         recordDate: bedTime,

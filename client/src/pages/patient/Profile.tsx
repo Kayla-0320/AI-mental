@@ -1,25 +1,46 @@
 import { useState, useEffect, useCallback, useRef, ChangeEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Card, Row, Col, Typography, Progress, Tag, Space, Empty, Spin, Button, Statistic, Divider, Tabs, Modal, Skeleton, message, Radio, List, Alert, Result, Input } from 'antd';
+import { Card, Row, Col, Typography, Progress, Tag, Space, Empty, Button, Statistic, Divider, Tabs, Modal, Skeleton, message, Radio, List, Alert, Result, Input } from 'antd';
 import {
   RadarChartOutlined, AlertOutlined, SmileOutlined,
   ThunderboltOutlined, CloudOutlined, BulbOutlined, ClockCircleOutlined,
-  FileTextOutlined, HeartOutlined, PhoneOutlined,
+  FileTextOutlined, HeartOutlined, PhoneOutlined, ReloadOutlined,
 } from '@ant-design/icons';
 import { RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, Legend, AreaChart, Area } from 'recharts';
-import { profileApi, extraApi } from '../../services';
+import { profileApi, extraApi, consultationApi } from '../../services';
 import { useAnxiety } from '../../context/AnxietyContext';
+import { useAuthStore } from '../../store/authStore';
+import CUSUMTrajectoryChart from '../../components/CUSUMTrajectoryChart';
 import { useOnDeviceInference } from '../../hooks/useOnDeviceInference';
+import { FACE_EMOTION_LABELS_ZH } from '../../services/faceEmotionClassifier';
+import { buildFacialLiveState, describeFacialLiveState } from '../../services/facialLiveState';
 import {
   RPPG_UNAVAILABLE_REASON,
   BREATHING_UNAVAILABLE_REASON,
   SLEEP_UNAVAILABLE_REASON,
+  FACE_EMOTION_MODEL_AVAILABLE,
+  FACE_EMOTION_MODEL_DISABLED_REASON,
 } from '../../hooks/perceptionCapabilities';
 
 const { Title, Text, Paragraph } = Typography;
 
 const riskColors: Record<string, string> = { LOW: '#52c41a', MEDIUM: '#faad14', HIGH: '#ff4d4f', CRISIS: '#cf1322' };
 const riskLabels: Record<string, string> = { LOW: '低风险', MEDIUM: '中风险', HIGH: '高风险', CRISIS: '危机' };
+
+/**
+ * MOOD20（首页「心理状态自查 · 20 题」）的等级中文名。
+ * 档位与后端 case 'MOOD20' 一致：severe/moderate/mild/normal。
+ * 首页摘要显示的是中文（如「状态平稳」），历史记录若直接打印英文 level 就会出现
+ * 「同一份答案两种说法」。PHQ9/GAD7 的展示保持原样，不做改动。
+ */
+const MOOD20_LEVEL_ZH: Record<string, string> = {
+  normal: '状态平稳', mild: '轻微波动', moderate: '有些困扰', severe: '困扰较明显',
+};
+const levelText = (type: string, level: string) =>
+  type === 'MOOD20' ? (MOOD20_LEVEL_ZH[level] || level) : level;
+
+/** 量表自评与心情打卡的融合权重（与后端 calculateMoodScores 的 w 保持一致） */
+const SELF_REPORT_WEIGHT = 0.6;
 
 // ===== 量表定义 =====
 const SCALE_QUESTIONS: Record<string, { title: string; desc: string; questions: string[] }> = {
@@ -45,6 +66,66 @@ const SCALE_QUESTIONS: Record<string, { title: string; desc: string; questions: 
     ],
   },
 };
+
+// ===== 心理画像页数据缓存（修「每次刷新都先白屏」） =====
+/**
+ * 背景：改造前一次刷新页面会连续闪 3 个空态 ——
+ *   ① 首帧 `profile` 还是 null → 渲染「AI 正在分析你的心理状态」进度卡；
+ *   ② `loadData` 把 loading 置真 → 整页骨架屏；
+ *   ③ 挂载时「没有画像就自动生成」的 effect 会真的 POST /profile/update，
+ *      生成完再 reload 一次 → 又变成「正在刷新数据...」整页转圈。
+ *
+ * 现在：把上一次成功拉到的数据存在 sessionStorage 里，首屏同步读出来直接渲染（秒开，
+ * 不再闪空白）；进入页面不再自动生成画像，只有用户点「刷新」/「更新画像」才发请求。
+ *
+ * 缓存口径：
+ *   · 只缓存**真实返回的数据**，失败态不缓存（绝不为了让页面好看而伪造画像）；
+ *   · 按用户 id 分 key，换账号不会读到上一个人的画像；
+ *   · 只存在 sessionStorage（关闭标签页即清空），不退化成长期留存的敏感数据。
+ */
+const PROFILE_PAGE_CACHE_PREFIX = 'gh:profile-page-cache:v1';
+
+interface ProfilePageCache {
+  profile: any;
+  moodTrend: any[];
+  dynamicProfile: any;
+  copingStrategies: any;
+  savedAt: number;
+}
+
+const profilePageCacheKey = (userId?: string) => `${PROFILE_PAGE_CACHE_PREFIX}:${userId || 'anonymous'}`;
+
+function readProfilePageCache(userId?: string): ProfilePageCache | null {
+  try {
+    const raw = sessionStorage.getItem(profilePageCacheKey(userId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || !parsed.profile) return null;
+    return parsed as ProfilePageCache;
+  } catch {
+    return null;
+  }
+}
+
+function writeProfilePageCache(userId: string | undefined, snapshot: Omit<ProfilePageCache, 'savedAt'>) {
+  try {
+    sessionStorage.setItem(
+      profilePageCacheKey(userId),
+      JSON.stringify({ ...snapshot, savedAt: Date.now() }),
+    );
+  } catch {
+    // 隐私模式 / 配额满：缓存写不进去就算了，页面本身照常工作
+  }
+}
+
+/** 服务端明确返回「没有画像」时清掉缓存，免得下次进来先闪出一份已经删掉的画像 */
+function clearProfilePageCache(userId?: string) {
+  try {
+    sessionStorage.removeItem(profilePageCacheKey(userId));
+  } catch {
+    // 同上：清不掉也不影响页面
+  }
+}
 
 // ===== 端侧推理面板组件 =====
 const ON_DEVICE_EMOTIONS = ['快乐', '悲伤', '焦虑', '愤怒', '中性'];
@@ -149,17 +230,43 @@ function OnDeviceInferencePanel() {
 export default function Profile() {
   const navigate = useNavigate();
   const { comprehensiveState, modalityStatus, updateCounter, keyboardMetrics, textMetrics, voiceMetrics, facialMetrics, circadianMetrics, cognitiveMetrics, hrvMetrics, breathingMetrics, behavioralMetrics, eyeMetrics, voiceSemanticsMetrics, baseline, baselineDeviation, getZScoreForValue, adaptiveWeights, moodTrajectory, getWeeklyReport, cameraEnabled, mediaNotice, toggleCamera } = useAnxiety();
+  // 缓存按用户隔离：换账号不会读到上一个人的画像
+  const userId = useAuthStore((s) => s.user?.id);
+  /**
+   * 面部**实时状态**快照（本机表情读数 → 同一份客户端契约，见
+   * `services/facialLiveState.ts`）。它同时是"随对话/通话上行的那一份数据"，
+   * 画像页展示的就是它本身 —— 不再是另算一套口径。
+   *
+   * ⚠️ 它**不进**画像分数、不进风险等级，只是一条独立展示的实时层；
+   * 拿不到新鲜读数时为 null，界面必须如实说"暂无"，不许用中性值兜底。
+   */
+  const facialLiveState = buildFacialLiveState(facialMetrics);
+  /**
+   * 首屏快照：**同步**读取上次成功拉到的数据，让第一帧就有内容，
+   * 而不是先渲染「生成中/骨架屏」再被数据替换（那正是"每次刷新都空白一下"的来源）。
+   */
+  const [bootSnapshot] = useState(() => readProfilePageCache(userId));
   const [mediaToggling, setMediaToggling] = useState(false);
-  const [profile, setProfile] = useState<any>(null);
-  const [moodTrend, setMoodTrend] = useState<any[]>([]);
+  const [profile, setProfile] = useState<any>(bootSnapshot?.profile ?? null);
+  // 最近一次会话的消息（供 CUSUM 轨迹图使用）。
+  // ⚠️ 此前这里写死 `messages={[]}`，图表必然空白；现在从会话接口取真实记录，
+  // 取不到就保持空数组 —— 组件自身会提示"至少需要 2 轮对话"。
+  const [recentMessages, setRecentMessages] = useState<any[]>([]);
+  const [moodTrend, setMoodTrend] = useState<any[]>(bootSnapshot?.moodTrend ?? []);
   // 画像数据不可用标记：接口失败时不得伪造分数与结论，改为显式提示
   const [profileUnavailable, setProfileUnavailable] = useState(false);
-  const [dynamicProfile, setDynamicProfile] = useState<any>(null);
-  const [copingStrategies, setCopingStrategies] = useState<any>(null);
-  const [loading, setLoading] = useState(false);
+  const [dynamicProfile, setDynamicProfile] = useState<any>(bootSnapshot?.dynamicProfile ?? null);
+  const [copingStrategies, setCopingStrategies] = useState<any>(bootSnapshot?.copingStrategies ?? null);
+  // 无缓存时首帧就是「加载中」：否则会先闪一下空态再变成内容
+  const [loading, setLoading] = useState(() => !bootSnapshot?.profile);
   const [updating, setUpdating] = useState(false);
-  const autoGeneratedRef = useRef(false);
   const [genProgress, setGenProgress] = useState(0);
+  // 是否已经有画像（含缓存）：接口失败时用它区分「保持原内容 + 提示」还是「进不可用态」
+  const hasProfileRef = useRef(Boolean(bootSnapshot?.profile));
+  // 手上这份画像是什么时候拉到的（缓存命中也显示），以及刷新/生成失败的原因
+  const [dataUpdatedAt, setDataUpdatedAt] = useState<number | null>(bootSnapshot?.savedAt ?? null);
+  const [refreshNotice, setRefreshNotice] = useState<string | null>(null);
+  const [generateNotice, setGenerateNotice] = useState<string | null>(null);
 
   // ===== 量表测评状态 =====
   const [selectedScale, setSelectedScale] = useState<string | null>(null);
@@ -210,6 +317,24 @@ export default function Profile() {
   }, []);
 
   useEffect(() => { loadSleepRecords(); }, [loadSleepRecords]);
+
+  // 拉最近一次会话的消息，供 CUSUM 轨迹图（创新点③）使用。
+  // 容错口径与本页其它卡片一致：任何失败都不影响其它内容，只是轨迹图显示"轮次不足"。
+  const loadRecentMessages = useCallback(async () => {
+    try {
+      const convRes = (await consultationApi.getConversations(1, 1)) as any;
+      const conversations = convRes?.data?.conversations || [];
+      const convId = conversations[0]?.id;
+      if (!convId) return;
+      const msgRes = (await consultationApi.getMessages(convId, 1)) as any;
+      const msgs = msgRes?.data?.messages;
+      setRecentMessages(Array.isArray(msgs) ? msgs : []);
+    } catch {
+      setRecentMessages([]);
+    }
+  }, []);
+
+  useEffect(() => { loadRecentMessages(); }, [loadRecentMessages]);
 
   // 由「入睡时间 + 时长」推导起床时间（后端要求 bedTime/wakeTime 成对）
   const buildSleepTimes = () => {
@@ -265,8 +390,13 @@ export default function Profile() {
     } catch {} finally { setScaleSubmitting(false); }
   };
 
-  const loadData = useCallback(async () => {
-    setLoading(true);
+  /**
+   * 拉取画像数据。
+   * `silent` 用于首屏命中缓存后的静默校验：不置 loading（按钮不转圈、页面不闪），
+   * 数据回来后原地替换；只有用户点「刷新」才会走带加载态的路径。
+   */
+  const loadData = useCallback(async (opts?: { silent?: boolean }) => {
+    if (!opts?.silent) setLoading(true);
     try {
       const [profileRes, trendRes, emotionRes, copingRes] = await Promise.all([
         profileApi.getPsychological() as any,
@@ -274,60 +404,83 @@ export default function Profile() {
         profileApi.getTodayEmotionalState() as any,
         profileApi.getCopingStrategies() as any,
       ]);
-      setProfile(profileRes.data);
+      const nextProfile = profileRes.data ?? null;
+      const nextTrend = trendRes.data?.moodRecords || [];
+      const nextDynamicProfile = emotionRes.data ?? null;
+      const nextCopingStrategies = copingRes.data ?? null;
+      setProfile(nextProfile);
       setProfileUnavailable(false);
-      setMoodTrend(trendRes.data?.moodRecords || []);
-      setDynamicProfile(emotionRes.data);
-      setCopingStrategies(copingRes.data);
+      setMoodTrend(nextTrend);
+      setDynamicProfile(nextDynamicProfile);
+      setCopingStrategies(nextCopingStrategies);
+      hasProfileRef.current = Boolean(nextProfile);
+      setDataUpdatedAt(Date.now());
+      setRefreshNotice(null);
+      // 只把真实拿到的数据写进缓存，失败态不缓存
+      if (nextProfile) {
+        writeProfilePageCache(userId, {
+          profile: nextProfile,
+          moodTrend: nextTrend,
+          dynamicProfile: nextDynamicProfile,
+          copingStrategies: nextCopingStrategies,
+        });
+      } else {
+        clearProfilePageCache(userId);
+      }
     } catch {
       // 接口失败时**不得伪造心理画像**：之前这里塞了一组写死的分数（焦虑35/抑郁30…）
-      // 并标注 assessedBy:'AI'，用户会把它当成真实评估结论。改为显式不可用状态。
-      setProfile(null);
-      setProfileUnavailable(true);
+      // 并标注 assessedBy:'AI'，用户会把它当成真实评估结论。
+      // 现在分两种：手上已有画像（含缓存）→ 保持原样只提示刷新失败；
+      //             完全没有数据 → 才进显式不可用态。
+      if (hasProfileRef.current) {
+        setRefreshNotice('刷新失败，当前显示的是上次成功获取的数据');
+      } else {
+        setProfile(null);
+        setProfileUnavailable(true);
+      }
     } finally { setLoading(false); }
-  }, []);
+  }, [userId]);
 
+  /**
+   * 手动刷新：只重新拉取画像数据，**不**触发 AI 重新生成。
+   * 修掉「刷新页面就自动生成 + 整页转圈」的观感问题：以后只有用户点了才请求。
+   */
+  const handleRefresh = useCallback(() => { loadData(); }, [loadData]);
+
+  /** 手动重新生成画像（POST /profile/update 会重算并落库，比刷新重） */
   const handleUpdate = useCallback(async () => {
     setUpdating(true);
+    setProfileUnavailable(false);
+    setGenerateNotice(null);
     try {
       await profileApi.updateProfile();
-    } catch {} finally { setUpdating(false); }
-  }, []);
-
-  // 初始加载
-  useEffect(() => { loadData(); }, [loadData]);
-
-  // 生成完后重新加载数据
-  useEffect(() => {
-    if (!updating && autoGeneratedRef.current) {
-      loadData();
+    } catch {
+      // 生成失败：既不伪造分数，也不清空已有画像，只如实说明
+      setGenerateNotice('重新生成失败，请稍后重试；下面展示的仍是上一次的数据。');
+    } finally {
+      setUpdating(false);
+      await loadData();
     }
-  }, [updating, loadData]);
+  }, [loadData]);
 
-  // 如果没有画像且未自动生成过，自动触发一次
+  // 初始加载：有缓存 → 首帧已经渲染出缓存内容，这里只做一次静默校验（不显示加载态）；
+  //           无缓存 → 正常加载，此时才显示骨架屏。
+  useEffect(() => { loadData({ silent: Boolean(bootSnapshot?.profile) }); }, [loadData, bootSnapshot]);
+
+  // 手动生成画像时的进度条（不再在进入页面时自动触发）
   useEffect(() => {
-    if (!profile && !loading && !updating && !autoGeneratedRef.current) {
-      autoGeneratedRef.current = true;
-      // 模拟进度条，让用户感知到进展
-      let p = 0;
-      const timer = setInterval(() => {
-        p = Math.min(p + Math.random() * 8, 90);
-        setGenProgress(Math.round(p));
-      }, 1000);
-      handleUpdate().finally(() => {
-        clearInterval(timer);
-        setGenProgress(100);
-        // 生成失败导致仍无画像时，**不得塞入写死的分数冒充 AI 评估结果**
-        // （原实现会显示「焦虑35/抑郁30… 评估方式：AI」+「整体心理状态良好」，
-        //  与「未评估」是完全相反的结论）。改为显式不可用状态。
-        setTimeout(() => {
-          if (!profile) setProfileUnavailable(true);
-        }, 500);
-      });
-    }
-  }, [profile, loading, updating, handleUpdate]);
+    if (!updating || profile) return;
+    let p = 0;
+    const timer = setInterval(() => {
+      p = Math.min(p + Math.random() * 8, 90);
+      setGenProgress(Math.round(p));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [updating, profile]);
 
-  // 骨架屏加载状态
+  // 骨架屏：只在**完全没有数据**（无缓存 + 首次加载）时出现。
+  // 以前这里下面还有个 `if (loading) return <Spin>正在刷新数据...</Spin>` 的整页分支，
+  // 于是每次刷新页面都会先被清空成全屏转圈；现在有缓存内容兜底，已经不需要它了。
   if (loading && !profile) {
     return (
       <div>
@@ -357,17 +510,11 @@ export default function Profile() {
     );
   }
 
-  if (loading) return (
-    <div style={{ textAlign: 'center', padding: 100 }}>
-      <Spin size="large" />
-      <div style={{ marginTop: 16 }}><Text type="secondary">正在刷新数据...</Text></div>
-    </div>
-  );
-
   // 画像数据不可用：明确告知，不展示任何分数（避免被误读为真实评估结论）
   if (!profile && profileUnavailable) {
     return (
-      <Card style={{ borderRadius: 12, textAlign: 'center', padding: '60px 40px' }}>
+      <div>
+        <Card style={{ borderRadius: 12, textAlign: 'center', padding: '60px 40px' }}>
         <div style={{ fontSize: 48, marginBottom: 16 }}>📭</div>
         <Title level={4} style={{ marginBottom: 8 }}>暂时无法获取心理画像</Title>
         <Text type="secondary" style={{ display: 'block', marginBottom: 16 }}>
@@ -385,30 +532,61 @@ export default function Profile() {
         <Button type="primary" onClick={() => { setProfileUnavailable(false); loadData(); }}>
           重新加载
         </Button>
-      </Card>
+        </Card>
+      </div>
     );
   }
 
+  /**
+   * 还没有画像：**不再自动生成**。
+   * 原实现一进页面就自动 POST /profile/update + 假进度条，表现为"页面自己在空转"；
+   * 现在改成由用户点按钮触发，进度条只在手动生成期间出现。
+   */
   if (!profile) {
     return (
-      <Card style={{ borderRadius: 12, textAlign: 'center', padding: '60px 40px' }}>
+      <div>
+        <Card style={{ borderRadius: 12, textAlign: 'center', padding: '60px 40px' }}>
         <div style={{ fontSize: 48, marginBottom: 16 }}>🧠</div>
-        <Title level={4} style={{ marginBottom: 8 }}>AI 正在分析你的心理状态</Title>
+        <Title level={4} style={{ marginBottom: 8 }}>还没有你的心理画像</Title>
         <Text type="secondary" style={{ display: 'block', marginBottom: 24 }}>
-          综合你的对话记录、测评结果和情绪数据，生成专属心理画像
+          综合你的对话记录、测评结果和情绪数据，可以生成一份专属心理画像。
+          <br />
+          生成要花一点时间，为了不让你每次打开本页都空等，这里改为<strong>由你手动生成</strong>。
         </Text>
         <div style={{ maxWidth: 400, margin: '0 auto' }}>
-          <Progress percent={genProgress} strokeColor={{ from: '#6366f1', to: '#ec4899' }} />
-          <div style={{ marginTop: 12 }}>
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              {genProgress < 30 ? ' 收集对话数据...' :
-               genProgress < 60 ? '🔍 分析情绪趋势...' :
-               genProgress < 90 ? '🧩 生成心理维度评分...' :
-               '✨ 即将完成...'}
-            </Text>
-          </div>
+          {generateNotice && (
+            <Alert
+              type="warning"
+              showIcon
+              style={{ marginBottom: 16, textAlign: 'left' }}
+              message={generateNotice}
+            />
+          )}
+          {updating ? (
+            <>
+              <Progress percent={genProgress} strokeColor={{ from: '#6366f1', to: '#ec4899' }} />
+              <div style={{ marginTop: 12 }}>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  {genProgress < 30 ? ' 收集对话数据...' :
+                   genProgress < 60 ? '🔍 分析情绪趋势...' :
+                   genProgress < 90 ? '🧩 生成心理维度评分...' :
+                   '✨ 即将完成...'}
+                </Text>
+              </div>
+            </>
+          ) : (
+            <Space wrap style={{ justifyContent: 'center' }}>
+              <Button type="primary" size="large" onClick={handleUpdate} style={{ borderRadius: 14 }}>
+                生成心理画像
+              </Button>
+              <Button size="large" icon={<ReloadOutlined />} loading={loading} onClick={handleRefresh} style={{ borderRadius: 14 }}>
+                刷新
+              </Button>
+            </Space>
+          )}
         </div>
-      </Card>
+        </Card>
+      </div>
     );
   }
 
@@ -534,11 +712,47 @@ export default function Profile() {
 
   return (
     <div>
+      {/* 手动刷新条：
+          进入页面不再自动整页刷新，也不再自动重新生成画像；
+          「刷新」= 重新拉取（轻），右侧的「更新画像」= 让 AI 重算并落库（重）。
+          带上时间戳，是为了让人一眼看出这份画像是哪次拉到的（缓存命中也标出来）。 */}
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'flex-end',
+        gap: 10, flexWrap: 'wrap', marginBottom: 12,
+      }}>
+        {refreshNotice && (
+          <Text style={{ fontSize: 12, color: '#d46b08' }}>⚠️ {refreshNotice}</Text>
+        )}
+        {generateNotice && (
+          <Text style={{ fontSize: 12, color: '#d46b08' }}>⚠️ {generateNotice}</Text>
+        )}
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          {dataUpdatedAt
+            ? `数据更新于 ${new Date(dataUpdatedAt).toLocaleString('zh-CN')}${loading ? ' · 正在刷新…' : ''}`
+            : '尚未刷新'}
+        </Text>
+        <Button
+          size="small"
+          icon={<ReloadOutlined />}
+          loading={loading}
+          onClick={handleRefresh}
+          style={{ borderRadius: 14 }}
+        >
+          刷新
+        </Button>
+      </div>
 
-      <Row gutter={[16, 16]}>
-        {/* 综合评分 */}
-        <Col xs={24} md={8}>
-          <Card style={{ borderRadius: 12, textAlign: 'center' }}>
+      {/* align="stretch"：让同一行的卡片等高，避免左卡片下方留出空缺 */}
+      <Row gutter={[16, 16]} align="stretch">
+        {/* 综合评分：与同行卡片等高，卡片内文字垂直居中 */}
+        <Col xs={24} md={12}>
+          <Card
+            style={{
+              borderRadius: 12, textAlign: 'center', height: '100%',
+              display: 'flex', flexDirection: 'column',
+            }}
+            styles={{ body: { flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center' } }}
+          >
             <Title level={5}>综合心理健康评分</Title>
             {hasMultimodalData && (
               <div style={{ marginBottom: 8 }}>
@@ -556,18 +770,20 @@ export default function Profile() {
                 {riskLabels[displayRiskLevel] || '低风险'}
               </Tag>
             </div>
-            <Button onClick={handleUpdate} loading={updating} style={{ marginTop: 16 }}>
-              更新画像
+            {/* 与页顶的「刷新」区分开：这个按钮会让后端重算画像并落库，比较重 */}
+            {/* alignSelf: 卡片正文是纵向 flex，默认会把按钮横向拉满，这里保持按钮原宽度 */}
+            <Button onClick={handleUpdate} loading={updating} style={{ marginTop: 16, alignSelf: 'center' }}>
+              重新生成画像
             </Button>
           </Card>
         </Col>
 
         {/* 雷达图 + 同龄对比 */}
-        <Col xs={24} md={16}>
+        <Col xs={24} md={12}>
           <Card 
             title={<Space><RadarChartOutlined /> 心理维度分析</Space>} 
             extra={<Tag color="green" style={{ fontSize: 11 }}>含同龄对比</Tag>}
-            style={{ borderRadius: 12 }}
+            style={{ borderRadius: 12, height: '100%' }}
           >
             <ResponsiveContainer width="100%" height={280}>
               <RadarChart data={radarData}>
@@ -592,8 +808,8 @@ export default function Profile() {
         </Col>
 
         {/* 情绪趋势 */}
-        <Col xs={24}>
-          <Card title={<Space><SmileOutlined /> 情绪趋势 (近30天)</Space>} style={{ borderRadius: 12 }}>
+        <Col xs={24} md={12}>
+          <Card title={<Space><SmileOutlined /> 情绪趋势 (近30天)</Space>} style={{ borderRadius: 12, height: '100%' }}>
             {moodTrend.length > 0 ? (
               <ResponsiveContainer width="100%" height={250}>
                 <LineChart data={moodTrend.map((r: any) => ({ date: r.recordedAt?.slice(5, 10), score: r.score }))}>
@@ -608,12 +824,29 @@ export default function Profile() {
           </Card>
         </Col>
 
+        {/* 创新点③：CUSUM 时序轨迹图 */}
+        <Col xs={24} md={12}>
+          <Card 
+            title={<Space><AlertOutlined /> CUSUM 变点检测 <Tag color="purple" style={{ fontSize: 11 }}>创新点③</Tag></Space>}
+            extra={<Tag color="blue" style={{ fontSize: 11 }}>基于对话记录</Tag>}
+            style={{ borderRadius: 12, height: '100%' }}
+          >
+            <div style={{ marginBottom: 12, padding: '6px 12px', background: '#f9f0ff', borderRadius: 6, fontSize: 12, color: '#5b4a8a' }}>
+              <strong>CUSUM 算法</strong>：检测情绪时序中的微小但持续的漂移，红点标记变点位置。
+            </div>
+            <CUSUMTrajectoryChart messages={recentMessages} />
+            <div style={{ marginTop: 8, fontSize: 11, color: '#888', textAlign: 'center' }}>
+              💡 在对话页面发送多条消息后，这里会显示情绪轨迹变化
+            </div>
+          </Card>
+        </Col>
+
         {/* 睡眠监测模块 —— 平台无夜间传感器，睡眠只能由用户手动记录 */}
-        <Col xs={24}>
+        <Col xs={24} md={12}>
           <Card 
             title={<Space><ClockCircleOutlined /> 睡眠监测 <Tag color="blue" style={{ fontSize: 11 }}>仅手动记录</Tag><Tag color="orange" style={{ fontSize: 11 }}>非设备测量</Tag></Space>}
             extra={<Button type="primary" size="small" onClick={() => setSleepFormOpen(!sleepFormOpen)}>{sleepFormOpen ? '收起' : '+ 记录睡眠'}</Button>}
-            style={{ borderRadius: 12 }}
+            style={{ borderRadius: 12, height: '100%' }}
           >
             <div style={{ marginBottom: 12, padding: '6px 12px', background: '#fff7e6', borderRadius: 6, fontSize: 12, color: '#ad6800' }}>
               平台没有可穿戴设备或夜间传感器，<strong>无法自动检测睡眠</strong>。
@@ -733,8 +966,8 @@ export default function Profile() {
 
         {/* AI 报告 */}
         {profile.report && (
-          <Col xs={24}>
-            <Card title={<Space><CloudOutlined /> AI 心理画像报告</Space>} style={{ borderRadius: 12 }}>
+          <Col xs={24} md={12}>
+            <Card title={<Space><CloudOutlined /> AI 心理画像报告</Space>} style={{ borderRadius: 12, height: '100%' }}>
               <Paragraph style={{ whiteSpace: 'pre-wrap', lineHeight: 1.8 }}>{profile.report}</Paragraph>
               <Text type="secondary">评估方式：{profile.assessedBy} | 更新时间：{new Date(profile.updatedAt).toLocaleDateString()}</Text>
             </Card>
@@ -743,11 +976,11 @@ export default function Profile() {
 
         {/* 动态情绪画像 */}
         {dynamicProfile?.hasData && dynamicProfile?.profile && (
-          <Col xs={24}>
+          <Col xs={24} md={12}>
             <Card
               title={<Space><ThunderboltOutlined /> 今日动态情绪画像 <Tag color="purple">AI 实时分析</Tag></Space>}
               extra={dynamicProfile.updatedAt && <Text type="secondary" style={{ fontSize: 12 }}><ClockCircleOutlined /> {new Date(dynamicProfile.updatedAt).toLocaleString()}</Text>}
-              style={{ borderRadius: 12 }}
+              style={{ borderRadius: 12, height: '100%' }}
             >
               <Row gutter={24}>
                 <Col xs={24} md={8}>
@@ -927,6 +1160,15 @@ export default function Profile() {
                       <div>检测：{facialMetrics.isDetecting ? '✅' : ' 开启摄像头'}</div>
                       <div>帧数：{facialMetrics.frameCount} / 需≥2</div>
                       <div>表情：{facialMetrics.dominantExpression}</div>
+                      {/* 本机三分类表情模型（与上面的 AU 规则映射分开显示，避免混淆两条证据） */}
+                      <div>
+                        模型：{facialMetrics.faceEmotion
+                          ? `${FACE_EMOTION_LABELS_ZH[facialMetrics.faceEmotion.dominant]} ${Math.round(facialMetrics.faceEmotion.confidence * 100)}%`
+                          : facialMetrics.faceEmotionStatus === 'loading' ? '⏳ 加载中'
+                            : facialMetrics.faceEmotionStatus === 'unavailable' ? '⚠️ 不可用'
+                              : facialMetrics.faceEmotionStatus === 'ready' ? '等待人脸'
+                                : '未启用'}
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -1279,10 +1521,77 @@ export default function Profile() {
                             return <span key={k}><Text type="secondary">{labelMap[k] || k}：</Text>{Math.round(v * 100)}%</span>;
                           })}
                         </div>
+
+                        {/* 本机三分类表情模型（ResNet50）：与上面的 AU 规则映射是**两条独立证据** */}
+                        <div style={{ marginTop: 8, paddingTop: 6, borderTop: '1px dashed #ffe0b2' }}>
+                          <Text strong style={{ fontSize: 12 }}>本机表情模型（ResNet50 · 3 类）</Text>
+                          {comprehensiveState.facial.faceEmotion ? (
+                            <div style={{ marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 8, fontSize: 12 }}>
+                              <span>
+                                <Text type="secondary">判定：</Text>
+                                <Text strong>{FACE_EMOTION_LABELS_ZH[comprehensiveState.facial.faceEmotion.dominant]}</Text>{' '}
+                                {Math.round(comprehensiveState.facial.faceEmotion.confidence * 100)}%
+                              </span>
+                              <span><Text type="secondary">开心：</Text>{Math.round(comprehensiveState.facial.faceEmotion.probabilities.happy * 100)}%</span>
+                              <span><Text type="secondary">中性：</Text>{Math.round(comprehensiveState.facial.faceEmotion.probabilities.neutral * 100)}%</span>
+                              <span><Text type="secondary">悲伤：</Text>{Math.round(comprehensiveState.facial.faceEmotion.probabilities.sad * 100)}%</span>
+                              <span><Text type="secondary">耗时：</Text>{comprehensiveState.facial.faceEmotion.latencyMs}ms·{comprehensiveState.facial.faceEmotion.inputSize}px</span>
+                              <Text type="secondary" style={{ fontSize: 11 }}>（仅展示与上报，不参与风险评分）</Text>
+                            </div>
+                          ) : (
+                            <div style={{ marginTop: 4, fontSize: 12, color: '#999' }}>
+                              {comprehensiveState.facial.faceEmotionStatus === 'loading'
+                                ? '⏳ 模型加载中（首次约 90 MB，之后走浏览器缓存）'
+                                : comprehensiveState.facial.faceEmotionStatus === 'unavailable'
+                                  ? `⚠️ ${comprehensiveState.facial.faceEmotionUnavailableReason || '模型不可用'}`
+                                  : comprehensiveState.facial.faceEmotionStatus === 'ready'
+                                    ? '已就绪，等待人脸帧…'
+                                    : FACE_EMOTION_MODEL_AVAILABLE
+                                      ? '未启用（多模态未开启）'
+                                      : FACE_EMOTION_MODEL_DISABLED_REASON}
+                            </div>
+                          )}
+                        </div>
                       </div>
                     </Card>
                   </Col>
                 )}
+
+                {/* ── 实时状态层（面部）────────────────────────────────────
+                    这是"面部识别结果实时进入心理画像"的落点：与上面那张卡片**分开**，
+                    因为它是**独立的一层**，不是画像分数的一部分。
+                    这条边界必须写在界面上，否则用户会以为表情在给他打分。 */}
+                <Col xs={24} md={12}>
+                  <Card
+                    size="small"
+                    title={<Space><span style={{ fontSize: 16 }}>⚡</span> 实时状态 · 面部（本机采集）</Space>}
+                    style={{ borderRadius: 10, background: '#f0f5ff' }}
+                    extra={<Tag color="blue" style={{ margin: 0 }}>不进画像评分</Tag>}
+                  >
+                    <div style={{ fontSize: 13, lineHeight: 2 }} data-live-state="facial">
+                      <div><Text type="secondary">当前：</Text><Text strong>{describeFacialLiveState(facialLiveState)}</Text></div>
+                      {facialLiveState && (
+                        <div style={{ marginTop: 2, display: 'flex', flexWrap: 'wrap', gap: 8, fontSize: 12 }}>
+                          <span><Text type="secondary">开心：</Text>{Math.round(facialLiveState.probabilities.happy * 100)}%</span>
+                          <span><Text type="secondary">中性：</Text>{Math.round(facialLiveState.probabilities.neutral * 100)}%</span>
+                          <span><Text type="secondary">悲伤：</Text>{Math.round(facialLiveState.probabilities.sad * 100)}%</span>
+                          <span><Text type="secondary">采样：</Text>{facialLiveState.sampleHz}Hz</span>
+                          <span><Text type="secondary">读数年龄：</Text>{facialLiveState.ageMs}ms</span>
+                          <span><Text type="secondary">后端：</Text>{facialLiveState.provider || '—'}</span>
+                        </div>
+                      )}
+                      <div style={{ marginTop: 6, fontSize: 12, color: '#7c8db5' }}>
+                        它随每一轮 AI 对话 / 通话作为<b>临时内部参考</b>上行，用来让回应放缓一点；
+                        <b>不参与</b>焦虑/抑郁/压力数值、不参与风险等级，也不进升级判定。
+                        人脸离开画面后读数即作废（超时自动清空）。
+                      </div>
+                      <div style={{ marginTop: 4, fontSize: 12, color: '#a6a3bb' }}>
+                        留痕：开启多模态期间每 15 秒随多模态快照落一条（含同一份 <code>facialLiveState</code>），
+                        供日后核对"那一轮 AI 看到过什么"。
+                      </div>
+                    </div>
+                  </Card>
+                </Col>
 
                 {/* 声音声学分析 */}
                 {comprehensiveState.voice.isRecording && (
@@ -1642,9 +1951,9 @@ export default function Profile() {
                   <List.Item>
                     <List.Item.Meta
                       title={item.title}
-                      description={`得分：${item.totalScore} | 等级：${item.level} | ${new Date(item.createdAt).toLocaleDateString()}`}
+                      description={`得分：${item.totalScore}${item.type === 'MOOD20' ? ' / 60' : ''} | 等级：${levelText(item.type, item.level)} | ${new Date(item.createdAt).toLocaleDateString()}`}
                     />
-                    <Tag color={item.level === 'normal' ? 'green' : item.level === 'mild' ? 'orange' : 'red'}>{item.level}</Tag>
+                    <Tag color={item.level === 'normal' ? 'green' : item.level === 'mild' ? 'orange' : 'red'}>{levelText(item.type, item.level)}</Tag>
                   </List.Item>
                 )}
               />

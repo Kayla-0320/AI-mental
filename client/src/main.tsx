@@ -7,6 +7,12 @@ import App from './App';
 import ErrorBoundary from './components/ErrorBoundary';
 import './index.css';
 import './styles/healing-theme.css';
+// 首页改版设计系统 + 应用外壳。必须排在 healing-theme.css **之后**：
+// 旧主题用 `!important` 写了 body 背景与 .ant-card 样式，同权重时按加载顺序取胜。
+import './styles/garden.css';
+import './styles/garden-shell.css';
+// 全局弹窗排版：顶栏的心理电话 / 多模态 / 反馈，以及首页内容预览、页脚条款弹窗共用
+import './styles/garden-modals.css';
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

@@ -66,6 +66,28 @@ export const SLEEP_AUTO_DETECTION_AVAILABLE = envFlag(env.VITE_ENABLE_SLEEP_AUTO
  */
 export const EYE_STATE_MODEL_AVAILABLE = envFlag(env.VITE_ENABLE_EYE_STATE_MODEL);
 
+/**
+ * 😊 表情模型（浏览器内 ONNX；**展示口径** happy/neutral/sad，模型类别数可变）—— **默认开启**
+ *
+ * 现状：`useFaceEmotion` 在多模态开关打开时懒加载模型（`FACE_EMOTION_SPEC.url`，
+ * 2026-10-10 起是 `public/models/face_emotion_8cls_hsemotion.onnx`，15.3 MB、
+ * 8 类 AffectNet 模型折叠成三分类），用 MediaPipe 同一帧的人脸裁剪图推理，
+ * 结果只**展示与上报**，不参与 `riskScore`。
+ *
+ * 为什么默认开启（与上面眼状态模型默认关闭的取舍不同）：
+ *   这是"面部表情"链路上唯一真正的分类器输出（`emotionMapping` 是 AU 规则映射，不是模型）；
+ *   开启成本是一次性下载 + 按后端能力**连续**推理（2026-10-10 起不再是固定 1 秒一次，
+ *   见 `faceEmotionPacing.ts`）。
+ * 代价要说清楚：
+ *   首次开启多模态需要下载约 15 MB 模型（之后走浏览器缓存；换模型前是 90 MB）；
+ *   慢设备（无 WebGPU）上单次推理可达数百毫秒，`useFaceEmotion` 会按**实测耗时**
+ *   贴着后端能力跑（`1.15 × 耗时`，下限 60ms / 上限 2s），并把实测刷新率与执行后端
+ *   如实显示在左下角工具栏里；wasm 会在 Worker 里跑，不阻塞眨眼通道。
+ *   另外 8 类模型会有相当比例的判定落在三分类之外，工具栏用「其他表情 X%」如实显示。
+ * 关闭方式：`VITE_DISABLE_FACE_EMOTION_MODEL=1`（省掉这次下载与推理开销）。
+ */
+export const FACE_EMOTION_MODEL_AVAILABLE = !envFlag(env.VITE_DISABLE_FACE_EMOTION_MODEL);
+
 /** 心率不可用时，界面统一展示的说明 */
 export const RPPG_UNAVAILABLE_REASON = '本设备无心率传感器，rPPG 未启用';
 
@@ -77,3 +99,6 @@ export const SLEEP_UNAVAILABLE_REASON = '无夜间传感器，睡眠仅支持手
 
 /** 第二判定通道未启用时，界面统一展示的说明 */
 export const EYE_STATE_MODEL_UNAVAILABLE_REASON = '第二眼状态模型未启用（需先标定阈值）';
+
+/** 表情模型被环境变量关掉时，界面统一展示的说明 */
+export const FACE_EMOTION_MODEL_DISABLED_REASON = '表情模型已关闭（VITE_DISABLE_FACE_EMOTION_MODEL=1）';

@@ -1,6 +1,7 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { useAuthStore } from './store/authStore';
 import SplashScreen from './components/SplashScreen';
+import PageTransition from './components/PageTransition';
 import PatientLayout from './pages/patient/PatientLayout';
 import ConsultantLayout from './pages/consultant/ConsultantLayout';
 import AdminLayout from './pages/admin/AdminLayout';
@@ -20,6 +21,7 @@ import VoiceCall from './pages/patient/VoiceCall';
 import ConsultantDashboard from './pages/consultant/ConsultantDashboard';
 import ConsultantAppointments from './pages/consultant/ConsultantAppointments';
 import ConsultantConsultations from './pages/consultant/ConsultantConsultations';
+import ConsultantCrisisTodo from './pages/consultant/ConsultantCrisisTodo';
 import ConsultantProfiles from './pages/consultant/ConsultantProfiles';
 import ConsultantRoom from './pages/consultant/ConsultantRoom';
 import ConsultantSettings from './pages/consultant/ConsultantSettings';
@@ -46,18 +48,29 @@ function RoleRoute({ children, role }: { children: React.ReactNode; role: string
 }
 
 export default function App() {
+  /**
+   * 路由过渡动画（见 components/PageTransition.tsx）分两层：
+   *
+   *  · 三个 Layout（患者 / 咨询师 / 管理）内部各自包内容区 —— 顶栏、侧边栏、
+   *    底部 Tab 不参与动画，只有页面主体过渡。**不要**把整个 `<Routes>` 包一层：
+   *    那会让 Layout 在每次切页时重挂，PatientLayout 里的 `AnxietyProvider`、
+   *    通知轮询、通话相关的副作用会跟着重来一遍。
+   *
+   *  · 不进布局的整屏路由（登录 / 注册 / AI 通话）在这里包 —— 它们本来就整屏换，
+   *    用 `variant="screen"`：通话页根节点是 position: fixed，只能用 opacity，不能 transform。
+   */
   return (
     <>
       <SplashScreen />
       <Routes>
-      <Route path="/login" element={<Login />} />
-      <Route path="/register" element={<Register />} />
+      <Route path="/login" element={<PageTransition variant="screen"><Login /></PageTransition>} />
+      <Route path="/register" element={<PageTransition variant="screen"><Register /></PageTransition>} />
 
       {/* AI 陪伴通话：整屏页面，**刻意**与 /login 同级、不进 PatientLayout ——
           带上侧边栏就不像"打电话"了。会话 id 可选：无 id 时页面自己建一个
           再 replace 到 /call/<id>（见 VoiceCall.tsx 的会话生命周期）。 */}
-      <Route path="/call" element={<PrivateRoute><RoleRoute role="PATIENT"><VoiceCall /></RoleRoute></PrivateRoute>} />
-      <Route path="/call/:conversationId" element={<PrivateRoute><RoleRoute role="PATIENT"><VoiceCall /></RoleRoute></PrivateRoute>} />
+      <Route path="/call" element={<PrivateRoute><RoleRoute role="PATIENT"><PageTransition variant="screen"><VoiceCall /></PageTransition></RoleRoute></PrivateRoute>} />
+      <Route path="/call/:conversationId" element={<PrivateRoute><RoleRoute role="PATIENT"><PageTransition variant="screen"><VoiceCall /></PageTransition></RoleRoute></PrivateRoute>} />
 
       {/* 患者端 */}
       <Route path="/" element={<PrivateRoute><RoleRoute role="PATIENT"><PatientLayout /></RoleRoute></PrivateRoute>}>
@@ -88,6 +101,7 @@ export default function App() {
       {/* 咨询师端 */}
       <Route path="/consultant" element={<PrivateRoute><RoleRoute role="CONSULTANT"><ConsultantLayout /></RoleRoute></PrivateRoute>}>
         <Route index element={<ConsultantDashboard />} />
+        <Route path="crisis" element={<ConsultantCrisisTodo />} />
         <Route path="appointments" element={<ConsultantAppointments />} />
         <Route path="consultations" element={<ConsultantConsultations />} />
         <Route path="consultations/:bookingId" element={<ConsultantRoom />} />

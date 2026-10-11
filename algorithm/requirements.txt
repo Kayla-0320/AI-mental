@@ -39,6 +39,10 @@ pandas==2.2.3
 shap==0.46.0
 lime==0.2.0.1
 
+# --- 公平性审计图表 ---
+# audit/fairness.py:generate_chart 需要；缺失时 POST /api/v1/audit/fairness 直接 500
+matplotlib==3.11.2
+
 # --- 联邦学习 ---
 flwr==1.11.1
 

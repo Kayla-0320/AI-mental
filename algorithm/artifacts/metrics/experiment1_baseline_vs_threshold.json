@@ -1,0 +1,32 @@
+{
+  "num_users": 50,
+  "turns_per_user": 10,
+  "crisis_probability": 0.15,
+  "total_samples": 500,
+  "fixed_threshold": {
+    "accuracy": 0.648,
+    "precision": 0.586,
+    "recall": 0.5915,
+    "f1": 0.5888,
+    "tp": 126,
+    "fp": 89,
+    "fn": 87,
+    "tn": 198
+  },
+  "personal_baseline": {
+    "accuracy": 0.926,
+    "precision": 0.9272,
+    "recall": 0.8967,
+    "f1": 0.9117,
+    "tp": 191,
+    "fp": 15,
+    "fn": 22,
+    "tn": 272
+  },
+  "improvement": {
+    "accuracy": 0.278,
+    "precision": 0.34120000000000006,
+    "recall": 0.3052,
+    "f1": 0.32289999999999996
+  }
+}

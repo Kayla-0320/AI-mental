@@ -17,6 +17,13 @@ router.post('/conversations/:conversationId/messages', consultationController.se
 // 流式版本（SSE）：同一份请求体，响应体是 text/event-stream。
 // 与上面的非流式端点共享服务层逻辑，只是回复边生成边下发。
 router.post('/conversations/:conversationId/messages/stream', consultationController.sendMessageStream);
+// 对话总结（元宝纪要风格）。读/写分开：
+//   GET  /summary           —— 只读已保存的总结，找不到返回 null（高频、零成本）
+//   POST /summary/generate  —— 生成或（force=true 时）重新生成，会调大模型并落库
+// 注意 GET 这条必须排在 /conversations/:conversationId 之前读起来才不别扭，
+// 且路径字面量有 /summary 后缀，不会与单条会话路由抢匹配。
+router.get('/conversations/:conversationId/summary', consultationController.getSummary);
+router.post('/conversations/:conversationId/summary/generate', consultationController.generateSummary);
 router.delete('/conversations/:conversationId', consultationController.deleteConversation);
 router.post('/conversations/:conversationId/socratic', consultationController.sendSocraticMessage);
 

@@ -1,11 +1,23 @@
 /**
  * 疗愈空间 —— 心理小游戏合集
  *
- * 四大分类（共 12 个小游戏）：
+ * 页面结构：
+ *   页顶那张整幅出血的图条现在由布局层统一渲染
+ *   （`components/home/PageTopImage.tsx`，本页对应 `/assets/healing-cat-lake.jpg`），
+ *   这里只负责下面的游戏内容区。
+ *   ⚠️ 因此本页在 `PatientLayout` 里属于"整幅出血"页（isFlush）：
+ *   内容区不加左右内边距、顶栏在页顶走透明压图态 —— 这两条是配套的，
+ *   只改一边会让 Hero 被压出一圈白边或被顶栏切断。
+ *   游戏本身的排布（Tabs + Row/Col 卡片网格）没有改动。
+ *
+ * 四大分类（共 13 个小游戏）：
  *   🎯 注意力 & 专注力：舒尔特方格、色词冲突、序列密码、持续注意
  *   🌿 缓解压力：气球呼吸训练、冥想音频、静默计时
- *   🎨 释放压力：涂鸦画板、橡皮人拉扯
+ *   🎨 释放压力：涂鸦画板、橡皮人拉扯、烦恼泡泡
  *   ⚡ 反应 & 协调：反应灯（Go / No-Go）、多目标追踪、跟手追踪、选择反应（Simon）、甩点挑战、节奏打击
+ *
+ * 「烦恼泡泡」是唯一一个不产出任何成绩的游戏：不落库、不打分、不排名，
+ * 用户写下的烦恼只存在于这一页的内存里（详见该组件上方的说明）。
  *
  * 每个游戏都带统一的「结束并回退」按钮（快捷键 Esc）：
  * 立即中断正在运行的计时器 / 动画帧 / 音频，并把游戏状态回退到初始状态；
@@ -21,12 +33,17 @@
  * 因此只呈现自己的数值与纵向变化，不给分数排名，也不做任何能力定性结论。
  */
 import { useState, useEffect, useRef, useCallback, useMemo, useContext, createContext } from 'react';
-import { Card, Tabs, Tag, Space, Typography, Button, Row, Col, Tooltip, Slider } from 'antd';
+import type { CSSProperties } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { Card, Tabs, Tag, Space, Typography, Button, Row, Col, Tooltip, Slider, Input } from 'antd';
 import {
   BulbOutlined, CloudOutlined, ExperimentOutlined, StopOutlined, ThunderboltOutlined,
   ExpandOutlined, CompressOutlined, ArrowLeftOutlined,
 } from '@ant-design/icons';
 import { healingApi } from '../../services';
+import './healing-page.css';
+import './worry-bubbles.css';
+import './doodle-canvas.css';
 
 const { Title, Text } = Typography;
 
@@ -268,11 +285,21 @@ const GAME_LAYOUT_CSS = `
  *    .cloud-card 上有 filter: drop-shadow(...)，而 filter 会给它内部所有
  *    position:fixed 的后代建立包含块 —— 全屏层会因此被缩成卡片大小（实测过 570×103）。
  *    把卡片变成全屏层的子节点，全屏层的祖先链上就没有任何 filter / transform 了。
+ *
+ * @param expandedFill 放大时让卡片吃掉整屏（涂鸦画板要一整块画布才画得开）。
+ *   默认 false：别的游戏内容限宽 920px 更好读。开启后 .game-slot 不再限宽，
+ *   并且 .game-slot → .ant-card → .ant-card-body 一路 flex:1 传下去，
+ *   游戏根节点只要写 flex:1 / min-height:0 就能拿到「屏幕剩下的全部高度」。
  */
-function GameCard({ title, children }: { title: string; children: React.ReactNode }) {
+function GameCard({ title, children, expandedFill }: {
+  title: string;
+  children: React.ReactNode;
+  expandedFill?: boolean;
+}) {
   const [expanded, setExpanded] = useState(false);
   const abortVersion = useContext(HealingAbortContext);
   const seenRef = useRef(abortVersion);
+  const fill = !!expandedFill;
 
   // 切换分类时收起。正常流程下全屏层盖住了标签栏点不到，这里是兜底。
   useEffect(() => {
@@ -333,21 +360,43 @@ function GameCard({ title, children }: { title: string; children: React.ReactNod
           display:block、flex:0 0 auto，就会把等高链路打断（实测卡片被压扁到 299px）。
         */}
         <div className="game-frame-body" style={expanded ? {
-          flex: '1 1 auto', display: 'flex', overflow: 'auto',
+          flex: '1 1 auto', display: 'flex', minHeight: 0,
+          // 屏幕特别矮的时候让内容能滚，别把工具栏挤没了（画板自己有 min-height 兜底）
+          overflow: 'auto',
         } : undefined}>
           {/* margin:auto 让内容在放大态居中，内容比屏幕高时又不会被切掉顶部 */}
           <div className="game-slot" style={{
             width: '100%',
-            ...(expanded ? { maxWidth: 920, margin: 'auto' } : null),
+            ...(expanded ? {
+              maxWidth: fill ? 'none' : 920,
+              /*
+               * ⚠️ 吃满整屏时不能用 margin:auto：
+               * 交叉轴上的 auto margin 会让 flex item 停止拉伸（align-self:stretch 失效），
+               * 高度塌成内容高度 —— 实测放大后画板高度是 0，画布根本画不了。
+               */
+              margin: fill ? 0 : 'auto',
+              ...(fill ? {
+                flex: '1 1 auto', minHeight: 0,
+                display: 'flex', flexDirection: 'column',
+              } : null),
+            } : null),
           }}>
             <Card
               title={title}
               className="cloud-card"
+              style={expanded && fill ? {
+                height: '100%', display: 'flex', flexDirection: 'column',
+              } : undefined}
               styles={{
                 // 放大态隐藏卡片自带的标题栏（只是 display，节点仍在，不会引起重建），
                 // 标题由上面那条常驻顶栏承担
                 header: { display: expanded ? 'none' : undefined },
-                body: { padding: 24 },
+                body: expanded && fill
+                  ? {
+                    flex: '1 1 auto', minHeight: 0, padding: 12,
+                    display: 'flex', flexDirection: 'column',
+                  }
+                  : { padding: 24 },
               }}
             >
               {children}
@@ -1108,10 +1157,6 @@ const MEDITATION_TRACKS = [
     url: 'https://assets.mixkit.co/active_storage/sfx/2472/2472-preview.mp3',
   },
   {
-    title: '海浪轻拍', emoji: '\u{1F30A}', desc: '真实的潮汐拍岸', duration: '2:31', color: '#1890ff', type: 'ocean' as const,
-    url: 'https://assets.mixkit.co/active_storage/sfx/1189/1189-preview.mp3',
-  },
-  {
     title: '雨打窗棂', emoji: '\u{1F327}\u{FE0F}', desc: '连绵雨声', duration: '0:57', color: '#722ed1', type: 'rain' as const,
     url: 'https://assets.mixkit.co/active_storage/sfx/2394/2394-preview.mp3',
   },
@@ -1212,25 +1257,7 @@ function MeditationAudio() {
     const nodes: AudioNode[] = [master];
     const intervals: number[] = [];
 
-    if (type === 'ocean') {
-      const noise = ctx.createBufferSource();
-      noise.buffer = createNoiseBuffer(ctx, 'brown');
-      noise.loop = true;
-      const filter = ctx.createBiquadFilter();
-      filter.type = 'lowpass';
-      filter.frequency.value = 400;
-      const lfo = ctx.createOscillator();
-      lfo.frequency.value = 0.08;
-      const lfoGain = ctx.createGain();
-      lfoGain.gain.value = 0.15;
-      lfo.connect(lfoGain);
-      lfoGain.connect(master.gain);
-      lfo.start();
-      noise.connect(filter);
-      filter.connect(master);
-      noise.start();
-      nodes.push(noise, filter, lfo, lfoGain);
-    } else if (type === 'rain') {
+    if (type === 'rain') {
       const noise = ctx.createBufferSource();
       noise.buffer = createNoiseBuffer(ctx, 'pink');
       noise.loop = true;
@@ -1509,117 +1536,432 @@ function MeditationAudio() {
 // ============================================================
 // 5. 涂鸦画板
 // ============================================================
-const DOODLE_COLORS = ['#722ed1', '#f5222d', '#fa8c16', '#52c41a', '#1890ff', '#eb2f96', '#333333', '#ffffff'];
-const DOODLE_DEFAULT_COLOR = '#722ed1';
-const DOODLE_DEFAULT_BRUSH = 4;
+/**
+ * 配色分两排：
+ *   前 12 个是浅色，适合大面积铺、叠色、轻轻扫；
+ *   后 12 个是浓色，想用力画、想被看见的时候用。
+ * 再加一支「彩虹笔」（笔迹自己循环变色）和一个原生取色器（想要什么色都行）。
+ */
+const DOODLE_COLORS: Array<{ hex: string; name: string }> = [
+  { hex: '#FFD1DC', name: '樱花粉' },
+  { hex: '#FFB6C1', name: '棉花粉' },
+  { hex: '#FFE5D9', name: '蜜桃' },
+  { hex: '#FFD8A8', name: '杏黄' },
+  { hex: '#FFF3B0', name: '奶油黄' },
+  { hex: '#E9FAC8', name: '嫩芽' },
+  { hex: '#D4F1F4', name: '薄荷' },
+  { hex: '#C7E9F1', name: '天蓝' },
+  { hex: '#D6E4FF', name: '雾蓝' },
+  { hex: '#E0D7FF', name: '星紫' },
+  { hex: '#E8D5F5', name: '薰衣草' },
+  { hex: '#FFFFFF', name: '留白' },
+  { hex: '#E8455F', name: '朱红' },
+  { hex: '#FF8FAB', name: '玫瑰' },
+  { hex: '#FF8C42', name: '暖橙' },
+  { hex: '#FFC53D', name: '金黄' },
+  { hex: '#7CB305', name: '草绿' },
+  { hex: '#2FBFA8', name: '青绿' },
+  { hex: '#1F8FD1', name: '湖蓝' },
+  { hex: '#3B5BDB', name: '靛蓝' },
+  { hex: '#7048E8', name: '紫罗兰' },
+  { hex: '#C2255C', name: '莓红' },
+  { hex: '#8A6A4F', name: '可可' },
+  { hex: '#35415E', name: '墨蓝' },
+];
 
+const DOODLE_PAPER = '#fafafa';
+/** 彩虹笔在颜色状态里的特殊值 */
+const DOODLE_RAINBOW = 'rainbow';
+const DOODLE_DEFAULT_COLOR = '#7048E8';
+const DOODLE_DEFAULT_BRUSH = 4;
+const DOODLE_BRUSHES = [2, 4, 8, 14];
+/** 位图总像素上限：大屏 + 高 DPR 时不至于开出一块几十 MB 的画布 */
+const DOODLE_MAX_PIXELS = 4_000_000;
+/** 两次采样之间的最小距离（CSS px），滤掉过密的点：省内存，线也更顺 */
+const DOODLE_MIN_STEP = 1.2;
+
+interface DoodleSize { w: number; h: number; dpr: number }
+
+interface DoodleStroke {
+  /** 颜色；DOODLE_RAINBOW 表示按笔迹长度循环色相 */
+  color: string;
+  /** 线宽占画布短边的比例：画布放大后笔触跟着变粗，粗细的相对感保持一致 */
+  widthN: number;
+  /** 归一化坐标 [x0, y0, x1, y1, ...]，相对画布宽高 —— 改尺寸后能原样重绘 */
+  points: number[];
+}
+
+/** 位图尺寸 = CSS 尺寸 × DPR，并按总像素上限收敛 */
+function doodleBitmap(w: number, h: number): { dpr: number; bw: number; bh: number } {
+  const cap = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
+  let dpr = cap;
+  const total = w * h * dpr * dpr;
+  if (total > DOODLE_MAX_PIXELS) dpr = Math.max(1, dpr * Math.sqrt(DOODLE_MAX_PIXELS / total));
+  return { dpr, bw: Math.max(1, Math.round(w * dpr)), bh: Math.max(1, Math.round(h * dpr)) };
+}
+
+function doodleLineWidth(size: DoodleSize, stroke: DoodleStroke): number {
+  return Math.max(1, stroke.widthN * Math.min(size.w, size.h));
+}
+
+/** 彩虹笔的色相：按笔迹走过的长度循环，同一条线上就会一点点变色 */
+function doodleRainbowColor(travel: number): string {
+  return `hsl(${(travel * 0.55) % 360}, 80%, 60%)`;
+}
+
+/**
+ * 画一整条笔迹
+ * 重绘（改尺寸 / 撤销 / 清空）时调用，和下面的增量绘制共用同一套算法，
+ * 保证「边画边看」和「重绘」出来的东西完全一致。
+ */
+function doodlePaintStroke(ctx: CanvasRenderingContext2D, size: DoodleSize, stroke: DoodleStroke) {
+  const lw = doodleLineWidth(size, stroke);
+  const p = stroke.points;
+  if (p.length < 2) return;
+  ctx.lineWidth = lw;
+
+  // 只点了一下没有拖动 → 留一颗圆点
+  if (p.length === 2) {
+    ctx.beginPath();
+    ctx.arc(p[0] * size.w, p[1] * size.h, lw / 2, 0, Math.PI * 2);
+    ctx.fillStyle = stroke.color === DOODLE_RAINBOW ? doodleRainbowColor(0) : stroke.color;
+    ctx.fill();
+    return;
+  }
+
+  let travel = 0;
+  for (let i = 2; i < p.length; i += 2) {
+    const x0 = p[i - 2] * size.w;
+    const y0 = p[i - 1] * size.h;
+    const x1 = p[i] * size.w;
+    const y1 = p[i + 1] * size.h;
+    travel += Math.hypot(x1 - x0, y1 - y0);
+    ctx.strokeStyle = stroke.color === DOODLE_RAINBOW ? doodleRainbowColor(travel) : stroke.color;
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    ctx.lineTo(x1, y1);
+    ctx.stroke();
+  }
+}
+
+/** 只画最后一个点带出的那一段（指针移动时用），返回累计笔迹长度给彩虹笔续色 */
+function doodlePaintTail(
+  ctx: CanvasRenderingContext2D, size: DoodleSize, stroke: DoodleStroke, prevTravel: number,
+): number {
+  const p = stroke.points;
+  const lw = doodleLineWidth(size, stroke);
+  ctx.lineWidth = lw;
+
+  if (p.length === 2) {
+    ctx.beginPath();
+    ctx.arc(p[0] * size.w, p[1] * size.h, lw / 2, 0, Math.PI * 2);
+    ctx.fillStyle = stroke.color === DOODLE_RAINBOW ? doodleRainbowColor(0) : stroke.color;
+    ctx.fill();
+    return prevTravel;
+  }
+  if (p.length < 4) return prevTravel;
+
+  const n = p.length;
+  const x0 = p[n - 4] * size.w;
+  const y0 = p[n - 3] * size.h;
+  const x1 = p[n - 2] * size.w;
+  const y1 = p[n - 1] * size.h;
+  const travel = prevTravel + Math.hypot(x1 - x0, y1 - y0);
+  ctx.strokeStyle = stroke.color === DOODLE_RAINBOW ? doodleRainbowColor(travel) : stroke.color;
+  ctx.beginPath();
+  ctx.moveTo(x0, y0);
+  ctx.lineTo(x1, y1);
+  ctx.stroke();
+  return travel;
+}
+
+/**
+ * 涂鸦画板
+ *
+ * 笔迹不存成图片，而是存「归一化坐标的点串 + 颜色 + 相对线宽」：
+ *   - 画布尺寸一变（进放大态、出放大态、旋屏、窗口缩放）就按新尺寸整条重绘，
+ *     所以放得再大线也是清晰的，而且画到一半放大不会丢；
+ *   - 位图始终等于 CSS 尺寸 × DPR，不做位图拉伸，避免糊；
+ *   - 指针移动时只补画新增的那一小段，不清屏重绘，笔迹多了也不掉帧。
+ */
 function DoodleCanvas() {
+  const isExpanded = useIsExpanded();
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const drawingRef = useRef(false);
-  const lastPosRef = useRef<{ x: number; y: number } | null>(null);
+  const sizeRef = useRef<DoodleSize>({ w: 0, h: 0, dpr: 1 });
+  const strokesRef = useRef<DoodleStroke[]>([]);
+  const activeRef = useRef<DoodleStroke | null>(null);
+  const travelRef = useRef(0);
   const [color, setColor] = useState(DOODLE_DEFAULT_COLOR);
+  const [activeKey, setActiveKey] = useState(DOODLE_DEFAULT_COLOR);
+  const [customColor, setCustomColor] = useState('#7048E8');
   const [brushSize, setBrushSize] = useState(DOODLE_DEFAULT_BRUSH);
+  // 只用它来切换「撤销 / 清空」的可点状态，笔迹真身一直在 strokesRef 里
+  const [strokeCount, setStrokeCount] = useState(0);
   const [ended, flashEnded, clearEnded] = useEndedFlag();
 
-  const clearCanvas = useCallback(() => {
+  /** 按当前尺寸把整幅重画一遍 */
+  const paintAll = useCallback(() => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    const size = sizeRef.current;
+    if (!canvas || size.w <= 0 || size.h <= 0) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-    ctx.fillStyle = '#fafafa';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-  }, []);
-
-  useEffect(() => { clearCanvas(); }, [clearCanvas]);
-
-  const getPos = (e: React.MouseEvent | React.TouchEvent) => {
-    const canvas = canvasRef.current!;
-    const rect = canvas.getBoundingClientRect();
-    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
-    const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
-    return {
-      x: (clientX - rect.left) * (canvas.width / rect.width),
-      y: (clientY - rect.top) * (canvas.height / rect.height),
-    };
-  };
-
-  const startDraw = (e: React.MouseEvent | React.TouchEvent) => {
-    e.preventDefault();
-    drawingRef.current = true;
-    lastPosRef.current = getPos(e);
-  };
-
-  const draw = (e: React.MouseEvent | React.TouchEvent) => {
-    e.preventDefault();
-    if (!drawingRef.current || !lastPosRef.current) return;
-    const canvas = canvasRef.current!;
-    const ctx = canvas.getContext('2d')!;
-    const pos = getPos(e);
-    ctx.beginPath();
-    ctx.moveTo(lastPosRef.current.x, lastPosRef.current.y);
-    ctx.lineTo(pos.x, pos.y);
-    ctx.strokeStyle = color;
-    ctx.lineWidth = brushSize;
+    ctx.setTransform(size.dpr, 0, 0, size.dpr, 0, 0);
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
-    ctx.stroke();
-    lastPosRef.current = pos;
+    ctx.fillStyle = DOODLE_PAPER;
+    ctx.fillRect(0, 0, size.w, size.h);
+    for (const stroke of strokesRef.current) doodlePaintStroke(ctx, size, stroke);
+  }, []);
+
+  // 画布尺寸：ResizeObserver 量真实像素。卡片态是 4:3，放大态是整屏剩下来的那块，
+  // 中间还夹着一次设备像素比换算 —— 位图跟着 CSS 尺寸走，画笔始终清晰。
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    let raf = 0;
+    let mq: MediaQueryList | null = null;
+
+    const apply = () => {
+      raf = 0;
+      const rect = canvas.getBoundingClientRect();
+      const w = Math.round(rect.width);
+      const h = Math.round(rect.height);
+      if (w <= 0 || h <= 0) return;   // 卡片被隐藏 / 标签页没显示时跳过
+      const { dpr, bw, bh } = doodleBitmap(w, h);
+      if (sizeRef.current.w === w && sizeRef.current.h === h
+        && canvas.width === bw && canvas.height === bh) return;
+      sizeRef.current = { w, h, dpr };
+      canvas.width = bw;    // 改尺寸会清空画布，所以紧接着必须整幅重绘
+      canvas.height = bh;
+      paintAll();
+    };
+
+    /*
+     * 显示器 DPR 变了（拖到外接屏、改系统缩放）不会触发 ResizeObserver，
+     * 得用 resolution 媒体查询单独盯着 —— 不重新分配位图的话画布就糊了。
+     * 每次变化后用新的 DPR 重新订阅一遍。
+     */
+    const watchDpr = () => {
+      if (typeof window.matchMedia !== 'function') return;
+      if (mq && typeof mq.removeEventListener === 'function') {
+        mq.removeEventListener('change', onDprChange);
+      }
+      mq = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+      if (typeof mq.addEventListener === 'function') mq.addEventListener('change', onDprChange);
+    };
+    const onDprChange = () => { apply(); watchDpr(); };
+    watchDpr();
+
+    // 窗口缩放 / 系统缩放（也会改 DPR）走同一个重算入口
+    const onWinResize = () => {
+      if (raf) cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(apply);
+    };
+    window.addEventListener('resize', onWinResize);
+
+    apply();
+    let ro: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      ro = new ResizeObserver(onWinResize);
+      ro.observe(canvas);
+    }
+    return () => {
+      if (raf) cancelAnimationFrame(raf);
+      ro?.disconnect();
+      window.removeEventListener('resize', onWinResize);
+      if (mq && typeof mq.removeEventListener === 'function') {
+        mq.removeEventListener('change', onDprChange);
+      }
+    };
+  }, [paintAll]);
+
+  /** 屏幕坐标 → 归一化坐标（0~1）。超出画布也照样记，只是画到外面被裁掉 */
+  const pointFrom = (e: React.PointerEvent<HTMLCanvasElement>): [number, number] | null => {
+    const canvas = canvasRef.current;
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    return [(e.clientX - rect.left) / rect.width, (e.clientY - rect.top) / rect.height];
   };
 
-  const stopDraw = () => {
-    drawingRef.current = false;
-    lastPosRef.current = null;
+  const startDraw = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    const size = sizeRef.current;
+    const pt = pointFrom(e);
+    if (!canvas || !pt || size.w <= 0) return;
+    e.preventDefault();
+    // 抓住指针：手指 / 鼠标滑出画布再滑回来，这一笔也不会断
+    try { canvas.setPointerCapture(e.pointerId); } catch { /* 某些环境不支持，忽略 */ }
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.setTransform(size.dpr, 0, 0, size.dpr, 0, 0);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    const stroke: DoodleStroke = {
+      color,
+      widthN: brushSize / Math.max(1, Math.min(size.w, size.h)),
+      points: [pt[0], pt[1]],
+    };
+    strokesRef.current = [...strokesRef.current, stroke];
+    activeRef.current = stroke;
+    travelRef.current = doodlePaintTail(ctx, size, stroke, 0);
+    setStrokeCount(strokesRef.current.length);
+    clearEnded();
+  };
+
+  const draw = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const stroke = activeRef.current;
+    const canvas = canvasRef.current;
+    if (!stroke || !canvas) return;
+    const pt = pointFrom(e);
+    if (!pt) return;
+    e.preventDefault();
+
+    const size = sizeRef.current;
+    const p = stroke.points;
+    const dx = (pt[0] - p[p.length - 2]) * size.w;
+    const dy = (pt[1] - p[p.length - 1]) * size.h;
+    if (Math.hypot(dx, dy) < DOODLE_MIN_STEP) return;   // 点太密就丢掉
+
+    p.push(pt[0], pt[1]);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    travelRef.current = doodlePaintTail(ctx, size, stroke, travelRef.current);
+  };
+
+  const stopDraw = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!activeRef.current) return;
+    activeRef.current = null;
+    try { canvasRef.current?.releasePointerCapture(e.pointerId); } catch { /* 忽略 */ }
+  };
+
+  /** 撤销：笔迹是一条条存着的，去掉最后一条整幅重绘即可 */
+  const undo = () => {
+    if (strokesRef.current.length === 0) return;
+    activeRef.current = null;
+    strokesRef.current = strokesRef.current.slice(0, -1);
+    setStrokeCount(strokesRef.current.length);
+    clearEnded();
+    paintAll();
   };
 
   const clear = () => {
-    clearCanvas();
+    activeRef.current = null;
+    strokesRef.current = [];
+    setStrokeCount(0);
     clearEnded();
+    paintAll();
   };
 
   /** 结束并回退：清空画布并把画笔恢复到初始状态 */
   const endGame = () => {
-    drawingRef.current = false;
-    lastPosRef.current = null;
-    clearCanvas();
+    activeRef.current = null;
+    strokesRef.current = [];
+    setStrokeCount(0);
     setColor(DOODLE_DEFAULT_COLOR);
+    setActiveKey(DOODLE_DEFAULT_COLOR);
+    setCustomColor(DOODLE_DEFAULT_COLOR);
     setBrushSize(DOODLE_DEFAULT_BRUSH);
+    paintAll();
     flashEnded();
   };
 
+  const pickPalette = (hex: string) => {
+    setColor(hex);
+    setActiveKey(hex);
+  };
+
   return (
-    <div style={{ textAlign: 'center' }}>
-      <Text type="secondary" style={{ display: 'block', marginBottom: 12, fontSize: 13 }}>
-        随意涂鸦，把情绪画出来。没有对错，画完可以清空重来。
-      </Text>
-      <canvas ref={canvasRef} width={400} height={300}
-        onMouseDown={startDraw} onMouseMove={draw} onMouseUp={stopDraw} onMouseLeave={stopDraw}
-        onTouchStart={startDraw} onTouchMove={draw} onTouchEnd={stopDraw}
-        style={{
-          width: '100%', maxWidth: 400, height: 'auto', borderRadius: 16,
-          border: '2px solid #f0f0f0', cursor: 'crosshair', touchAction: 'none',
-          background: '#fafafa',
-        }}
-      />
-      <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, flexWrap: 'wrap' }}>
-        {DOODLE_COLORS.map(c => (
-          <div key={c} onClick={() => setColor(c)} style={{
-            width: 28, height: 28, borderRadius: '50%', background: c, cursor: 'pointer',
-            border: color === c ? '3px solid #333' : '2px solid #ddd',
-            transition: 'all 0.2s',
-          }} />
-        ))}
-        <span style={{ fontSize: 12, color: '#999', marginLeft: 8 }}>粗细：</span>
-        {[2, 4, 8, 14].map(s => (
-          <div key={s} onClick={() => setBrushSize(s)} style={{
-            width: 28, height: 28, borderRadius: '50%', background: '#f0f0f0',
-            display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
-            border: brushSize === s ? '2px solid #722ed1' : '1px solid #ddd',
-          }}>
-            <div style={{ width: s, height: s, borderRadius: '50%', background: '#333' }} />
-          </div>
-        ))}
-        <Button size="small" onClick={clear} style={{ borderRadius: 14 }}>清空</Button>
+    <div className={isExpanded ? 'doodle-root doodle-root--expanded' : 'doodle-root'}>
+      <p className="doodle-hint">
+        随意涂鸦，把情绪画出来。没有对错，画完可以撤销或清空重来。
+      </p>
+
+      <div className="doodle-board">
+        <canvas
+          ref={canvasRef}
+          className="doodle-canvas"
+          aria-label="涂鸦画布：按住并拖动即可作画"
+          onPointerDown={startDraw}
+          onPointerMove={draw}
+          onPointerUp={stopDraw}
+          onPointerCancel={stopDraw}
+        />
       </div>
+
+      <div className="doodle-tools">
+        <div className="doodle-palette">
+          {DOODLE_COLORS.map(c => (
+            <button
+              key={c.hex}
+              type="button"
+              className={activeKey === c.hex ? 'doodle-swatch doodle-swatch--on' : 'doodle-swatch'}
+              style={{ background: c.hex }}
+              title={c.name}
+              aria-label={`颜色：${c.name}`}
+              aria-pressed={activeKey === c.hex}
+              onClick={() => pickPalette(c.hex)}
+            />
+          ))}
+          <button
+            type="button"
+            className={activeKey === DOODLE_RAINBOW
+              ? 'doodle-swatch doodle-swatch--rainbow doodle-swatch--on'
+              : 'doodle-swatch doodle-swatch--rainbow'}
+            title="彩虹笔：一笔上自己变色"
+            aria-label="彩虹笔"
+            aria-pressed={activeKey === DOODLE_RAINBOW}
+            onClick={() => { setColor(DOODLE_RAINBOW); setActiveKey(DOODLE_RAINBOW); }}
+          />
+          <label
+            className={activeKey === 'custom'
+              ? 'doodle-swatch doodle-swatch--custom doodle-swatch--on'
+              : 'doodle-swatch doodle-swatch--custom'}
+            style={{ background: customColor }}
+            title="自定义颜色"
+          >
+            <input
+              type="color"
+              value={customColor}
+              aria-label="自定义颜色"
+              onChange={e => {
+                setCustomColor(e.target.value);
+                setColor(e.target.value);
+                setActiveKey('custom');
+              }}
+            />
+          </label>
+        </div>
+
+        <div className="doodle-sizes">
+          <span className="doodle-tools__label">粗细</span>
+          {DOODLE_BRUSHES.map(s => (
+            <button
+              key={s}
+              type="button"
+              className={brushSize === s ? 'doodle-size doodle-size--on' : 'doodle-size'}
+              title={`${s}px`}
+              aria-label={`笔触粗细 ${s}`}
+              aria-pressed={brushSize === s}
+              onClick={() => setBrushSize(s)}
+            >
+              <span className="doodle-size__dot" style={{ width: s, height: s }} />
+            </button>
+          ))}
+          <Button size="small" onClick={undo} disabled={strokeCount === 0}
+            style={{ borderRadius: 14 }}>
+            撤销
+          </Button>
+          <Button size="small" onClick={clear} disabled={strokeCount === 0}
+            style={{ borderRadius: 14 }}>
+            清空
+          </Button>
+        </div>
+      </div>
+
       <GameActions onEnd={endGame} ended={ended}
         tip="清空画布并把画笔设置恢复到初始状态">
       </GameActions>
@@ -4553,6 +4895,632 @@ function SustainedAttention() {
 }
 
 // ============================================================
+// 15. 烦恼泡泡（Worry Bubbles）
+// ============================================================
+/**
+ * 定位：情绪表达与自我关怀的小工具，不是测试、不是竞技游戏。
+ *
+ * 三条不能破的线（心理健康的合规要求，改动前请先读一遍）：
+ *   1) 不诊断、不评价。所有反馈文案只承接感受，不说「你的烦恼已经消失」这类绝对化的话，
+ *      也不承诺点完泡泡就会开心起来。
+ *   2) 不采集。用户输入的烦恼**不进 localStorage、不发请求、不写日志**，
+ *      只住在 React state 里，离开页面即随之消失；成绩落库（recordGameResult）故意不调用。
+ *   3) 不施压。不强制填写（可以只放一个空白泡泡）、不计分、不排名、不设倒计时。
+ *
+ * 交互上的三个关键点：
+ *   - 泡泡漂浮得自然：每颗泡泡的漂移/浮沉时长与相位都由 ID 哈希决定，
+ *     所以彼此不同步，但幅度都很小（±7px / ±11px），看着是「飘」而不是「乱飞」。
+ *   - 消散有情绪反馈：动画播完不是消失得无声无息，而是底部浮出一句温柔的话。
+ *   - 不重叠：落位用「拒绝采样」在池子里找一个离已有泡泡最远的位置，
+ *     48 次随机都不满足最小间隙时取间隙最大的那个，最多 12 颗，池子不会挤成一团。
+ */
+
+const WB_MAX_BUBBLES = 12;      // 同时最多漂浮的泡泡数
+const WB_MAX_CHARS = 200;       // 单条烦恼的输入上限
+const WB_PAD = 16;              // 泡泡离池壁的最小距离（同时给漂浮留出余量）
+const WB_GAP = 12;              // 泡泡之间希望保持的最小间隙（px）
+const WB_BLANK_GLYPH = '···';   // 空白泡泡里显示的符号
+const WB_ENTER_STAGGER = 240;   // 示例泡泡浮现动画的错开间隔（ms）
+const WB_EXAMPLE_TEXTS = ['最近有点累', '担心明天的事情', '有些说不清的烦躁'];
+
+/** 消散后出现的温柔反馈：只承接感受，不给结论、不打包票 */
+const WB_FEEDBACKS = [
+  '你已经愿意面对自己的感受了，这本身就很不容易。',
+  '不必一次解决所有事情，慢慢来就好。',
+  '给自己一点空间，也是一种照顾。',
+  '此刻的感受值得被认真对待。',
+  '你可以暂时放下，也可以以后再慢慢面对。',
+  '愿意把它写下来，就已经是在照顾自己了。',
+  '烦恼不必马上就消失，先放在这里也可以。',
+];
+
+/** 粒子飞散方向（6 个，够用又不费性能） */
+const WB_PARTICLE_VECTORS: Array<[number, number]> = [
+  [-30, -20], [24, -28], [34, 6], [-26, 18], [6, -36], [-10, 30],
+];
+
+/** 完成态背景里缓缓闪烁的星星（固定坐标，避免每次渲染重排） */
+const WB_STARS = [
+  { left: '9%', top: '17%', size: 3, delay: '0s' },
+  { left: '21%', top: '63%', size: 2, delay: '0.7s' },
+  { left: '37%', top: '23%', size: 2, delay: '1.4s' },
+  { left: '57%', top: '13%', size: 3, delay: '2.1s' },
+  { left: '73%', top: '41%', size: 2, delay: '0.4s' },
+  { left: '86%', top: '19%', size: 2, delay: '1.8s' },
+  { left: '66%', top: '74%', size: 3, delay: '2.6s' },
+  { left: '29%', top: '81%', size: 2, delay: '1.1s' },
+];
+
+/** 用户是否开启了「减少动态效果」 */
+function usePrefersReducedMotion(): boolean {
+  const query = '(prefers-reduced-motion: reduce)';
+  const [reduced, setReduced] = useState(() =>
+    typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      ? window.matchMedia(query).matches
+      : false);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    const mq = window.matchMedia(query);
+    const onChange = () => setReduced(mq.matches);
+    onChange();
+    if (typeof mq.addEventListener === 'function') {
+      mq.addEventListener('change', onChange);
+      return () => mq.removeEventListener('change', onChange);
+    }
+    // 老 Safari 只有已废弃的 addListener
+    mq.addListener(onChange);
+    return () => mq.removeListener(onChange);
+  }, []);
+
+  return reduced;
+}
+
+/** 一条待生成的泡泡请求（还没落位） */
+interface WbRequest {
+  text: string;
+  blank: boolean;
+  example: boolean;
+}
+
+/** 池子里的一颗泡泡：id 稳定，位置/大小/动画参数都是算好之后存下来的 */
+interface WbBubble extends WbRequest {
+  id: string;
+  size: number;
+  x: number;          // 圆心，相对池子左上角（px）
+  y: number;
+  tone: number;       // 0 蓝 / 1 紫 / 2 薄荷 / 3 粉
+  enterDelay: number; // 浮现动画的延迟（ms），只有示例泡泡会错开
+  driftDur: number;
+  driftDelay: number;
+  floatDur: number;
+  floatDelay: number;
+  fontSize: number;
+  popping: boolean;
+}
+
+/** 由 ID 派生的稳定随机数（[0,1)），保证同一颗泡泡每次渲染拿到同样的动画参数 */
+function wbHash(input: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < input.length; i += 1) {
+    h ^= input.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0) / 4294967296;
+}
+
+/** 视觉长度：中文/全角算 1，英文数字算 0.55，避免一句英文撑出巨泡 */
+function wbTextLength(text: string): number {
+  let n = 0;
+  for (const ch of text) n += /[\u3000-\u9fff\uff00-\uffef]/.test(ch) ? 1 : 0.55;
+  return Math.ceil(n);
+}
+
+/**
+ * 泡泡里最多显示 18 个字（圆形里 3 行、每行 6 个出头的上限），更长的省略。
+ * 圆里塞不下 200 字，也没必要把用户写下的私人的话整段摊在屏幕上。
+ */
+const WB_MAX_GLYPH = 18;
+function wbDisplayText(text: string): string {
+  const chars = Array.from(text);
+  return chars.length > WB_MAX_GLYPH ? chars.slice(0, WB_MAX_GLYPH).join('') + '…' : text;
+}
+
+/** 基础直径：字越多泡泡越大，但只分四档，避免大小毫无规律 */
+function wbBaseSize(req: WbRequest): number {
+  if (req.blank) return 92;
+  const n = wbTextLength(req.text);
+  if (n <= 5) return 94;
+  if (n <= 10) return 106;
+  if (n <= 18) return 120;
+  return 134;
+}
+
+/**
+ * 实际直径 = 基础直径 × 池子缩放 × 拥挤系数，并夹在合理区间内。
+ * 池子变小（手机）时整体缩水；泡泡变多时收得更狠一点，尽量不叠在一起。
+ * 手机上池子只有 270 出头，所以缩放地板给到 0.72 —— 再小字就糊了。
+ */
+function wbBubbleSize(req: WbRequest, w: number, h: number, count: number): number {
+  const fit = Math.min(w / 720, h / 330);
+  const scale = Math.max(0.72, Math.min(1.3, fit));
+  const crowd = count >= 9 ? 0.72 : count >= 6 ? 0.82 : count >= 3 ? 0.94 : 1.06;
+  const cap = Math.min(w, h) * 0.44;
+  const size = wbBaseSize(req) * scale * crowd;
+  return Math.round(Math.max(54, Math.min(size, cap)));
+}
+
+/**
+ * 落位：在池子里随机试 48 个点，取离已有泡泡最远的那个；
+ * 一旦找到间隙 ≥ WB_GAP 的点就立刻采用。最多 12 颗，这个开销可以忽略。
+ */
+function wbPlace(size: number, placed: WbBubble[], w: number, h: number): { x: number; y: number } {
+  const r = size / 2;
+  const minX = r + WB_PAD;
+  const maxX = w - r - WB_PAD;
+  const minY = r + WB_PAD;
+  const maxY = h - r - WB_PAD;
+  if (maxX <= minX || maxY <= minY) return { x: w / 2, y: h / 2 };
+
+  let best = { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
+  let bestGap = -Infinity;
+  for (let i = 0; i < 48; i += 1) {
+    const x = minX + Math.random() * (maxX - minX);
+    const y = minY + Math.random() * (maxY - minY);
+    let gap = Infinity;
+    for (const o of placed) {
+      const d = Math.hypot(x - o.x, y - o.y) - r - o.size / 2;
+      if (d < gap) gap = d;
+    }
+    if (gap > bestGap) {
+      bestGap = gap;
+      best = { x, y };
+    }
+    if (gap >= WB_GAP) break;
+  }
+  return best;
+}
+
+/**
+ * 烦恼泡泡
+ *
+ * 三个阶段：
+ *   worry —— 输入卡展开，池子里飘着 3 颗「示例」泡泡（标明示例，避免被误当成自己的记录）
+ *   pool  —— 输入卡收成窄条（点「再写一个烦恼」可以再展开），泡泡在池子里等人点
+ *   done  —— 全部消散，池子换成完成态（星星 + 两句文案 + 两个出口）
+ *
+ * 什么时候算「全部消散」：泡泡池空了、且输入框里没有正写到一半的字。
+ * 只剩 3 颗示例泡泡时把它们全点掉，同样会走到完成态 —— 这样只看看玩法的人也有结尾。
+ */
+function WorryBubbles() {
+  const run = useInterruptible();
+  const isExpanded = useIsExpanded();
+  const reducedMotion = usePrefersReducedMotion();
+  const navigate = useNavigate();
+  const [ended, flashEnded, clearEnded] = useEndedFlag();
+
+  const [phase, setPhase] = useState<'worry' | 'pool' | 'done'>('worry');
+  const [draft, setDraft] = useState('');
+  const [bubbles, setBubbles] = useState<WbBubble[]>([]);
+  const [feedback, setFeedback] = useState('');
+  const [hint, setHint] = useState('');
+  const [poolSize, setPoolSize] = useState({ w: 0, h: 0 });
+
+  const poolRef = useRef<HTMLDivElement | null>(null);
+  const poolSizeRef = useRef({ w: 0, h: 0 });
+  const bubblesRef = useRef<WbBubble[]>([]);
+  const pendingRef = useRef<WbRequest[]>([]);
+  const idRef = useRef(0);
+  const seededRef = useRef(false);
+  const feedbackIndexRef = useRef(-1);
+  const hintTimerRef = useRef<any>(null);
+  // 输入框里还有没有没提交的字：定时器回调里要用它决定「最后一颗泡泡散去」时要不要进完成态
+  const draftRef = useRef('');
+
+  const updateDraft = useCallback((value: string) => {
+    draftRef.current = value;
+    setDraft(value);
+  }, []);
+
+  /**
+   * 所有写 state 的地方都走这里：同步更新 ref 再 setState。
+   * 事件回调（尤其是 setTimeout 里的）要能读到最新列表，只靠 state 会读到旧闭包。
+   */
+  const commit = useCallback((next: WbBubble[]) => {
+    bubblesRef.current = next;
+    setBubbles(next);
+  }, []);
+
+  /** 造一颗泡泡：尺寸、位置、动画参数一次算清，之后除非池子改尺寸都不会变 */
+  const makeBubble = useCallback((
+    req: WbRequest, placed: WbBubble[], w: number, h: number,
+  ): WbBubble => {
+    idRef.current += 1;
+    const id = `wb-${idRef.current}`;
+    const size = wbBubbleSize(req, w, h, placed.length);
+    const pos = wbPlace(size, placed, w, h);
+    const a = wbHash(id);
+    const b = wbHash(`${id}#2`);
+    // 示例泡泡是同一帧里一起造出来的，按序错开浮现的起点，看着像一颗颗冒上来
+    const exampleIndex = req.example ? placed.filter(p => p.example).length : 0;
+    return {
+      ...req,
+      id,
+      size,
+      x: pos.x,
+      y: pos.y,
+      tone: idRef.current % 4,
+      enterDelay: exampleIndex * WB_ENTER_STAGGER,
+      driftDur: 8.5 + a * 6,        // 8.5 ~ 14.5s，慢一点才像飘
+      driftDelay: -b * 8,
+      floatDur: 6 + b * 4.5,        // 6 ~ 10.5s
+      floatDelay: -a * 6,
+      fontSize: Math.max(9, Math.round(size * 0.115)),
+      popping: false,
+    };
+  }, []);
+
+  const showHint = useCallback((text: string) => {
+    setHint(text);
+    if (hintTimerRef.current) clearTimeout(hintTimerRef.current);
+    hintTimerRef.current = run.trackTimer(setTimeout(() => setHint(''), 3600));
+  }, [run]);
+
+  // ---- 池子尺寸：ResizeObserver 量真实像素，手机 / 放大态 / 旋屏都能跟着重排 ----
+  useEffect(() => {
+    const el = poolRef.current;
+    if (!el) return;
+    let raf = 0;
+    const apply = () => {
+      raf = 0;
+      const rect = el.getBoundingClientRect();
+      const w = Math.round(rect.width);
+      const h = Math.round(rect.height);
+      if (w <= 0 || h <= 0) return;   // 标签页隐藏时是 0，跳过，等它显示出来再说
+      const prev = poolSizeRef.current;
+      if (Math.abs(prev.w - w) < 2 && Math.abs(prev.h - h) < 2) return;
+      poolSizeRef.current = { w, h };
+      setPoolSize({ w, h });
+    };
+    apply();
+    let ro: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      ro = new ResizeObserver(() => {
+        if (raf) cancelAnimationFrame(raf);
+        raf = requestAnimationFrame(apply);
+      });
+      ro.observe(el);
+    }
+    return () => {
+      if (raf) cancelAnimationFrame(raf);
+      ro?.disconnect();
+    };
+  }, []);
+
+  /** 池子改尺寸：按新尺寸重排所有泡泡（位置和大小都跟着走），顺带清掉排队的请求 */
+  const layoutAt = useCallback((w: number, h: number) => {
+    const queue = pendingRef.current;
+    pendingRef.current = [];
+    const out: WbBubble[] = [];
+    for (const b of bubblesRef.current) {
+      const size = wbBubbleSize(b, w, h, out.length);
+      const pos = wbPlace(size, out, w, h);
+      out.push({ ...b, size, x: pos.x, y: pos.y, fontSize: Math.max(9, Math.round(size * 0.115)) });
+    }
+    for (const req of queue) {
+      if (out.length >= WB_MAX_BUBBLES) break;
+      out.push(makeBubble(req, out, w, h));
+    }
+    commit(out);
+  }, [commit, makeBubble]);
+
+  useEffect(() => {
+    if (poolSize.w <= 0 || poolSize.h <= 0) return;
+    layoutAt(poolSize.w, poolSize.h);
+  }, [poolSize, layoutAt]);
+
+  // 首次量到尺寸后摆出示例泡泡：只做一次，之后「结束并回退」会重新摆一次
+  useEffect(() => {
+    if (poolSize.w <= 0 || poolSize.h <= 0 || seededRef.current) return;
+    seededRef.current = true;
+    const out = [...bubblesRef.current];
+    for (const text of WB_EXAMPLE_TEXTS) {
+      out.push(makeBubble({ text, blank: false, example: true }, out, poolSize.w, poolSize.h));
+    }
+    commit(out);
+  }, [poolSize, commit, makeBubble]);
+
+  /** 放一颗新泡泡；池子还没量到尺寸就先排队，量到后由 layoutAt 补上 */
+  const addBubble = useCallback((req: WbRequest): boolean => {
+    if (bubblesRef.current.length >= WB_MAX_BUBBLES) {
+      showHint('泡泡已经够多了，先让几个轻轻散去，再放下新的烦恼吧。');
+      return false;
+    }
+    const { w, h } = poolSizeRef.current;
+    if (w <= 0 || h <= 0) {
+      pendingRef.current = [...pendingRef.current, req];
+      return true;
+    }
+    commit([...bubblesRef.current, makeBubble(req, bubblesRef.current, w, h)]);
+    return true;
+  }, [commit, makeBubble, showHint]);
+
+  const nextFeedback = useCallback(() => {
+    const total = WB_FEEDBACKS.length;
+    if (total === 0) return '';
+    let i = Math.floor(Math.random() * total);
+    // 连着点泡泡时不重复上一句
+    if (total > 1 && i === feedbackIndexRef.current) i = (i + 1) % total;
+    feedbackIndexRef.current = i;
+    return WB_FEEDBACKS[i];
+  }, []);
+
+  /**
+   * 点泡泡：先打上 popping（同一颗泡泡立刻失去点击能力，连点 / 双击不会重复消散、
+   * 也不会重复计数），动画播完再真正移除；移除的定时器交给 useInterruptible 管，
+   * 「结束并回退」时会被一起清掉，不会在回退后又把泡泡删掉。
+   *
+   * 注意这里用的是 ref 里的列表而不是 state 闭包 —— 定时器回调必须看到最新的一批泡泡。
+   */
+  const popBubble = useCallback((id: string) => {
+    const list = bubblesRef.current;
+    const target = list.find(b => b.id === id);
+    if (!target || target.popping) return;
+
+    const token = run.token();
+    commit(list.map(b => (b.id === id ? { ...b, popping: true } : b)));
+
+    const timer = setTimeout(() => {
+      if (!run.isActive(token)) return;
+      const rest = bubblesRef.current.filter(b => b.id !== id);
+      commit(rest);
+      setFeedback(nextFeedback());
+      // 最后一颗散去就进完成态 —— 除非用户正写到一半（输入框里有字），
+      // 这时候把输入卡抢走会很粗暴，留在原地让他写完。
+      setPhase(p => (rest.length === 0 && draftRef.current.trim() === '' ? 'done' : p));
+    }, reducedMotion ? 240 : 800);
+    run.trackTimer(timer);
+  }, [commit, nextFeedback, reducedMotion, run]);
+
+  /** 提交输入：空白泡泡走 blank 分支，完全不强迫用户透露内容 */
+  const submit = useCallback((blank: boolean) => {
+    const text = blank ? '' : draft.trim();
+    if (!blank && !text) return;
+    if (!addBubble({ text, blank, example: false })) return;
+    updateDraft('');
+    setFeedback('');
+    setPhase('pool');
+  }, [addBubble, draft, updateDraft]);
+
+  /** 完成态 → 继续写 */
+  const restart = useCallback(() => {
+    commit([]);
+    setFeedback('');
+    setHint('');
+    setPhase('worry');
+  }, [commit]);
+
+  /** 结束并回退：中断定时器、清空泡泡与输入，回到最初的输入态（连示例泡泡一起复位） */
+  const endGame = useCallback(() => {
+    run.interrupt();
+    if (hintTimerRef.current) {
+      clearTimeout(hintTimerRef.current);
+      hintTimerRef.current = null;
+    }
+    commit([]);
+    pendingRef.current = [];
+    feedbackIndexRef.current = -1;
+    updateDraft('');
+    setFeedback('');
+    setHint('');
+    setPhase('worry');
+    clearEnded();
+
+    seededRef.current = false;
+    const { w, h } = poolSizeRef.current;
+    if (w > 0 && h > 0) {
+      seededRef.current = true;
+      const out: WbBubble[] = [];
+      for (const text of WB_EXAMPLE_TEXTS) {
+        out.push(makeBubble({ text, blank: false, example: true }, out, w, h));
+      }
+      commit(out);
+    }
+    flashEnded();
+  }, [clearEnded, commit, flashEnded, makeBubble, run, updateDraft]);
+
+  // 有内容在跑（写了字 / 已经生成过泡泡）才让 Esc 和切分类生效，避免刚进来就被判为「已回退」
+  const canEnd = phase !== 'worry' || draft.length > 0;
+  useEscapeToEnd(endGame, canEnd);
+  useAbortOnTabChange(endGame, canEnd);
+
+  /**
+   * 生成泡泡后把泡泡池带进视野。
+   * 手机上输入卡一收，卡片会矮掉一大截，池子往往正好落在屏幕下沿之外；
+   * 已经完整可见就不动它，免得每次提交都把页面拽一下。
+   */
+  useEffect(() => {
+    if (phase !== 'pool') return;
+    const el = poolRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const vh = window.innerHeight || 0;
+    if (r.top >= 0 && r.bottom <= vh) return;
+    el.scrollIntoView({ block: 'center', behavior: reducedMotion ? 'auto' : 'smooth' });
+  }, [phase, reducedMotion]);
+
+  return (
+    <div className={isExpanded ? 'wb-root wb-root--expanded' : 'wb-root'}>
+      {phase === 'worry' && (
+        <>
+          <p className="wb-intro">
+            把此刻的烦恼交给泡泡，看它慢慢散开。不写具体内容也可以。
+          </p>
+          <div className="wb-compose">
+            <h3 className="wb-compose__title">此刻，什么事情让你有些烦恼？</h3>
+            <p className="wb-compose__sub">不必组织语言，把脑海里的想法轻轻写下来就好。</p>
+            <Input.TextArea
+              className="wb-compose__input"
+              value={draft}
+              onChange={e => updateDraft(e.target.value)}
+              maxLength={WB_MAX_CHARS}
+              autoSize={{ minRows: 2, maxRows: 5 }}
+              placeholder="最近有什么事情，让你感到压力、烦躁或不开心？"
+            />
+            <div className="wb-compose__foot">
+              <span className="wb-compose__count">{draft.length} / {WB_MAX_CHARS}</span>
+              <span className="wb-compose__privacy">
+                写下的内容只留在这一页，不会发送，也不会被保存
+              </span>
+            </div>
+            <div className="wb-compose__actions">
+              <Button
+                type="primary"
+                size="large"
+                disabled={!draft.trim()}
+                onClick={() => submit(false)}
+              >
+                把烦恼变成泡泡
+              </Button>
+              <Button size="large" onClick={() => submit(true)}>先放一个空白泡泡</Button>
+            </div>
+          </div>
+        </>
+      )}
+
+      {phase === 'pool' && (
+        <div className="wb-bar">
+          <span>写下的话已经变成泡泡了，轻轻点一下就能让它慢慢散去。</span>
+          <span className="wb-bar__spacer" />
+          <Button style={{ borderRadius: 16 }} onClick={() => setPhase('worry')}>
+            再写一个烦恼
+          </Button>
+        </div>
+      )}
+
+      <div className="wb-pool-head">
+        {phase === 'done'
+          ? null
+          : <span>点一下泡泡看它散开；飘着的「示例」泡泡也可以点。</span>}
+        {hint && <span className="wb-pool-head__hint">{hint}</span>}
+      </div>
+
+      <div className="wb-pool" ref={poolRef}>
+        {phase === 'done' ? (
+          <div className="wb-done">
+            {WB_STARS.map((s, i) => (
+              <span
+                key={i}
+                className="wb-star"
+                aria-hidden
+                style={{
+                  left: s.left, top: s.top, width: s.size, height: s.size,
+                  animationDelay: s.delay,
+                }}
+              />
+            ))}
+            <h3 className="wb-done__title">这一刻，给自己一点空间。</h3>
+            <p className="wb-done__sub">
+              有些事情不必急着找到答案。谢谢你愿意停下来，照顾一下自己的感受。
+            </p>
+            <div className="wb-done__actions">
+              <Button type="primary" size="large" onClick={restart}>再放下一个烦恼</Button>
+              <Button size="large" onClick={() => navigate('/')}>回到心灵花园</Button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="wb-pool__layer">
+              {bubbles.map(b => (
+                <button
+                  key={b.id}
+                  type="button"
+                  className={[
+                    'wb-bubble',
+                    `wb-tone-${b.tone}`,
+                    b.blank ? 'wb-bubble--blank' : '',
+                    b.popping ? 'wb-bubble--popping' : '',
+                  ].filter(Boolean).join(' ')}
+                  style={{
+                    left: b.x - b.size / 2,
+                    top: b.y - b.size / 2,
+                    width: b.size,
+                    height: b.size,
+                    fontSize: b.fontSize,
+                    // 交给 CSS 的浮现动画读（见 worry-bubbles.css 的 .wb-bubble）
+                    '--wb-enter-delay': `${b.enterDelay}ms`,
+                  } as CSSProperties}
+                  disabled={b.popping}
+                  onClick={() => popBubble(b.id)}
+                  aria-label={
+                    b.example
+                      ? `示例泡泡：${b.text}。点一下让它散去`
+                      : b.blank
+                        ? '一个没有写下内容的泡泡。点一下让它散去'
+                        : `烦恼泡泡：${b.text}。点一下让它散去`
+                  }
+                >
+                  <span
+                    className="wb-bubble__drift"
+                    style={{ animationDuration: `${b.driftDur}s`, animationDelay: `${b.driftDelay}s` }}
+                  >
+                    <span
+                      className="wb-bubble__float"
+                      style={{ animationDuration: `${b.floatDur}s`, animationDelay: `${b.floatDelay}s` }}
+                    >
+                      <span className="wb-bubble__halo" aria-hidden />
+                      <span className="wb-bubble__body">
+                        <span className="wb-bubble__text">
+                          {b.blank ? WB_BLANK_GLYPH : wbDisplayText(b.text)}
+                        </span>
+                        {b.example && <span className="wb-bubble__tag">示例</span>}
+                      </span>
+                      {b.popping && (
+                        <span className="wb-bubble__particles" aria-hidden>
+                          {WB_PARTICLE_VECTORS.map((v, i) => (
+                            <span
+                              key={i}
+                              className="wb-particle"
+                              style={{
+                                '--wb-dx': `${v[0]}px`,
+                                '--wb-dy': `${v[1]}px`,
+                                animationDelay: `${i * 28}ms`,
+                              } as CSSProperties}
+                            />
+                          ))}
+                        </span>
+                      )}
+                    </span>
+                  </span>
+                </button>
+              ))}
+            </div>
+            {bubbles.length === 0 && (
+              <div className="wb-empty">
+                泡泡还空着 —— 写下一点什么，或者先放一个空白泡泡。
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      {phase !== 'done' && feedback && (
+        <div className="wb-feedback" role="status" aria-live="polite">
+          <span className="wb-feedback__dot" aria-hidden />
+          <span>{feedback}</span>
+        </div>
+      )}
+
+      <GameActions
+        onEnd={endGame}
+        ended={ended}
+        tip="清空所有泡泡与输入，回到最初的输入状态"
+      />
+    </div>
+  );
+}
+
+// ============================================================
 // 主页面
 // ============================================================
 const gameCategories = [
@@ -4620,13 +5588,20 @@ const gameCategories = [
     children: (
       <Row gutter={[24, 24]} align="stretch">
         <Col xs={24} lg={12}>
-          <GameCard title="🖌️ 涂鸦画板">
+          {/* 涂鸦画板放大后要吃满整屏（expandedFill），见 GameCard 的说明 */}
+          <GameCard title="🖌️ 涂鸦画板" expandedFill>
             <DoodleCanvas />
           </GameCard>
         </Col>
         <Col xs={24} lg={12}>
           <GameCard title="🧸 橡皮人拉扯">
             <RubberPerson />
+          </GameCard>
+        </Col>
+        {/* 烦恼泡泡：泡泡池需要整幅宽度才摊得开（并排会被压成一条缝），所以单独占满一行 */}
+        <Col xs={24}>
+          <GameCard title="🫧 烦恼泡泡">
+            <WorryBubbles />
           </GameCard>
         </Col>
       </Row>
@@ -4688,19 +5663,26 @@ export default function Healing() {
   return (
     <HealingAbortContext.Provider value={abortVersion}>
       <style>{GAME_LAYOUT_CSS}</style>
-      <div>
-        <div style={{ marginBottom: 24, textAlign: 'center' }}>
-          <Title level={3} style={{ marginBottom: 4 }}>
-            <ExperimentOutlined style={{ color: '#ff8fab', marginRight: 8 }} />
-            心理小游戏
-          </Title>
-          <Text type="secondary">选一个喜欢的游戏，在玩耍中照顾自己的心情 🌸</Text>
-        </div>
+      {/*
+        页面结构：页顶图条由布局层渲染（见上），这里只放 `.gh-sec` 内容区。
+        游戏排布（Tabs + Row/Col 卡片网格）保持原样，只是套进 `.gh-sec` 容器里 ——
+        这样左右留白与首页一致，且游戏列表左对齐（旧版是居中的标题 + 全宽 Tabs）。
+      */}
+      <div className="gh-healing">
+        <div className="gh-sec gh-healing__body">
+          <div id="gh-healing-games" className="gh-healing__head">
+            <h2 className="gh-healing__title">
+              <ExperimentOutlined style={{ color: '#ff8fab', marginRight: 8 }} />
+              心理小游戏
+            </h2>
+            <p className="gh-healing__sub">选一个喜欢的游戏，在玩耍中照顾自己的心情 🌸</p>
+          </div>
 
-        <Tabs items={gameCategories} activeKey={activeTab} onChange={handleTabChange}
-          tabBarStyle={{ marginBottom: 20 }}
-          size="large"
-        />
+          <Tabs items={gameCategories} activeKey={activeTab} onChange={handleTabChange}
+            tabBarStyle={{ marginBottom: 20 }}
+            size="large"
+          />
+        </div>
       </div>
     </HealingAbortContext.Provider>
   );

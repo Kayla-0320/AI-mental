@@ -27,8 +27,11 @@ export default function Dashboard() {
     recentActivities: [] as any[],
   });
 
+  const [groupStats, setGroupStats] = useState<any>(null);
+
   useEffect(() => {
     loadStats();
+    loadGroupStats();
   }, []);
 
   const loadStats = async () => {
@@ -37,6 +40,16 @@ export default function Dashboard() {
       if (res.data) setStats(prev => ({ ...prev, ...res.data }));
     } catch {
       message.error('加载统计数据失败');
+    }
+  };
+
+  /** 分组覆盖与风险分布：真实数据，缺失即显示「未采集」，不用写死的数字充数 */
+  const loadGroupStats = async () => {
+    try {
+      const res = await adminApi.getGroupStats() as any;
+      if (res.data) setGroupStats(res.data);
+    } catch {
+      setGroupStats({ error: true });
     }
   };
 
@@ -158,29 +171,92 @@ export default function Dashboard() {
                 </Card>
               </Col>
               <Col xs={24} lg={12}>
-                <Card title={<Space><AuditOutlined /> 分组性能对比</Space>} style={{ borderRadius: 12 }}>
-                  <Table
-                    size="small"
-                    pagination={false}
-                    dataSource={[
-                      { group: '15-18岁', accuracy: 0.82, recall: 0.78, fairness: '合格', key: '1' },
-                      { group: '19-25岁', accuracy: 0.85, recall: 0.81, fairness: '合格', key: '2' },
-                      { group: '26-35岁', accuracy: 0.83, recall: 0.79, fairness: '合格', key: '3' },
-                      { group: '男性', accuracy: 0.84, recall: 0.80, fairness: '合格', key: '4' },
-                      { group: '女性', accuracy: 0.83, recall: 0.79, fairness: '合格', key: '5' },
-                    ]}
-                    columns={[
-                      { title: '分组', dataIndex: 'group', key: 'group' },
-                      { title: '准确率', dataIndex: 'accuracy', key: 'accuracy', render: (v: number) => `${(v * 100).toFixed(1)}%` },
-                      { title: '召回率', dataIndex: 'recall', key: 'recall', render: (v: number) => `${(v * 100).toFixed(1)}%` },
-                      { title: '公平性', dataIndex: 'fairness', key: 'fairness', render: (v: string) => <Tag color="green">{v}</Tag> },
-                    ]}
-                  />
-                  <div style={{ marginTop: 12, padding: '8px 12px', background: '#f6ffed', borderRadius: 8 }}>
-                    <Text style={{ fontSize: 12, color: '#52c41a' }}>
-                      <CheckCircleOutlined /> 所有分组公平性指标均在可接受范围内
-                    </Text>
-                  </div>
+                <Card title={<Space><AuditOutlined /> 分组覆盖与风险分布</Space>} style={{ borderRadius: 12 }}>
+                  {/* 此前这里是写死的 0.82/0.85/… 并断言「公平性均在可接受范围内」。
+                      平台没有标注真值，算不出准确率/召回率，因此改为只展示可核对的覆盖口径。 */}
+                  {!groupStats && <Text type="secondary">加载中…</Text>}
+                  {groupStats?.error && <Text type="danger">分组数据加载失败</Text>}
+                  {groupStats && !groupStats.error && (
+                    <>
+                      <Space size={16} style={{ marginBottom: 12 }} wrap>
+                        <Text type="secondary">
+                          患者总数 <Text strong>{groupStats.coverage?.totalPatients ?? 0}</Text>
+                        </Text>
+                        <Text type="secondary">
+                          已建档 <Text strong>{groupStats.coverage?.withProfile ?? 0}</Text>
+                        </Text>
+                        <Text type="secondary">
+                          有测评记录 <Text strong>{groupStats.coverage?.withAssessment ?? 0}</Text>
+                        </Text>
+                      </Space>
+                      <Tabs
+                        size="small"
+                        items={[
+                          {
+                            key: 'age',
+                            label: '按年龄',
+                            children: (
+                              <Table
+                                size="small"
+                                pagination={false}
+                                rowKey="group"
+                                dataSource={groupStats.byAge || []}
+                                columns={[
+                                  { title: '分组', dataIndex: 'group', key: 'group' },
+                                  { title: '人数', dataIndex: 'users', key: 'users' },
+                                  {
+                                    title: '高风险', dataIndex: 'highRisk', key: 'highRisk',
+                                    render: (v: number, r: any) => (
+                                      <Text type={r.highRiskRate > 0.3 ? 'danger' : undefined}>
+                                        {v}（{((r.highRiskRate || 0) * 100).toFixed(0)}%）
+                                      </Text>
+                                    ),
+                                  },
+                                  {
+                                    title: '测评覆盖', dataIndex: 'assessed', key: 'assessed',
+                                    render: (v: number, r: any) => `${v}（${((r.assessedRate || 0) * 100).toFixed(0)}%）`,
+                                  },
+                                ]}
+                              />
+                            ),
+                          },
+                          {
+                            key: 'gender',
+                            label: '按性别',
+                            children: (
+                              <Table
+                                size="small"
+                                pagination={false}
+                                rowKey="group"
+                                dataSource={groupStats.byGender || []}
+                                columns={[
+                                  { title: '分组', dataIndex: 'group', key: 'group' },
+                                  { title: '人数', dataIndex: 'users', key: 'users' },
+                                  {
+                                    title: '高风险', dataIndex: 'highRisk', key: 'highRisk',
+                                    render: (v: number, r: any) => (
+                                      <Text type={r.highRiskRate > 0.3 ? 'danger' : undefined}>
+                                        {v}（{((r.highRiskRate || 0) * 100).toFixed(0)}%）
+                                      </Text>
+                                    ),
+                                  },
+                                  {
+                                    title: '测评覆盖', dataIndex: 'assessed', key: 'assessed',
+                                    render: (v: number, r: any) => `${v}（${((r.assessedRate || 0) * 100).toFixed(0)}%）`,
+                                  },
+                                ]}
+                              />
+                            ),
+                          },
+                        ]}
+                      />
+                      <div style={{ marginTop: 12, padding: '8px 12px', background: '#fffbe6', borderRadius: 8 }}>
+                        <Text style={{ fontSize: 12, color: '#ad6800' }}>
+                          <InfoCircleOutlined /> {groupStats.unavailableNote}
+                        </Text>
+                      </div>
+                    </>
+                  )}
                 </Card>
               </Col>
             </Row>

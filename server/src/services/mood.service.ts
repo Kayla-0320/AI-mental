@@ -1,5 +1,6 @@
 import prisma from '../config/database';
 import { AppError } from '../middlewares/errorHandler';
+import achievementService from './achievement.service';
 
 export class MoodService {
   // 每日心情打卡
@@ -38,10 +39,56 @@ export class MoodService {
       },
     });
 
-    // 检查成就解锁
-    await this.checkAchievements(userId);
+    // 检查成就解锁（统一走徽章引擎：连续天数用真实连击，不再用累计数冒充）
+    const newlyUnlocked = await achievementService.evaluateAchievements(userId);
 
-    return record;
+    return { ...record, newlyUnlocked };
+  }
+
+  /**
+   * 更正今天的打卡（点错表情的补救）。
+   *
+   * 语义仍是「每天一条」：今天已有记录就原地更新，没有就走首次打卡。
+   * 这样既不会让手滑的用户被锁一整天，也不会多出第二条记录影响连续天数统计。
+   */
+  async updateTodayCheckIn(userId: string, data: { mood: string; score: number; energy?: number; sleepHours?: number; note?: string; tags?: string[] }) {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
+    const existing = await prisma.moodCheckIn.findFirst({
+      where: { userId, checkInDate: { gte: today, lt: tomorrow } },
+    });
+    if (!existing) return this.checkIn(userId, data);
+
+    const record = await prisma.moodCheckIn.update({
+      where: { id: existing.id },
+      data: {
+        mood: data.mood,
+        score: data.score,
+        energy: data.energy,
+        sleepHours: data.sleepHours,
+        note: data.note,
+        tags: data.tags ? JSON.stringify(data.tags) : undefined,
+      },
+    });
+
+    // 趋势表里今天那条也一起改，避免「打卡记录改了、趋势还是旧分数」
+    const todayRecord = await prisma.moodRecord.findFirst({
+      where: { userId, recordedAt: { gte: today, lt: tomorrow } },
+      orderBy: { recordedAt: 'desc' },
+    });
+    if (todayRecord) {
+      await prisma.moodRecord.update({
+        where: { id: todayRecord.id },
+        data: { mood: data.mood, score: data.score, note: data.note },
+      });
+    }
+
+    const newlyUnlocked = await achievementService.evaluateAchievements(userId);
+
+    return { ...record, revised: true, newlyUnlocked };
   }
 
   // 获取打卡历史
@@ -78,26 +125,7 @@ export class MoodService {
     return records;
   }
 
-  // 检查并解锁成就
-  private async checkAchievements(userId: string) {
-    const totalCheckIns = await prisma.moodCheckIn.count({ where: { userId } });
-    const achievements = await prisma.achievement.findMany({
-      where: { category: 'checkin' },
-    });
-
-    for (const achievement of achievements) {
-      const condition = JSON.parse(achievement.condition);
-      let unlocked = false;
-      if (condition.type === 'total_checkins' && totalCheckIns >= condition.count) unlocked = true;
-      if (condition.type === 'streak' && totalCheckIns >= condition.days) unlocked = true;
-
-      if (unlocked) {
-        await prisma.userAchievement.upsert({
-          where: { userId_achievementId: { userId, achievementId: achievement.id } },
-          update: {},
-          create: { userId, achievementId: achievement.id },
-        });
-      }
-    }
-  }
+  // 检查并解锁成就：已由 achievement.service 统一实现
+  // （旧实现在这里只查 category:'checkin'，导致疗愈/测评徽章永不触发；
+  //   且把 streak 写成 totalCheckIns >= days —— 详见 docs/growth_metrics_spec.md G1/G2）
 }

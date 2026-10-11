@@ -6,6 +6,7 @@ import {
   AuditOutlined, SafetyCertificateOutlined, SoundOutlined,
 } from '@ant-design/icons';
 import { useAuthStore } from '../../store/authStore';
+import PageTransition from '../../components/PageTransition';
 
 const { Header, Sider, Content } = Layout;
 const { Text } = Typography;
@@ -68,7 +69,10 @@ export default function AdminLayout() {
         </Header>
 
         <Content style={{ padding: 24, background: '#f5f7fa', overflow: 'auto' }}>
-          <Outlet />
+          {/* 内容区过渡：侧边栏 / 顶栏在 Content 之外，不跟着动 */}
+          <PageTransition>
+            <Outlet />
+          </PageTransition>
         </Content>
       </Layout>
     </Layout>

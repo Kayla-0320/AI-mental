@@ -175,6 +175,38 @@ class AuthService {
     return user;
   }
 
+  /**
+   * 管理端启用/禁用用户。
+   *
+   * 前端（client/src/pages/admin/AdminUsers.tsx）用 ACTIVE / DISABLED 表达状态，
+   * 库里对应 User.isActive；此处负责这层映射。
+   *
+   * @param operatorId 发起操作的管理员 id（不允许禁用自己，避免把管理端锁死）
+   * @param userId 目标用户 id
+   * @param status 'ACTIVE' 启用 | 'DISABLED' 禁用
+   */
+  async updateUserStatus(operatorId: string, userId: string, status: string) {
+    if (status !== 'ACTIVE' && status !== 'DISABLED') {
+      throw new AppError('status 只能是 ACTIVE 或 DISABLED', 400);
+    }
+    if (operatorId === userId && status === 'DISABLED') {
+      throw new AppError('不能禁用当前登录的管理员账号', 400);
+    }
+
+    const target = await prisma.user.findUnique({ where: { id: userId } });
+    if (!target) {
+      throw new AppError('用户不存在', 404);
+    }
+
+    const updated = await prisma.user.update({
+      where: { id: userId },
+      data: { isActive: status === 'ACTIVE' },
+      select: { id: true, email: true, nickname: true, role: true, isActive: true },
+    });
+
+    return { ...updated, status: updated.isActive ? 'ACTIVE' : 'DISABLED' };
+  }
+
   private generateTokens(userId: string, role: string) {
     const accessToken = jwt.sign(
       { userId, role },

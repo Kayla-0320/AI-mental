@@ -26,6 +26,23 @@ export const consultationApi = {
   // 批量删除（对话历史「全选删除」）。后端同一条语义：软删除。
   deleteConversations: (conversationIds: string[]) =>
     api.delete('/consultation/conversations', { data: { conversationIds } }),
+
+  /**
+   * 读取**已保存**的对话总结（只读，不触发生成）。
+   *
+   * 没生成过时后端返回 `summary: null`，前端据此显示「生成总结」。
+   * 刻意不在打开弹窗时自动生成：那会让"看一眼"变成一次大模型调用。
+   */
+  getConversationSummary: (conversationId: string) =>
+    api.get(`/consultation/conversations/${conversationId}/summary`),
+
+  /**
+   * 生成对话总结（`force` 为真则覆盖已有总结、重新生成）。
+   *
+   * 用 POST：它是有副作用并会落库的写操作，不是幂等读取。
+   */
+  generateConversationSummary: (conversationId: string, force = false) =>
+    api.post(`/consultation/conversations/${conversationId}/summary/generate`, { force }),
 };
 
 // 心理画像相关
@@ -119,7 +136,11 @@ export const crisisApi = {
   // 管理员 API
   getRecords: (params?: { status?: string; severity?: string; page?: number; pageSize?: number }) =>
     api.get('/crisis/records', { params }),
+  /** 危机待办：所有未接收 + 处理中的记录（管理员与咨询师共用） */
+  getTodo: () => api.get('/crisis/records/todo'),
   getStats: () => api.get('/crisis/stats'),
+  /** 确认接收：OPEN → IN_PROGRESS，并记录接收人 */
+  ackRecord: (id: string) => api.post(`/crisis/records/${id}/ack`),
   updateRecord: (id: string, data: { status: string; resolution?: string }) =>
     api.put(`/crisis/records/${id}`, data),
 };
@@ -128,6 +149,9 @@ export const crisisApi = {
 export const moodApi = {
   checkIn: (data: { mood: string; score: number; energy?: number; sleepHours?: number; note?: string; tags?: string[] }) =>
     api.post('/mood/checkin', data),
+  /** 更正今天的打卡：今天已有记录就原地改，没有就当作首次打卡 */
+  updateCheckIn: (data: { mood: string; score: number; energy?: number; sleepHours?: number; note?: string; tags?: string[] }) =>
+    api.put('/mood/checkin', data),
   getCheckInHistory: (days = 30) => api.get(`/mood/checkin/history?days=${days}`),
   getMoodTrend: (days = 30) => api.get(`/mood/trend?days=${days}`),
   getCheckInCalendar: (year: number, month: number) =>
@@ -157,11 +181,17 @@ export const communityApi = {
   approvePost: (id: string, approved: boolean) => api.put(`/community/posts/${id}/approve`, { approved }),
 };
 
+// 「我的成长」指标板块：一次请求拿齐指数 / 指标卡 / 趋势 / 徽章 / 下一步动作
+export const growthApi = {
+  getOverview: (days = 14) => api.get(`/extra/growth?days=${days}`),
+};
+
 // 成就/睡眠/支付/报告/反馈
 export const extraApi = {
   getAchievements: () => api.get('/extra/achievements'),
   getAllAchievements: () => api.get('/extra/achievements/all'),
-  recordSleep: (data: { bedTime: string; wakeTime: string; quality: number; dreamRecall?: string; notes?: string }) =>
+  /** 记睡眠：给 bedTime+wakeTime，或只给 hours（首页睡眠步骤用后者） */
+  recordSleep: (data: { bedTime?: string; wakeTime?: string; hours?: number; quality: number; dreamRecall?: string; notes?: string }) =>
     api.post('/extra/sleep', data),
   getSleepRecords: (days = 30) => api.get(`/extra/sleep?days=${days}`),
   getSleepStats: (days = 30) => api.get(`/extra/sleep/stats?days=${days}`),
@@ -194,9 +224,29 @@ export const baselineApi = {
     api.get(`/algorithm/baseline/${userId}`),
 };
 
+// 数据控制中心：授权 / 导出 / 删除 / 保留期限
+export const privacyApi = {
+  /** 授权目录 + 当前状态 */
+  getConsent: () => api.get('/privacy/consent'),
+  /** 按用途逐项授权/撤销：items = [{ dataType, purpose, granted }] */
+  setConsent: (items: { dataType: string; purpose: string; granted: boolean }[]) =>
+    api.put('/privacy/consent', { items }),
+  getRetention: () => api.get('/privacy/retention'),
+  setRetention: (retentionDays: number) => api.put('/privacy/retention', { retentionDays }),
+  /** 平台保存了哪些数据、各多少条 */
+  getSummary: () => api.get('/privacy/summary'),
+  /** 导出全部个人数据（返回 JSON，由前端组装下载） */
+  exportData: () => api.post('/privacy/export'),
+  /** 删除数据：scope = content 保留账号 / account 删除账号；confirm 必须为「删除我的数据」 */
+  eraseData: (scope: 'content' | 'account', confirm: string) =>
+    api.post('/privacy/data/erase', { scope, confirm }),
+};
+
 // 管理员 API
 export const adminApi = {
   getStats: () => api.get('/extra/admin/stats'),
   getUsers: (params?: { search?: string; role?: string; page?: number; pageSize?: number }) =>
     api.get('/extra/admin/users', { params }),
+  /** 分组覆盖与风险分布（真实数据，无标注真值故不含准确率/召回率） */
+  getGroupStats: () => api.get('/admin/group-stats'),
 };

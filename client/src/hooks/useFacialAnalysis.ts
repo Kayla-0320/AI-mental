@@ -19,12 +19,13 @@
  * - AU9+AU10     → 厌恶 (鼻子皱起+上唇上扬)
  */
 import { useEffect, useRef, useState, useCallback } from 'react';
-import type { FacialAnalysis } from '../types/multimodal.types';
+import type { FacialAnalysis, FacialMetricsOverlay } from '../types/multimodal.types';
 import { defaultFacial } from '../types/multimodal.types';
 import type { AgeGroup } from './ageConfig';
 import { getFaceConfig } from './ageConfig';
 import { mediaStreamManager, MediaUnavailableError } from '../services/mediaStreamManager';
 import { EyePatchExtractor, type EyePatchPixels } from './eyePatchCanvas';
+import type { FaceFrameCallback } from './facePatchCanvas';
 import {
   DEFAULT_BLINK_FPS,
   METRICS_CHANNEL_HZ,
@@ -138,8 +139,22 @@ export function useFacialAnalysis(
   ageGroup: AgeGroup | null = null,
   onFrameSignal?: FrameSignalCallback | null,
   onEyePatchFrame?: EyePatchCallback | null,
+  /**
+   * 人脸帧回调（指标拍，默认 10fps）：只在有脸的那一拍触发，
+   * 供浏览器内三分类表情模型**在完全相同的帧上**裁脸推理。
+   * 刻意交出 `video + 关键点` 而不是 `ImageData`：裁不裁、跑不跑由消费者节流决定，
+   * 不为一次不会发生的推理付出 drawImage + getImageData 的代价。
+   */
+  onFaceFrame?: FaceFrameCallback | null,
 ) {
   const [metrics, setMetrics] = useState<FacialAnalysis>({ ...defaultFacial });
+  /**
+   * 外部异步通道（浏览器内 ONNX 等）写入的附加指标：每次 `setMetrics` 原样并入，
+   * 于是它们成为 `FacialAnalysis` 的一部分，能穿过 `AnxietyContext` 的
+   * `JSON.stringify` 同步 effect 进入 `comprehensiveState.facial`，而不会被覆盖。
+   * 会话结束时由 `stop()` 清空，避免"摄像头关了还挂着上一个读数"。
+   */
+  const overlayRef = useRef<FacialMetricsOverlay>({});
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -438,6 +453,7 @@ export function useFacialAnalysis(
 
       setMetrics(prev => ({
         ...prev,
+        ...overlayRef.current,
         actionUnits: {
           au1_browRaise: Math.round(au1 * 100) / 100,
           au2_browOuterRaise: Math.round(au2 * 100) / 100,
@@ -488,6 +504,11 @@ export function useFacialAnalysis(
         const patches = patchExtractorRef.current.extract(video, lm);
         if (patches) onEyePatchFrame(patches);
       }
+
+      // ── 人脸裁剪通道（默认 10fps）：供浏览器内三分类表情模型 ──────────────
+      // 与眨眼/眼 patch 共用同一路摄像头与同一帧关键点，不新开流、不新开检测器；
+      // 这里只把「帧 + 关键点」交出去，真正的裁剪与推理节流在消费方（useFaceEmotion）。
+      if (onFaceFrame) onFaceFrame(video, lm);
     } catch (err) {
       console.error('[面部分析] MediaPipe 帧分析错误:', err);
     } finally {
@@ -518,7 +539,7 @@ export function useFacialAnalysis(
         );
       }
     }
-  }, [onFrameSignal, onEyePatchFrame]);
+  }, [onFrameSignal, onEyePatchFrame, onFaceFrame]);
 
   // 回退：像素分析法（当 MediaPipe 不可用时）
   const prevFrameRef = useRef<ImageData | null>(null);
@@ -622,6 +643,7 @@ export function useFacialAnalysis(
 
       setMetrics(prev => ({
         ...prev,
+        ...overlayRef.current,
         actionUnits: {
           ...prev.actionUnits,
           au1_browRaise: Math.round(au1 * 100) / 100,
@@ -778,11 +800,17 @@ export function useFacialAnalysis(
     mediaStreamManager.release('camera', 'perception-facial');
     streamRef.current = null;
     videoRef.current = null;
+    // 会话结束：外部通道（表情模型等）的读数随会话一起失效，
+    // 否则下一次 setMetrics 还会把上一个会话的读数并回去。
+    overlayRef.current = {};
     setMetrics(prev => ({
       ...prev,
       isDetecting: false,
       facePresent: false,
       confidence: null,
+      faceEmotion: null,
+      faceEmotionStatus: 'disabled',
+      faceEmotionUnavailableReason: '',
     }));
   }, []);
 
@@ -802,5 +830,5 @@ export function useFacialAnalysis(
     };
   }, []);
 
-  return { metrics, start, stop, reset, videoRef, streamRef };
+  return { metrics, start, stop, reset, videoRef, streamRef, overlayRef };
 }

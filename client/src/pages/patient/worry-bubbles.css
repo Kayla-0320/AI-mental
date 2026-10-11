@@ -1,0 +1,632 @@
+/* ============================================================================
+ * 烦恼泡泡（Worry Bubbles）—— 游戏卡片内部样式
+ *
+ * 只在 `.wb-root` 作用域内生效，不改动疗愈空间其它游戏与页面级样式。
+ *
+ * 玻璃泡泡的做法（为什么不用 backdrop-filter / canvas）：
+ *   1) 每颗泡泡只有 3 层节点：__drift（左右飘）→ __float（上下浮）→ __body（玻璃本体）。
+ *      漂浮动画全部落在 transform 上，不会触发布局重排。
+ *   2) 通透感靠「多层径向渐变 + 内外阴影 + 一个椭圆高光」堆出来，不用实时模糊。
+ *      12 颗泡泡同时跑 blur() 在中端手机上会掉帧，这里刻意避开。
+ *   3) 点击消散 = 放大（transform: scale）+ 光晕 + 6 颗粒子，同样是 transform / opacity。
+ * ========================================================================== */
+
+.wb-root {
+  --wb-ink: #35415e;
+  --wb-ink-2: #5d6884;
+  --wb-ink-3: #8992aa;
+  --wb-blue: #8c9de8;
+  --wb-lilac: #b7a6e8;
+  --wb-mint: #9ed9c6;
+  --wb-rose: #e7b3d0;
+
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  color: var(--wb-ink);
+}
+
+/* ---------- 引导语与输入区 ---------- */
+
+/* 卡片内部走的是等高 flex 链（见 Healing.tsx 的 GAME_LAYOUT_CSS），
+   这里显式声明不参与伸缩，避免泡泡池被压扁 */
+.wb-intro,
+.wb-compose,
+.wb-bar,
+.wb-pool-head,
+.wb-pool,
+.wb-feedback {
+  flex: 0 0 auto;
+}
+
+.wb-intro {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--wb-ink-3);
+}
+
+.wb-compose {
+  position: relative;
+  padding: 18px 20px 20px;
+  border-radius: 20px;
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.96) 0%, rgba(245, 247, 255, 0.9) 60%, rgba(240, 234, 254, 0.86) 100%);
+  border: 1px solid rgba(140, 157, 232, 0.18);
+  box-shadow: 0 6px 20px rgba(140, 157, 232, 0.1);
+  animation: wb-fade-up 320ms ease-out both;
+}
+
+.wb-compose__title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  color: var(--wb-ink);
+}
+
+.wb-compose__sub {
+  margin: 6px 0 12px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--wb-ink-3);
+}
+
+/* 覆盖全局 .ant-input 的粉色描边，输入框在本游戏里走冷色调 */
+.wb-root .wb-compose__input.ant-input,
+.wb-root textarea.wb-compose__input {
+  border-radius: 14px !important;
+  border-color: rgba(140, 157, 232, 0.28) !important;
+  background: rgba(255, 255, 255, 0.92) !important;
+  color: var(--wb-ink) !important;
+  font-size: 14px !important;
+  line-height: 1.7 !important;
+  resize: none;
+}
+
+.wb-root textarea.wb-compose__input:focus {
+  border-color: var(--wb-blue) !important;
+  box-shadow: 0 0 0 3px rgba(140, 157, 232, 0.16) !important;
+}
+
+.wb-root textarea.wb-compose__input::placeholder {
+  color: #a9b0c4;
+}
+
+.wb-compose__foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+  font-size: 11.5px;
+  color: var(--wb-ink-3);
+}
+
+.wb-compose__count {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.wb-compose__privacy {
+  margin-left: auto;
+  min-width: 0;
+  text-align: right;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.wb-compose__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+/* ---------- 收起态的窄条 ---------- */
+
+.wb-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  border-radius: 16px;
+  background: rgba(245, 247, 255, 0.78);
+  border: 1px dashed rgba(140, 157, 232, 0.3);
+  font-size: 12.5px;
+  color: var(--wb-ink-2);
+  animation: wb-fade-up 260ms ease-out both;
+}
+
+.wb-bar__spacer {
+  margin-left: auto;
+}
+
+/* ---------- 泡泡漂浮区 ---------- */
+
+.wb-pool-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+  color: var(--wb-ink-3);
+  min-height: 20px;
+}
+
+.wb-pool-head__hint {
+  margin-left: auto;
+  color: #d48806;
+  animation: wb-fade-up 240ms ease-out both;
+}
+
+.wb-pool {
+  position: relative;
+  height: 340px;
+  border-radius: 22px;
+  overflow: hidden;
+  /* 浅蓝 → 淡紫 → 奶白：安静、轻盈，和卡片外的粉云形成冷暖分区但不打架。
+     刻意比泡泡暗一档 —— 泡泡是半透明的浅色球，池子太浅泡泡就「化」在背景里了。 */
+  background: linear-gradient(165deg, #eef3ff 0%, #dfe8fd 38%, #e6dffb 74%, #f1f4ff 100%);
+  border: 1px solid rgba(140, 157, 232, 0.2);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    inset 0 -26px 50px rgba(150, 166, 236, 0.14);
+  /* 把重排/重绘限制在这个盒子里；12 颗泡泡同时动的时候收益明显 */
+  contain: layout paint;
+  touch-action: manipulation;
+}
+
+/* 背景里两团很淡的云，静态渐变，不参与动画 */
+.wb-pool::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(58% 46% at 16% 12%, rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0) 70%),
+    radial-gradient(46% 38% at 88% 82%, rgba(186, 202, 250, 0.5), rgba(186, 202, 250, 0) 72%),
+    radial-gradient(38% 30% at 62% 20%, rgba(214, 206, 250, 0.45), rgba(214, 206, 250, 0) 74%);
+}
+
+/* 四周压一圈很淡的暗角，泡泡的亮边才立得住 */
+.wb-pool::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  box-shadow: inset 0 0 60px rgba(132, 152, 220, 0.16);
+}
+
+.wb-pool__layer {
+  position: absolute;
+  inset: 0;
+}
+
+/* ---------- 泡泡本体 ---------- */
+
+.wb-bubble {
+  position: absolute;
+  padding: 0;
+  border: 0;
+  background: none;
+  border-radius: 50%;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  /* 让整颗泡泡可点，同时不影响内部文字选择 */
+  touch-action: manipulation;
+  transform-origin: 50% 50%;
+  /*
+   * 生成时缓缓浮现：从 58% 大小、略微靠下、透明，用 1.2 秒轻轻落到位置上。
+   *
+   * 为什么挂在外层按钮上、而不是 .wb-bubble__body 上：
+   *   消散动画（放大 → 淡出）也在 body 上，两者都写 transform，挂同一层就会互相顶掉；
+   *   分开挂之后两个动画各管一层、可以叠加 —— 浮现还没落定就被点掉也不会「闪一下变全亮」。
+   *   另外节点是按泡泡 ID 复用的，池子改尺寸重排不会让浮现动画重播。
+   *
+   * --wb-enter-delay 由组件按示例泡泡的顺序错开（0 / 240 / 480ms），
+   * 三颗示例泡泡依次浮出来，比同时冒出来好看。
+   */
+  animation: wb-bubble-rise 1200ms cubic-bezier(0.22, 0.72, 0.24, 1) var(--wb-enter-delay, 0s) both;
+}
+
+.wb-bubble:focus-visible {
+  outline: 2px solid var(--wb-blue);
+  outline-offset: 3px;
+}
+
+.wb-bubble--popping {
+  pointer-events: none;
+  cursor: default;
+}
+
+.wb-bubble__drift,
+.wb-bubble__float {
+  position: absolute;
+  inset: 0;
+  will-change: transform;
+}
+
+.wb-bubble__drift {
+  animation-name: wb-drift-x;
+  animation-timing-function: ease-in-out;
+  animation-iteration-count: infinite;
+  animation-direction: alternate;
+}
+
+.wb-bubble__float {
+  animation-name: wb-float-y;
+  animation-timing-function: ease-in-out;
+  animation-iteration-count: infinite;
+  animation-direction: alternate;
+}
+
+.wb-bubble__body {
+  position: absolute;
+  inset: 0;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 0 14%;
+  border-radius: 50%;
+  /* 玻璃边缘：一圈亮的白边，是「这是个玻璃球」最关键的信号 */
+  border: 1.5px solid rgba(255, 255, 255, 0.88);
+  box-shadow:
+    /* 底部内侧反光 + 顶部内侧压暗，撑出球体的体积 */
+    inset 0 -8px 16px rgba(255, 255, 255, 0.5),
+    inset 0 7px 14px rgba(255, 255, 255, 0.34),
+    inset -5px -9px 20px rgba(102, 124, 208, 0.26),
+    /* 落在池子上的投影，让泡泡「浮」起来 */
+    0 12px 24px rgba(108, 130, 214, 0.2),
+    0 2px 6px rgba(108, 130, 214, 0.14);
+  backface-visibility: hidden;
+  transform: translateZ(0);
+}
+
+/* 主高光：左上角一枚斜着的椭圆 */
+.wb-bubble__body::before {
+  content: '';
+  position: absolute;
+  top: 10%;
+  left: 13%;
+  width: 40%;
+  height: 27%;
+  border-radius: 50%;
+  transform: rotate(-20deg);
+  background: radial-gradient(closest-side, rgba(255, 255, 255, 0.98), rgba(255, 255, 255, 0.5) 55%, rgba(255, 255, 255, 0) 100%);
+  pointer-events: none;
+}
+
+/* 缘光：内圈一道薄薄的亮边 + 右下角一小片折射，避免死板的塑料球 */
+.wb-bubble__body::after {
+  content: '';
+  position: absolute;
+  inset: 5%;
+  border-radius: 50%;
+  pointer-events: none;
+  background: radial-gradient(36% 28% at 76% 82%, rgba(255, 255, 255, 0.66), rgba(255, 255, 255, 0) 100%);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.5),
+    inset 0 -5px 12px rgba(255, 255, 255, 0.42),
+    inset 0 4px 10px rgba(255, 255, 255, 0.3);
+}
+
+.wb-bubble__text {
+  position: relative;
+  z-index: 1;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  max-width: 100%;
+  text-align: center;
+  word-break: break-word;
+  line-height: 1.25;
+  color: var(--wb-ink);
+  /* 白色描边式的阴影，保证任何色调的泡泡上文字都读得清 */
+  text-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.95),
+    0 0 6px rgba(255, 255, 255, 0.85);
+}
+
+.wb-bubble--blank .wb-bubble__text {
+  color: var(--wb-ink-2);
+  letter-spacing: 2px;
+}
+
+.wb-bubble__tag {
+  position: relative;
+  z-index: 1;
+  font-size: 9px;
+  line-height: 1;
+  letter-spacing: 1px;
+  color: var(--wb-ink-2);
+  opacity: 0.8;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.95);
+}
+
+/* 四种色调——同一套结构，只换底色与光晕色 */
+.wb-tone-0 .wb-bubble__body {
+  background:
+    radial-gradient(120% 120% at 70% 84%, rgba(84, 108, 200, 0.3), rgba(84, 108, 200, 0) 62%),
+    linear-gradient(165deg, rgba(210, 220, 252, 0.74) 0%, rgba(152, 170, 240, 0.58) 48%, rgba(110, 133, 222, 0.66) 100%);
+}
+
+.wb-tone-1 .wb-bubble__body {
+  background:
+    radial-gradient(120% 120% at 70% 84%, rgba(112, 92, 190, 0.3), rgba(112, 92, 190, 0) 62%),
+    linear-gradient(165deg, rgba(224, 214, 250, 0.74) 0%, rgba(178, 162, 235, 0.58) 48%, rgba(142, 122, 214, 0.66) 100%);
+}
+
+.wb-tone-2 .wb-bubble__body {
+  background:
+    radial-gradient(120% 120% at 70% 84%, rgba(66, 160, 136, 0.3), rgba(66, 160, 136, 0) 62%),
+    linear-gradient(165deg, rgba(214, 244, 236, 0.74) 0%, rgba(150, 215, 195, 0.58) 48%, rgba(108, 186, 163, 0.64) 100%);
+}
+
+.wb-tone-3 .wb-bubble__body {
+  background:
+    radial-gradient(120% 120% at 70% 84%, rgba(190, 108, 156, 0.3), rgba(190, 108, 156, 0) 62%),
+    linear-gradient(165deg, rgba(252, 226, 240, 0.74) 0%, rgba(236, 182, 212, 0.58) 48%, rgba(213, 146, 184, 0.64) 100%);
+}
+
+.wb-tone-0 { --wb-glow: rgba(140, 157, 232, 0.55); }
+.wb-tone-1 { --wb-glow: rgba(183, 166, 232, 0.55); }
+.wb-tone-2 { --wb-glow: rgba(150, 214, 196, 0.6); }
+.wb-tone-3 { --wb-glow: rgba(231, 179, 208, 0.6); }
+
+/* ---------- 点击消散：放大 → 光晕 → 粒子 ---------- */
+
+.wb-bubble__halo {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  opacity: 0;
+  pointer-events: none;
+  box-shadow:
+    0 0 0 2px var(--wb-glow),
+    0 0 26px 10px var(--wb-glow);
+}
+
+.wb-bubble--popping .wb-bubble__body {
+  animation: wb-pop-body 780ms cubic-bezier(0.22, 0.68, 0.3, 1) forwards;
+}
+
+.wb-bubble--popping .wb-bubble__halo {
+  animation: wb-pop-halo 780ms ease-out forwards;
+}
+
+.wb-bubble__particles {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.wb-particle {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 5px;
+  height: 5px;
+  margin: -2.5px 0 0 -2.5px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 6px 2px var(--wb-glow);
+  animation: wb-particle-fly 620ms ease-out forwards;
+}
+
+/* ---------- 温柔反馈 ---------- */
+
+.wb-feedback {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 12px 16px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, rgba(240, 234, 254, 0.85) 0%, rgba(233, 240, 255, 0.85) 100%);
+  border: 1px solid rgba(183, 166, 232, 0.24);
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--wb-ink-2);
+  animation: wb-fade-up 420ms ease-out both;
+}
+
+.wb-feedback__dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  margin-top: 8px;
+  border-radius: 50%;
+  background: var(--wb-lilac);
+}
+
+/* ---------- 全部消散后的完成态 ---------- */
+
+.wb-done {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px 20px;
+  text-align: center;
+  animation: wb-fade-up 520ms ease-out both;
+}
+
+.wb-done__title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  color: var(--wb-ink);
+}
+
+.wb-done__sub {
+  margin: 0;
+  max-width: 30em;
+  font-size: 13px;
+  line-height: 1.8;
+  color: var(--wb-ink-3);
+}
+
+.wb-done__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: center;
+  margin-top: 6px;
+}
+
+.wb-star {
+  position: absolute;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 6px 2px rgba(183, 166, 232, 0.6);
+  animation: wb-twinkle 3.6s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.wb-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  text-align: center;
+  font-size: 13px;
+  line-height: 1.8;
+  color: var(--wb-ink-3);
+}
+
+/* ---------- 动画关键帧 ---------- */
+
+@keyframes wb-drift-x {
+  from { transform: translate3d(-7px, 0, 0) rotate(-2deg); }
+  to { transform: translate3d(7px, 0, 0) rotate(2deg); }
+}
+
+/* 浮现：先淡入到全亮，再慢慢收敛到原大小，中途没有回弹，符合「轻轻浮上来」的观感 */
+@keyframes wb-bubble-rise {
+  0% { opacity: 0; transform: scale(0.58) translate3d(0, 12px, 0); }
+  58% { opacity: 1; }
+  100% { opacity: 1; transform: scale(1) translate3d(0, 0, 0); }
+}
+
+@keyframes wb-float-y {
+  from { transform: translate3d(0, 8px, 0); }
+  to { transform: translate3d(0, -11px, 0); }
+}
+
+@keyframes wb-pop-body {
+  0% { transform: scale(1); opacity: 1; }
+  14% { transform: scale(1.12); opacity: 1; }
+  38% { transform: scale(1.17); opacity: 0.8; }
+  100% { transform: scale(1.44); opacity: 0; }
+}
+
+@keyframes wb-pop-halo {
+  0% { transform: scale(0.86); opacity: 0; }
+  30% { transform: scale(1.02); opacity: 0.9; }
+  100% { transform: scale(1.6); opacity: 0; }
+}
+
+@keyframes wb-particle-fly {
+  0% { transform: translate3d(0, 0, 0) scale(0.6); opacity: 0.95; }
+  100% { transform: translate3d(var(--wb-dx, 0px), var(--wb-dy, 0px), 0) scale(1.1); opacity: 0; }
+}
+
+@keyframes wb-twinkle {
+  0%, 100% { opacity: 0.25; transform: scale(0.85); }
+  50% { opacity: 0.9; transform: scale(1.05); }
+}
+
+@keyframes wb-fade-up {
+  from { opacity: 0; transform: translate3d(0, 6px, 0); }
+  to { opacity: 1; transform: none; }
+}
+
+/* ---------- 放大态：整页玩的时候给泡泡更多空间 ---------- */
+
+.wb-root--expanded .wb-pool {
+  height: min(56vh, 520px);
+}
+
+/* ---------- 响应式 ---------- */
+
+@media (max-width: 575px) {
+  .wb-pool {
+    height: 320px;
+  }
+
+  .wb-compose {
+    padding: 16px 14px 18px;
+  }
+
+  .wb-compose__title {
+    font-size: 15px;
+  }
+
+  /* 窄屏上「0 / 200」和隐私说明并排会被挤成两行，改成上下两行 */
+  .wb-compose__foot {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+  }
+
+  .wb-compose__privacy {
+    margin-left: 0;
+    text-align: left;
+  }
+
+  .wb-feedback {
+    font-size: 12.5px;
+  }
+}
+
+/* ---------- 尊重「减少动态效果」 ---------- */
+
+@media (prefers-reduced-motion: reduce) {
+  /* 漂浮与浮现全关：泡泡直接停在各自的位置上 */
+  .wb-bubble,
+  .wb-bubble__drift,
+  .wb-bubble__float {
+    animation: none !important;
+  }
+
+  /* 消散退化成一次安静的淡出，不再放大、不再撒粒子 */
+  .wb-bubble--popping .wb-bubble__body {
+    animation: wb-pop-plain 220ms ease-out forwards;
+  }
+
+  .wb-bubble--popping .wb-bubble__halo,
+  .wb-bubble__particles {
+    display: none;
+  }
+
+  .wb-star {
+    animation: none !important;
+    opacity: 0.6;
+  }
+
+  .wb-compose,
+  .wb-bar,
+  .wb-feedback,
+  .wb-done,
+  .wb-pool-head__hint {
+    animation: none !important;
+  }
+}
+
+@keyframes wb-pop-plain {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}

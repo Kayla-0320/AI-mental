@@ -10,8 +10,16 @@
  *
  * 这个文件**只负责看和点**：布局、状态词、字幕、按钮、计时、跳转。
  * 轮次编排（ASR → 定稿 → SSE → TTS → 打断）全在 `useVoiceCall` 里；
- * 通话期视觉（存在感 / 光线 / 只给自己看的读数）全在 `useCallVision` 里 ——
+ * 通话期视觉（存在感 / 光线 / 本机表情读数）全在 `useCallVision` 里 ——
  * 那两个 hook 才是需要写测试的地方。
+ *
+ * ## 面部读数怎么进对话（2026-10-11）
+ *
+ * 用户在通话里开了摄像头时，本机 ONNX 表情模型（happy/neutral/sad）的读数会被打成
+ * 一个**实时状态快照**，随本轮消息作为**临时提示词**上行给算法层（见
+ * `services/facialLiveState.ts` 与 `useVoiceCall` 的 `getFacialLiveState`）。
+ * 三条边界不变：**不进风险等级、不进融合权重、不写画像分数**；没开摄像头就整段不存在。
+ * 界面上的文案必须如实说明这一点（"会作为 AI 回应的内部参考"），不许只说"只给你自己看"。
  *
  * ## 为什么"开始通话"必须点一下（不是偷懒，是两个硬约束的交点）
  *
@@ -46,6 +54,7 @@ import { consultationApi } from '../../services';
 import { mediaStreamManager } from '../../services/mediaStreamManager';
 import { useVoiceCall, type CallPhase } from '../../hooks/useVoiceCall';
 import { useCallVision } from '../../hooks/useCallVision';
+import { FACE_EMOTION_LABELS_ZH } from '../../services/faceEmotionClassifier';
 import CrisisResourceCard from '../../components/CrisisResourceCard';
 
 const { Text, Title } = Typography;
@@ -186,15 +195,24 @@ export default function VoiceCall() {
   const bootstrapRef = useRef<Promise<string> | null>(null);
   const startedAtRef = useRef(0);
 
-  const call = useVoiceCall({ conversationId });
-  const { phase, userLines, partialText, aiLines, revised, notice, voiceMetrics, ttsStatus, turn } = call;
   /**
    * 通话期视觉。
    *
-   * ⚠️ 它只是"把读数摆出来"：**不进风险、不上报、不写库**（施工单 §S7 / F7）。
+   * ⚠️ 它只是"把读数摆出来"：**不进风险、不写库**（施工单 §S7 / F7）。
    * 硬验收：开/关摄像头两次，落库的 `riskLevel` 完全一致。
+   *
+   * 2026-10-11 起它也多了一条本机三分类表情读数（用户开摄像头才加载模型）：
+   * 该读数经 `vision.getFacialLiveState()` 随本轮消息作为**临时提示词**上行，
+   * 但**仍然不进风险、不进融合权重** —— 上面的硬验收依然成立。
    */
   const vision = useCallVision({ ageGroup: null });
+
+  const call = useVoiceCall({
+    conversationId,
+    // 身份稳定（`useCallback([])` 内部读 ref），不会让轮次回调随 200ms 采样重建
+    getFacialLiveState: vision.getFacialLiveState,
+  });
+  const { phase, userLines, partialText, aiLines, revised, notice, voiceMetrics, ttsStatus, turn } = call;
 
   // ── 会话生命周期：没有 `:conversationId` 就建一个，成功后 replace 到带 id 的地址 ──
   //
@@ -721,8 +739,21 @@ export default function VoiceCall() {
               头部 {vision.headPitchDeg === null ? '—' : `${vision.headPitchDeg}°`} · 低头
               {Math.round(vision.headDownRatio * 100)}%
             </Text>
+            {/* 本机三分类表情读数（用户开摄像头才加载模型）。措辞与画像页/对话页一致，
+                只说"读到了什么表情"，不做任何心理状态断言。 */}
+            <Text data-vision="face-emotion" style={{ fontSize: 11, color: '#8c8aa7' }}>
+              {vision.faceEmotionStatus === 'ready'
+                ? (vision.faceEmotion
+                    ? `表情 ${FACE_EMOTION_LABELS_ZH[vision.faceEmotion.dominant]} ${Math.round(vision.faceEmotion.confidence * 100)}%`
+                    : '表情 等待人脸')
+                : vision.faceEmotionStatus === 'loading'
+                  ? '表情 模型加载中'
+                  : vision.faceEmotionStatus === 'unavailable'
+                    ? '表情 不可用（不影响通话）'
+                    : '表情 未开启'}
+            </Text>
             <Text type="secondary" style={{ fontSize: 11, color: '#a6a3bb' }}>
-              只给你自己看 · 不进风险
+              只给你自己看 · 不进风险 · 会作为 AI 回应的内部参考
             </Text>
           </Space>
         </div>
@@ -756,7 +787,7 @@ export default function VoiceCall() {
           title={
             cameraOn
               ? '关闭摄像头：视觉读数停止，通话继续（视觉从不参与风险判定）'
-              : '打开摄像头：只做"你在不在画面里"、光线提示和给你自己看的小读数'
+              : '打开摄像头：读取"你在不在画面里"、光线、本机表情读数；表情读数会作为 AI 回应的内部参考，但从不参与风险判定'
           }
         >
           <Button

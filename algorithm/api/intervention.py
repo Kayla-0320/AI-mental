@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -399,6 +400,23 @@ class SmartChatRequest(BaseModel):
         default_factory=list, description="对话历史 [{role, content}]"
     )
     session_id: Optional[str] = Field(None, description="会话 ID")
+    voice_features: Optional[dict] = Field(
+        None,
+        description=(
+            "本轮声学特征摘要（通话期由客户端提取的聚合统计量，不含原始帧）。"
+            "供 TAMER 的跨模态矛盾检测（MIS）使用；文字聊天时为 None。"
+        ),
+    )
+    facial_features: Optional[dict] = Field(
+        None,
+        description=(
+            "本轮**面部实时状态**摘要（客户端 buildFacialLiveState 的产物，"
+            "只含三分类概率与新鲜度，**不含任何图像**）。"
+            "只在'采集在跑 + 画面里有人脸 + 读数新鲜'时非空；"
+            "供 prompt 作为**低权重内部参考**注入。"
+            "⚠️ 它不参与风险等级、融合权重与量表分；为空时整段不注入。"
+        ),
+    )
 
 
 class SmartChatResponse(BaseModel):
@@ -418,6 +436,11 @@ class SmartChatResponse(BaseModel):
     # perception/cognitive/distortion_classifier.py 的诚实边界说明。
     scene_retrieval: Optional[dict] = None
     cognitive_distortion: Optional[dict] = None
+    # --- TAMER 框架输出 ---
+    # RQI（关系质量指数）/ MIS（跨模态矛盾分）/ CUSUM（情绪轨迹）三项的汇总，
+    # 供前端做关系阶段指示器与矛盾提示；**不是诊断结论**，见
+    # assessment/tamer_framework.py 的诚实边界说明。
+    tamer_result: Optional[dict] = None
 
 
 # 简易共情回复生成器（不依赖外部 LLM 服务）
@@ -782,6 +805,14 @@ _LLM_BASE_URL = os.environ.get(
 )
 _LLM_MODEL = os.environ.get('DASHSCOPE_MODEL', 'qwen-turbo')
 _LLM_TIMEOUT = 15
+
+# ── 面部实时状态摘要的契约（客户端 `services/facialLiveState.ts` 的对端）─────────
+# 版本号必须与客户端的 `FACIAL_LIVE_STATE_VERSION` 一致；不一致就整段不注入，
+# 而不是去猜字段含义。改口径时两边一起改。
+_FACIAL_LIVE_STATE_VERSION = 1
+# 摘要允许的最大年龄（ms）：客户端已按读数实测耗时截断过一次，这里是服务端的第二道闸门。
+# 人脸离开画面后不会有人脸帧，旧读数若被当成"此刻的表情"注入，模型就会对着空气共情。
+_FACIAL_MAX_AGE_MS = 6000
 
 
 def _sampling_params(risk_level: str) -> dict:
@@ -1688,6 +1719,79 @@ def _plan_streamed_reply(
     return final_text, _split_speak_units(final_text)
 
 
+def _build_facial_context(facial_features: Optional[dict]) -> str:
+    """把客户端的**面部实时状态摘要**转成一段低权重的 prompt 内部参考。
+
+    这是"面部进对话"的唯一入口，也是唯一一道服务端闸门。设计原则与
+    :func:`_negative_emotion_intensity` 一致 —— **不把情绪分类的字面值当结论喂给模型**，
+    只给比例的客观事实 + 明确的使用禁令。
+
+    Args:
+        facial_features: 客户端上行摘要（``client/src/services/facialLiveState.ts``）。
+            可能为 None（没开摄像头 / 画面没人脸 / 读数过期，客户端就不发这个字段）。
+
+    Returns:
+        str: 可注入的参考文本；**任何一条前置条件不满足都返回空串**，
+            调用方据此**整段不注入**（不写"面部无数据"这类占位句 —— 那反而会提示模型去猜）。
+    """
+    if not isinstance(facial_features, dict):
+        return ""
+
+    # ① 版本闸门：口径变了就整段不认，避免旧字段被新代码静默误读
+    if facial_features.get("version") != _FACIAL_LIVE_STATE_VERSION:
+        return ""
+
+    # ② 年龄闸门：人脸离开画面后旧读数会被当成"此刻的表情"（客户端已截一次，这里是第二道）
+    #    `NaN` 会让下面的两个比较同时为假，所以必须先挡掉非有限值。
+    age_ms = facial_features.get("ageMs")
+    if not isinstance(age_ms, (int, float)) or isinstance(age_ms, bool):
+        return ""
+    if not math.isfinite(float(age_ms)):
+        return ""
+    if age_ms < 0 or age_ms > _FACIAL_MAX_AGE_MS:
+        return ""
+
+    # ③ 在场闸门：画面里没人脸时不该有任何关于脸的描述
+    if facial_features.get("present") is not True:
+        return ""
+
+    probs = facial_features.get("probabilities")
+    if not isinstance(probs, dict):
+        return ""
+
+    def _prob(key: str) -> Optional[float]:
+        raw = probs.get(key)
+        if not isinstance(raw, (int, float)) or isinstance(raw, bool):
+            return None
+        v = float(raw)
+        if not math.isfinite(v):
+            return None
+        if v < 0.0 or v > 1.0:
+            return None
+        return v
+
+    happy = _prob("happy")
+    neutral = _prob("neutral")
+    sad = _prob("sad")
+    if happy is None or neutral is None or sad is None:
+        return ""
+    # 三类之和为 0 说明这不是一份有效读数（客户端保证概率和为 1；这里只挡全零/负零的坏数据）
+    if happy + neutral + sad <= 0.0:
+        return ""
+
+    lines = [
+        "本机三分类表情模型读到的一组比例（顺序：开心 / 中性 / 悲伤）："
+        f"{happy:.2f} / {neutral:.2f} / {sad:.2f}。",
+        "⚠️ 这只是**镜头前的一张脸**：可能只是刚睡醒、光线暗、在看别处，或者只是没有表情。",
+        "**不许**据此判断 ta 的心理状态，**不许**因此提问（「你是不是难过」这类一律禁止），"
+        "也**不许**把这组数字或它的含义写进你的回复；"
+        "ta 自己没说的事，你都不知道。",
+        "它唯一的用途：当 ta **自己**说出了负面内容时，允许你把回应放慢一点、少追问一句。",
+        "它**不是**风险信号：无论读到什么，都不得改变你对风险的判断。",
+    ]
+    return "\n".join(lines)
+
+
 def _build_llm_messages(
     user_message: str,
     conversation_history: list,
@@ -1697,6 +1801,8 @@ def _build_llm_messages(
     scene_context: str = "",
     ask_question: bool = True,
     memory_context: str = "",
+    tamer_result: Optional[dict] = None,
+    facial_context: str = "",
 ) -> list[dict]:
     """装配千问调用的消息列表（system prompt + 最近 8 条历史 + 本轮发言）。
 
@@ -1718,6 +1824,11 @@ def _build_llm_messages(
             末尾补一条「这一轮不要提问」（高风险/危机除外 —— 那一轮的安全
             确认本身就是一句要问的话）。
         memory_context: 长期记忆召回文本；为空串时不注入。
+        tamer_result: TAMER 框架（RQI / MIS / CUSUM）本轮输出；为 None 时
+            **整段不注入**。注入的只是给模型看的内部参考，不当成用户说过的事。
+        facial_context: 面部实时状态的内部参考文本（由
+            :func:`_build_facial_context` 从客户端上行摘要生成）；空串表示
+            没有新鲜读数，**整段不注入**。
 
     Returns:
         list[dict]: OpenAI 兼容的 messages 列表。
@@ -1785,6 +1896,85 @@ def _build_llm_messages(
     else:
         persona_line = ""
 
+    # ── TAMER 框架上下文注入 ──────────────────────────────────────────
+    # 目的是让**说话策略**随关系阶段与跨模态矛盾调整，而不是把分析结果念给
+    # 用户听（"你在掩饰"这种话既越界又会摧毁信任，见下方禁令）。
+    #
+    # ⚠️ 三项观察都只是**内部参考**，置信度远低于用户自己说出来的话：
+    #   - RQI 由会话统计量（轮数/消息长度/词汇）估算，不是量表；
+    #   - MIS 是跨模态余弦距离，文字聊天时没有真实声学输入，只能弱判断；
+    #   - CUSUM 轨迹依赖该会话积累的轮次，前几轮不稳定。
+    tamer_context = ""
+    if tamer_result:
+        rqi = tamer_result.get("rqi", 0.0)
+        mis = tamer_result.get("mis", 0.0)
+        trajectory = tamer_result.get("trajectory", "stable")
+        relationship_depth = tamer_result.get("relationship_depth", "陌生期")
+
+        if rqi >= 0.6:
+            relationship_hint = (
+                f"你们已经建立起信任（RQI={rqi:.2f}，{relationship_depth}）。"
+                "ta 也许愿意聊更深的东西，但仍然跟着 ta 的节奏走。"
+            )
+        elif rqi >= 0.3:
+            relationship_hint = (
+                f"你们正在熟悉中（RQI={rqi:.2f}，{relationship_depth}）。"
+                "保持温暖和稳定，不必急着往深里问。"
+            )
+        else:
+            relationship_hint = (
+                f"你们还在初识阶段（RQI={rqi:.2f}，{relationship_depth}）。"
+                "先把安全感建立起来，别追问私人问题。"
+            )
+
+        incongruence_hint = ""
+        if mis > 0.5:
+            incongruence_type = tamer_result.get("incongruence_type", "unknown")
+            if incongruence_type == "masking":
+                incongruence_hint = (
+                    "⚠️ 跨模态不一致：ta 的话听上去平静，声音/用词却透着紧张，"
+                    "可能有事没说透。**温和地留个口子**（比如把话接住、说你在），"
+                    "绝对不要点破「你在掩饰」。"
+                )
+            elif incongruence_type == "performative":
+                incongruence_hint = (
+                    "⚠️ 跨模态不一致：ta 说的很痛苦，声音却很平。"
+                    "先确认安全状态，再决定要不要顺着情绪往下走。"
+                )
+
+        trajectory_hint = ""
+        if trajectory == "worsening":
+            trajectory_hint = "⚠️ 情绪轨迹显示持续下滑，这一轮多留意 ta 的状态。"
+        elif trajectory == "improving":
+            trajectory_hint = "情绪轨迹显示在好转，接住这个方向就好，不必刻意表扬。"
+
+        tamer_parts = [relationship_hint]
+        if incongruence_hint:
+            tamer_parts.append(incongruence_hint)
+        if trajectory_hint:
+            tamer_parts.append(trajectory_hint)
+        tamer_context = "\n".join(tamer_parts)
+
+    if tamer_context:
+        tamer_line = (
+            "\n# 关系与跨模态观察（内部参考，**一个字都不要说给 ta 听**）\n"
+            + tamer_context
+        )
+    else:
+        tamer_line = ""
+
+    # ── 面部实时状态注入 ────────────────────────────────────────────────
+    # ⚠️ 与 TAMER 段同级：**只是内部参考**，不是事实、不是风险信号。
+    # 文本由 `_build_facial_context` 生成，里面已带全部使用禁令；
+    # 空串（没有新鲜读数）时整段不出现 —— 不写占位句，免得提示模型去猜脸。
+    if facial_context:
+        facial_line = (
+            "\n# 镜头里读到的表情（内部参考，**一个字都不要说给 ta 听**）\n"
+            + facial_context
+        )
+    else:
+        facial_line = ""
+
     system_prompt = f"""# 你是谁
 你是「心灵花园」的 AI 陪伴者 —— 一个愿意听青少年说话的人。
 你不是医生、不是老师、也不是心理咨询师，**不能替代线下持证的心理咨询师与精神科医生**（被问到时就这么说）。
@@ -1825,7 +2015,7 @@ ta 当下的负面情绪强度约 {neg_intensity:.0%}，风险等级 {risk_level
 {risk_line}
 {no_question_line}
 {social_line}
-{persona_line}"""
+{persona_line}{tamer_line}{facial_line}"""
     if scene_context:
         system_prompt = f"{system_prompt}\n{scene_context}"
 
@@ -1851,6 +2041,8 @@ def _call_llm(
     dialogue_mode: str = "EMPATHY",
     scene_context: str = "",
     memory_context: str = "",
+    tamer_result: Optional[dict] = None,
+    facial_context: str = "",
 ) -> str:
     """调用千问大模型生成回复，失败时回退模板。
 
@@ -1903,6 +2095,8 @@ def _call_llm(
         scene_context=scene_context,
         ask_question=ask_question,
         memory_context=memory_context,
+        tamer_result=tamer_result,
+        facial_context=facial_context,
     )
     try:
         resp = requests.post(
@@ -2378,6 +2572,8 @@ def _chat_stream_events(request: SmartChatRequest) -> Iterator[str]:
             scene_context=prep.scene_context,
             ask_question=prep.ask_question,
             memory_context=prep.memory_context,
+            tamer_result=prep.tamer_result,
+            facial_context=prep.facial_context,
         )
         try:
             for delta in _iter_llm_deltas(
@@ -2514,6 +2710,44 @@ async def smart_chat_stream(request: SmartChatRequest) -> StreamingResponse:
 # 文本与审计结论，与非流式路径逐字段同源。
 
 
+# ============================================================
+# TAMER 框架的会话级状态
+# ============================================================
+#
+# ⚠️ 为什么必须"按会话常驻"而不是每轮 new 一个：
+#   RQI 的 EMA 时间衰减、MIS 的自适应阈值（μ + kσ）、CUSUM 的累积量
+#   **三者都是有状态的**。若每轮 `TAMERFramework(TAMERConfig())`，
+#   等价于每轮把历史清零 —— 自适应阈值永远停在默认 0.3、CUSUM 累积量
+#   永远从 0 开始（轨迹恒为 stable）、RQI 退化成单轮读数，
+#   所谓"自适应"与"时序追踪"就全部失效（只剩公式里那半截）。
+#
+# 键取 session_id，缺省退回 user_id，再缺省 "anonymous"。
+# 上限只做粗粒度 FIFO 淘汰，避免长期运行时无界增长 ——
+# 本 Demo 的会话数远小于该上限，淘汰策略不参与业务语义。
+_TAMER_SESSIONS: dict[str, Any] = {}
+_TAMER_MAX_SESSIONS = 512
+
+
+def _get_tamer(session_key: str) -> Any:
+    """取（或新建）该会话常驻的 :class:`TAMERFramework` 实例。
+
+    Args:
+        session_key: 会话键（session_id / user_id / "anonymous"）。
+
+    Returns:
+        TAMERFramework: 带该会话历史状态的框架实例。
+    """
+    tamer = _TAMER_SESSIONS.get(session_key)
+    if tamer is None:
+        from assessment.tamer_framework import TAMERConfig, TAMERFramework
+
+        if len(_TAMER_SESSIONS) >= _TAMER_MAX_SESSIONS:
+            _TAMER_SESSIONS.pop(next(iter(_TAMER_SESSIONS)))
+        tamer = TAMERFramework(TAMERConfig())
+        _TAMER_SESSIONS[session_key] = tamer
+    return tamer
+
+
 @dataclass
 class _ChatTurnPrep:
     """单轮对话的前处理结果（模块内部结构，不作为跨模块契约）。
@@ -2535,6 +2769,11 @@ class _ChatTurnPrep:
         distortion_meta: 认知扭曲 8 分类结果，同上。
         ask_question: 本轮是否允许提出一个开放式追问。
         loop: 该用户的 SafetyLoop 实例（含对话状态机），定稿时要用。
+        memory_context: 长期记忆召回文本。
+        tamer_result: TAMER 框架（RQI / MIS / CUSUM）本轮输出；计算失败时为 None，
+            此时 prompt 不注入关系与矛盾提示，前端也不显示对应卡片。
+        facial_context: 面部实时状态的内部参考文本；空串表示本轮没有新鲜读数
+            （没开摄像头 / 画面没人脸 / 读数过期），prompt **整段不注入**。
     """
     emotion_result: Any
     risk_level: str
@@ -2547,11 +2786,13 @@ class _ChatTurnPrep:
     ask_question: bool
     loop: SafetyLoop
     memory_context: str = ""
+    tamer_result: Optional[dict] = None
+    facial_context: str = ""
 
 
 def _prepare_chat_turn(request: SmartChatRequest) -> _ChatTurnPrep:
-    """步骤 1 ~ 2.9：文本感知 → 风险评估 → 危机快检 → 记忆召回 → 风格检测
-    → 对话状态机推进 → C2D2 场景检索。
+    """步骤 1 ~ 2.10：文本感知 → 风险评估 → 危机快检 → 记忆召回 → 风格检测
+    → 对话状态机推进 → C2D2 场景检索 → TAMER（RQI / MIS / CUSUM）。
 
     **只读输入 + 推进该用户的对话状态机**，不产生回复文本、不写审计日志。
 
@@ -2738,6 +2979,51 @@ def _prepare_chat_turn(request: SmartChatRequest) -> _ChatTurnPrep:
                 f"[场景检索] 命中 {scene_hits} 个相近情境，已注入 prompt"
             )
 
+    # ── 步骤 2.10：TAMER 框架 —— RQI（关系质量）+ MIS（跨模态矛盾）+ CUSUM（轨迹）──
+    #
+    # 只读输入、不写审计；任何异常都不影响主流程（与记忆召回、场景检索同一容错口径）。
+    # 跨模态矛盾检测（MIS）需要本轮声学特征：文字聊天时为 None，此时
+    # `acoustic_to_emotion_vector` 用声学默认值兜底，MIS 退化为"文本 vs 中性声学"，
+    # 仍可给出 **一致性/矛盾** 的弱判断，但不应被当作通话质量的结果解读。
+    tamer_result_value: Optional[dict] = None
+    try:
+        tamer = _get_tamer(request.session_id or request.user_id or "anonymous")
+        tamer_result_value = tamer.process(
+            user_message=request.message,
+            voice_features=request.voice_features or {},
+            text_emotion=emotion_result.text_emotion_probs,
+            conversation_history=request.conversation_history or [],
+        )
+        if tamer_result_value:
+            emotion_result.evidence.append(
+                "[TAMER] RQI={rqi:.3f}, MIS={mis:.3f}, 关系阶段={depth}, 轨迹={traj}".format(
+                    rqi=tamer_result_value.get("rqi", 0.0),
+                    mis=tamer_result_value.get("mis", 0.0),
+                    depth=tamer_result_value.get("relationship_depth", "陌生期"),
+                    traj=tamer_result_value.get("trajectory", "stable"),
+                )
+            )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("TAMER 计算失败，本轮跳过关系/矛盾分析: %s", e)
+
+    # ── 步骤 2.11：面部实时状态（客户端上行，可选）──────────────────────────
+    #
+    # 客户端只在"采集在跑 + 画面里有人脸 + 读数新鲜"时才带这个字段；这里再过一道
+    # 版本/年龄/在场闸门（见 :func:`_build_facial_context`）。任何异常都不影响主流程，
+    # 失败等价于"本轮没有面部参考"。
+    #
+    # ⚠️ 明确边界：本段**只产出给模型看的内部参考文本**，绝不写进 risk_level、
+    # 融合权重、量表分或任何审计判定 —— AGENTS.md 的"阈值类变更需人工审核"。
+    facial_context = ""
+    try:
+        facial_context = _build_facial_context(request.facial_features)
+        if facial_context:
+            emotion_result.evidence.append(
+                "[面部实时状态] 本轮有新鲜读数，已作为内部参考注入 prompt（不参与风险判定）"
+            )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("面部实时状态解析失败，本轮不注入: %s", e)
+
     return _ChatTurnPrep(
         emotion_result=emotion_result,
         risk_level=risk_level,
@@ -2750,6 +3036,8 @@ def _prepare_chat_turn(request: SmartChatRequest) -> _ChatTurnPrep:
         ask_question=ask_question,
         loop=loop,
         memory_context=memory_context,
+        tamer_result=tamer_result_value,
+        facial_context=facial_context,
     )
 
 
@@ -2877,6 +3165,7 @@ def _audit_and_finalize(
         fallback=False,
         scene_retrieval=scene_meta,
         cognitive_distortion=distortion_meta,
+        tamer_result=prep.tamer_result,
     )
 
 
@@ -2915,6 +3204,8 @@ async def smart_chat(request: SmartChatRequest) -> SmartChatResponse:
             dialogue_mode=dialogue_mode,
             scene_context=scene_context,
             memory_context=prep.memory_context,
+            tamer_result=prep.tamer_result,
+            facial_context=prep.facial_context,
         )
 
         return _audit_and_finalize(prep, request, llm_reply)

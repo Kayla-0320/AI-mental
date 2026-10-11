@@ -61,7 +61,7 @@ class ConsultationController {
    */
   async sendMessageStream(req: AuthRequest, res: Response) {
     const conversationId = req.params.conversationId as string;
-    const { content, contentType = 'text' } = req.body;
+    const { content, contentType = 'text', voiceFeatures, facialFeatures } = req.body;
 
     if (typeof content !== 'string' || !content.trim()) {
       res.status(400).json({ code: 400, message: '消息内容不能为空' });
@@ -100,6 +100,8 @@ class ConsultationController {
         contentType,
         emit,
         abort.signal,
+        voiceFeatures,
+        facialFeatures,
       );
     } catch (error: any) {
       // 能走到这里，说明服务层连一个 error 事件都没能发出（例如会话不存在）。
@@ -111,6 +113,44 @@ class ConsultationController {
       });
     } finally {
       if (!res.writableEnded) res.end();
+    }
+  }
+
+  /**
+   * 读取已保存的对话总结（只读，不触发生成）。
+   *
+   * 与下面的生成端点分开是刻意的：打开历史记录/点击"查看总结"是**高频只读**动作，
+   * 让它顺手调一次大模型会让列表操作又慢又贵。没有总结时返回 summary: null，
+   * 由前端显示"生成总结"按钮。
+   */
+  async getSummary(req: AuthRequest, res: Response) {
+    try {
+      const conversationId = req.params.conversationId as string;
+      const result = await consultationService.getConversationSummary(conversationId, req.userId!);
+      res.json({ code: 0, data: result });
+    } catch (error: any) {
+      res.status(error.statusCode || 500).json({ code: error.code || 500, message: error.message });
+    }
+  }
+
+  /**
+   * 生成（或重新生成）对话总结。
+   *
+   * `POST` 而不是 `GET`：这是一次有副作用、要花钱的写操作（会落库 summary）。
+   * 请求体 `{ force?: boolean }`，force 为真才覆盖已有总结 —— 见服务层的幂等取舍。
+   */
+  async generateSummary(req: AuthRequest, res: Response) {
+    try {
+      const conversationId = req.params.conversationId as string;
+      const force = req.body?.force === true;
+      const result = await consultationService.generateConversationSummary(
+        conversationId,
+        req.userId!,
+        force,
+      );
+      res.json({ code: 0, message: result.generated ? '总结已生成' : '已返回上次的总结', data: result });
+    } catch (error: any) {
+      res.status(error.statusCode || 500).json({ code: error.code || 500, message: error.message });
     }
   }
 

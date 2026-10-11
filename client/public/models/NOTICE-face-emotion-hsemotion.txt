@@ -1,0 +1,63 @@
+第三方模型声明 —— 浏览器内表情识别（8 类）→ 展示三分类
+================================================================
+
+文件      client/public/models/face_emotion_8cls_hsemotion.onnx
+大小      16,039,595 字节（约 15.3 MB）
+SHA-256   fa07e841fd06c7a67ee651ea4e6e4a3a2bb5695f47b37a7da50492526f59c898
+
+来源
+----
+HSEmotion / EmotiEffLib 的 `enet_b0_8_best_vgaf`
+  - 项目：https://github.com/sb-ai-lab/EmotiEffLib
+  - 论文：Savchenko, "Classifying emotions and engagement in online learning
+    based on a single facial expression recognition neural network",
+    IEEE Transactions on Affective Computing, 2022.
+  - 权重：`models/affectnet_emotions/enet_b0_8_best_vgaf.pt`
+    （本次以 ONNX 形式取得并核验；见下方"本仓库对它的改动"）
+
+许可
+----
+Apache License 2.0。EmotiEffLib 的 README 明确写明：
+"There is no limitation for both academic and commercial usage."
+本仓库未修改权重数值，仅按 ONNX Runtime Web 的加载方式使用。
+
+模型事实（本仓库实测，不是抄文档）
+--------------------------------
+输入     `input`  [batch, 3, 224, 224]  float32，RGB
+预处理   x/255 → ImageNet 归一化 mean=[0.485,0.456,0.406] std=[0.229,0.224,0.225]
+         （不加归一化时本地域准确率 84.3% → 75.8%，已实测）
+输出     `output` [batch, 8]，顺序：
+         Anger, Contempt, Disgust, Fear, Happiness, Neutral, Sadness, Surprise
+         （用 336 种映射穷举在带标签数据上验证，最佳排列与之一致）
+官方指标 AffectNet-8 准确率 61.32%（原始 PyTorch 版本，官方 README 表格）
+
+本仓库对它的用法
+----------------
+只取 Happiness→开心、Neutral→中性、Sadness→悲伤 三类做展示，
+其余五类**不丢弃**：折叠不进去的概率由 `FaceEmotionReading.offMapProbability`
+如实上报，界面显示「其他表情 X%」。折叠与归一化的实现见
+`client/src/services/faceEmotionClassifier.ts` 的 `FACE_EMOTION_SPEC` / `toReading`。
+全程在本机 canvas + WASM/WebGPU 内完成，不传帧、不落盘。
+
+为什么换掉自训练的 ResNet50（3 类）
+----------------------------------
+在公开的真实世界成人人脸数据集 RAF-DB test 上（n=794）实测：
+
+  旧模型（自训练 ResNet50，89.6 MB）
+    真实笑脸 → 判成「悲伤」  56.9%（喂紧取景原图时 98.3%）
+    真实中性脸 → 判成「悲伤」 92.5%
+    sad 的 AUC               0.630
+  新模型（HSEmotion，15.3 MB）
+    真实笑脸 → 判成「悲伤」  0.8%
+    真实中性脸 → 判成「悲伤」10.8%
+    sad 的 AUC               0.965
+
+代价：本仓库自带数据集上的三分类准确率由 97.2% 降到约 84%，但该数据集的 `sad`
+大量是婴幼儿嚎哭（8 类模型读成 Fear/Surprise），并不衡量"成年人难过"。
+完整证据链、复现命令与取舍见 docs/fer_external_model_integration.md。
+
+---
+另：`face_emotion_3cls.onnx`（自训练 ResNet50，89.6 MB）仍保留在本目录，
+它已**不再被运行时加载**（`FACE_EMOTION_SPEC.url` 已指向新模型），
+只作为 `scripts/face_emotion_accuracy_check.py` 等三分类审计脚本的历史产物。
+其许可与来源见 NOTICE-face-emotion-3cls.txt。

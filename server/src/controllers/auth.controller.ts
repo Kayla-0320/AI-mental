@@ -38,6 +38,18 @@ class AuthController {
       res.status(error.statusCode || 500).json({ code: error.code || 500, message: error.message });
     }
   }
+
+  /** 管理端启用/禁用用户（AdminUsers 页面的「禁用/启用」按钮） */
+  async updateUserStatus(req: AuthRequest, res: Response) {
+    try {
+      const { userId } = req.params;
+      const { status } = req.body;
+      const result = await authService.updateUserStatus(req.userId!, userId as string, status);
+      res.json({ code: 0, message: '操作成功', data: result });
+    } catch (error: any) {
+      res.status(error.statusCode || 500).json({ code: error.code || 500, message: error.message });
+    }
+  }
 }
 
 export default new AuthController();

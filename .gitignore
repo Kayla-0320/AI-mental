@@ -125,6 +125,16 @@ _tts_bench/
 !client/public/models/open_closed_eye.onnx
 !client/public/models/NOTICE-open-closed-eye-0001.txt
 
+# ===== 三分类表情模型（自训练产物，**只放行说明文件**）=====
+# client/public/models/face_emotion_3cls.onnx 是 ResNet50（happy/neutral/sad）的导出产物，
+# 89.62 MB（SHA-256 074ff87c…5026）。它可随时用一条命令从训练权重重建：
+#   & "D:\Develop\AIC\.venv\Scripts\python.exe" scripts/export_face_emotion_onnx.py
+# 体积已接近 GitHub 单文件 100 MB 硬上限、普通 git 入库会永久占用仓库体积、
+# 走 LFS 又要吃 1 GB 免费配额（见 .gitattributes 的说明），因此**故意保持忽略**；
+# 只把说明文件放行 —— 没有它，别人看到一个 90 MB 的 ONNX 无从判断出处与口径。
+# 部署时需要额外一步：重跑导出脚本，或把该 .onnx 随构建产物一起拷贝。
+!client/public/models/NOTICE-face-emotion-3cls.txt
+
 # ===== CosyVoice3 零样本克隆参考音（显式放行）=====
 # 上面第 89 行 `*.wav` 会把这个文件挡掉，但它是**音色这一交付物的定义本身**，
 # 不是可重跑的中间产物：README 明确要求它入库以保证音色可复现、可版本管理，
@@ -133,3 +143,5 @@ _tts_bench/
 # 注意顺序：必须先把父目录放行，否则后面的 `!文件` 不生效。
 !algorithm/tts/cosyvoice_service/
 !algorithm/tts/cosyvoice_service/prompt_qwen3_voice.wav
+# 表情模型精度复核的临时裸 RGBA 导出（由 scripts/face_emotion_accuracy_check.py --dump-rgba 生成）
+.tmp-face-rgba/

@@ -19,15 +19,13 @@ export default function AdminConsultants() {
   const loadConsultants = async () => {
     setLoading(true);
     try {
-      const res = await api.get('/expert/consultants') as any;
+      // 管理端专用：返回全量（含待审核/已拒绝）并附推导出的 status。
+      // 不能用 /expert/consultants —— 那条只返回可预约的，待审核的永远不出现。
+      const res = await api.get('/admin/consultants') as any;
       const list = res.data?.consultants || [];
       setConsultants(list.map((c: any) => ({ ...c, key: c.id })));
     } catch {
-      setConsultants([
-        { key: '1', id: '1', user: { nickname: '张咨询师' }, title: '心理咨询师', rating: 4.8, status: 'APPROVED', specialties: '["焦虑","抑郁"]' },
-        { key: '2', id: '2', user: { nickname: '李老师' }, title: '心理治疗师', rating: 4.5, status: 'APPROVED', specialties: '["压力","睡眠"]' },
-        { key: '3', id: '3', user: { nickname: '王医生' }, title: '精神科医师', rating: 0, status: 'PENDING', specialties: '["创伤","PTSD"]' },
-      ]);
+      setConsultants([]);
     } finally { setLoading(false); }
   };
 

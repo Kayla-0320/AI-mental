@@ -1,4 +1,5 @@
 import prisma from '../config/database';
+import achievementService from './achievement.service';
 
 class HealingService {
   // 创建疗愈会话
@@ -21,7 +22,7 @@ class HealingService {
     moodAfter?: string;
     metadata?: any;
   }) {
-    return prisma.healingSession.update({
+    const session = await prisma.healingSession.update({
       where: { id: sessionId, userId },
       data: {
         completed: true,
@@ -32,6 +33,11 @@ class HealingService {
         metadata: data.metadata ? JSON.stringify(data.metadata) : undefined,
       },
     });
+
+    // 疗愈徽章在此解锁：旧实现只在打卡时判定，疗愈类徽章永远不会亮（spec G1）
+    const newlyUnlocked = await achievementService.evaluateAchievements(userId);
+
+    return { ...session, newlyUnlocked };
   }
 
   // 获取疗愈历史

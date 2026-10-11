@@ -50,6 +50,7 @@ import { sendChatMessageStream } from '../services/chatStream';
 import { TtsChannel, type TtsStreamStatus } from '../services/ttsStream';
 import { EchoFilter, ECHO_OVERLAP_THRESHOLD, scoreAgainstSpoken } from '../services/echoFilter';
 import { useVoiceAnalysis } from './useVoiceAnalysis';
+import type { FacialLiveState } from '../services/facialLiveState';
 import type { VoiceAnalysis } from '../types/multimodal.types';
 
 /** 通话状态 */
@@ -284,6 +285,15 @@ export interface MicSettings {
 
 export interface UseVoiceCallOptions {
   conversationId?: string;
+  /**
+   * 取**当前**面部实时状态（通话页在用户开了摄像头时由 `useCallVision` 提供）。
+   *
+   * 为什么是 getter 而不是值：本轮要在"用户说完话那一刻"取快照，而视觉采样是
+   * 200ms 一拍；把值当依赖传进来会让 `runTurn` 每 200ms 重建一次。
+   *
+   * @returns 快照；没有新鲜读数时返回 `null`（本轮就**不**带面部字段上行）
+   */
+  getFacialLiveState?: () => FacialLiveState | null;
 }
 
 export interface UseVoiceCallResult {
@@ -342,7 +352,7 @@ export interface UseVoiceCallResult {
 }
 
 export function useVoiceCall(options: UseVoiceCallOptions): UseVoiceCallResult {
-  const { conversationId } = options;
+  const { conversationId, getFacialLiveState } = options;
 
   const [phase, setPhase] = useState<CallPhase>('idle');
   const [userLines, setUserLines] = useState<string[]>([]);
@@ -763,6 +773,26 @@ export function useVoiceCall(options: UseVoiceCallOptions): UseVoiceCallResult {
 
       applyPhase('thinking');
 
+      // ── 提取声学特征摘要，随本轮消息一起上报（供风险研判）──────────────
+      // 只取聚合统计量，不传原始帧数据（体积大且含 PII）。
+      const vm = voiceMetricsRef.current;
+      const voiceFeatures: Record<string, unknown> | undefined = vm ? {
+        pitch: { mean: vm.pitch.mean, std: vm.pitch.std, range: vm.pitch.range },
+        energy: { mean: vm.energy.mean, std: vm.energy.std, peakRatio: vm.energy.peakRatio },
+        rate: { speechRate: vm.rate.speechRate, tempo: vm.rate.tempo, regularity: vm.rate.regularity },
+        pauses: { ratio: vm.pauses.ratio, count: vm.pauses.count, avgDuration: vm.pauses.avgDuration, longPauseCount: vm.pauses.longPauseCount },
+        spectral: { centroid: vm.spectral.centroid, rolloff: vm.spectral.rolloff, flatness: vm.spectral.flatness },
+        riskScore: vm.riskScore,
+        detectedEmotion: vm.detectedEmotion,
+      } : undefined;
+
+      // ── 本轮的面部实时状态（**只在用户开了摄像头时才有**）────────────────────
+      // 与声学特征同一口径：只传聚合快照，不传原始帧、不传图像。
+      // 拿不到（没开摄像头 / 画面没人脸 / 读数过期）就是 undefined —— 本轮不带该字段，
+      // 算法层也就不注入面部那一段。**绝不用中性值兜底**。
+      // ⚠️ 它只是算法层的低权重内部参考，不进风险等级、不进融合权重。
+      const facialFeatures = getFacialLiveState?.() ?? undefined;
+
       sendChatMessageStream(convId, userText, {
         onMeta: (meta) => {
           acc.sawMeta = true;
@@ -908,7 +938,7 @@ export function useVoiceCall(options: UseVoiceCallOptions): UseVoiceCallResult {
           setNotice(err.errorMessage || '这一轮没能生成回复。麦克风仍然开着，你可以再说一次。');
           finish();
         },
-      });
+      }, 'voice', voiceFeatures, facialFeatures);
       // 刻意不保存/调用 handle.abort()：见文件头取舍 1（F-4）
 
       /** 危机分支：立刻静音 + 会话切纯文字（S6.2） */
@@ -926,7 +956,7 @@ export function useVoiceCall(options: UseVoiceCallOptions): UseVoiceCallResult {
         setNotice('这一轮涉及较高风险，已暂停语音，继续用文字陪伴你。');
       }
     },
-    [applyPhase, conversationId, publishTurn, settleToListening, ttsSay],
+    [applyPhase, conversationId, publishTurn, settleToListening, ttsSay, getFacialLiveState],
   );
   runTurnRef.current = runTurn;
 

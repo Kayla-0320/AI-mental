@@ -1,0 +1,945 @@
+/* ============================================================================
+ * 应用外壳：页面背景 + 顶部导航 + 页脚
+ *
+ * 这里替换掉旧 PatientLayout 的「左侧固定侧边栏」结构。旧主题仍保留
+ * （styles/healing-theme.css），但页背景在本次改版中统一成天空蓝→奶油白的柔和渐变。
+ * ========================================================================== */
+
+:root {
+  --gh-nav-h: 74px;
+}
+
+/* DISABLED 下面这段 body 背景是**刻意关掉的**，不是漏写注释结束符。
+ * ⚠️ 另：本文档里不要出现「星号 + 斜杠」连写（即使写在注释里）——那会被当成注释结束符。
+ *
+ * 它原本生效：新外壳在 main.tsx 里排在 healing-theme.css 之后，两边都用 `!important`
+ * 时按加载顺序取胜，所以这里能把整站底色从旧主题的粉色（--bg-gradient）覆盖成下面这套
+ * "奶油白 → 天蓝 → 奶油白"的固定渐变。当前状态下**整站底色仍是 healing-theme 的粉色渐变**。
+ *
+ * 启用它 = 全站换底色（粉 → 奶油蓝），属于观感级改动，所以留成一位开关：
+ * 需要换底色时，把 body 那几行移出注释即可。页顶大图与底色的过渡是自适应的（见
+ * components/home/home-hero.css 的 .gh-top-image__bg 掩膜），换底色不需要改别处。
+ *
+body {
+  background: linear-gradient(180deg, #fdfaf5 0%, #f7f8ff 38%, #eef7ff 66%, #fdf9f4 100%) !important;
+  background-attachment: fixed !important;
+  color: var(--gh-ink-1);
+}
+*/
+
+/* ============================================================================
+ * 1. 顶部导航
+ * ========================================================================== */
+
+.gh-nav {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 900;
+  height: var(--gh-nav-h);
+  display: flex;
+  align-items: center;
+  transition: background 0.32s var(--gh-ease), box-shadow 0.32s var(--gh-ease),
+    border-color 0.32s var(--gh-ease), backdrop-filter 0.32s var(--gh-ease);
+  border-bottom: 1px solid transparent;
+}
+
+/* 首屏压在插画上：完全透明，让主视觉完整 */
+.gh-nav--over {
+  background: transparent;
+}
+
+/* 滚动后 / 非首页：轻盈玻璃吸顶，不过度抢眼 */
+.gh-nav--solid {
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(20px) saturate(1.2);
+  -webkit-backdrop-filter: blur(20px) saturate(1.2);
+  border-bottom-color: rgba(124, 152, 184, 0.16);
+  box-shadow: 0 6px 24px rgba(72, 108, 148, 0.07);
+}
+
+.gh-nav__inner {
+  width: 100%;
+  max-width: var(--gh-sec-w);
+  margin: 0 auto;
+  padding: 0 var(--gh-sec-pad);
+  display: flex;
+  align-items: center;
+  gap: 22px;
+}
+
+/* ---------- 品牌 ---------- */
+
+.gh-nav__brand {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  border: none;
+  background: none;
+  padding: 4px;
+  margin-left: -4px;
+  cursor: pointer;
+  border-radius: 14px;
+  flex: 0 0 auto;
+}
+
+.gh-nav__logo {
+  width: 38px;
+  height: 38px;
+  flex: 0 0 auto;
+  transition: transform 0.36s var(--gh-ease);
+}
+
+.gh-nav__brand:hover .gh-nav__logo {
+  transform: rotate(-10deg) scale(1.06);
+}
+
+.gh-nav__brand-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: 1.2;
+}
+
+.gh-nav__brand-name {
+  font-size: 17px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  color: #26364f;
+}
+
+.gh-nav__brand-tag {
+  font-size: 10.5px;
+  color: #6b7d96;
+  letter-spacing: 0.6px;
+}
+
+/* ---------- 中部导航 ---------- */
+
+.gh-nav__links {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  /* 与 .gh-nav__actions 各占一份 auto 外边距 → 导航在品牌与右侧动作区之间居中；
+     链接被收起后只剩右侧那一份 auto，动作区自动贴右 */
+  margin-left: auto;
+  padding: 4px;
+  border-radius: var(--gh-r-pill);
+  background: rgba(255, 255, 255, 0.42);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  transition: background 0.3s var(--gh-ease), border-color 0.3s var(--gh-ease);
+}
+
+.gh-nav__link {
+  position: relative;
+  border: none;
+  background: none;
+  padding: 8px 15px;
+  border-radius: var(--gh-r-pill);
+  font-size: 14px;
+  font-weight: 500;
+  color: #46586f;
+  cursor: pointer;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  transition: color 0.22s var(--gh-ease), background 0.22s var(--gh-ease);
+}
+
+.gh-nav--solid .gh-nav__links {
+  background: rgba(255, 255, 255, 0.55);
+  border-color: rgba(124, 152, 184, 0.14);
+}
+
+.gh-nav__link {
+  position: relative;
+  border: none;
+  background: none;
+  padding: 8px 15px;
+  border-radius: var(--gh-r-pill);
+  font-size: 14px;
+  font-weight: 500;
+  color: #46586f;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.22s var(--gh-ease), background 0.22s var(--gh-ease);
+}
+
+.gh-nav__link:hover {
+  color: #1f5f8b;
+  background: rgba(255, 255, 255, 0.75);
+}
+
+.gh-nav__link.is-active {
+  color: #1f5f8b;
+  font-weight: 700;
+  background: #fff;
+  box-shadow: 0 4px 14px rgba(72, 108, 148, 0.12);
+}
+
+/* 与参考图一致的短下划线 */
+.gh-nav__link.is-active::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: 1px;
+  width: 18px;
+  height: 2.5px;
+  border-radius: 2px;
+  transform: translateX(-50%);
+  background: linear-gradient(90deg, #7cc0ea, #ef6f9f);
+}
+
+/* ---------- 右侧动作区 ---------- */
+
+.gh-nav__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+  /* 导航链接被收起时（<1080px），靠这份 auto 外边距把动作区顶到最右 */
+  margin-left: auto;
+}
+
+.gh-nav__search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 38px;
+  padding: 0 14px;
+  border-radius: var(--gh-r-pill);
+  background: rgba(255, 255, 255, 0.62);
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  transition: all 0.26s var(--gh-ease);
+}
+
+.gh-nav--solid .gh-nav__search {
+  background: rgba(255, 255, 255, 0.75);
+  border-color: rgba(124, 152, 184, 0.16);
+}
+
+.gh-nav__search:focus-within {
+  width: 260px;
+  background: #fff;
+  border-color: rgba(240, 127, 169, 0.44);
+  box-shadow: 0 0 0 3px rgba(240, 127, 169, 0.14);
+}
+
+.gh-nav__search input {
+  border: none;
+  outline: none;
+  background: transparent;
+  font-size: 13px;
+  color: var(--gh-ink-1);
+  /* 静止宽度要能放下 placeholder「搜索你想了解的内容」（13px × 9 字 ≈ 118px） */
+  width: 150px;
+  transition: width 0.26s var(--gh-ease);
+}
+
+.gh-nav__search:focus-within input {
+  width: 190px;
+}
+
+.gh-nav__search input::placeholder {
+  color: #93a2b6;
+}
+
+/* 搜索结果面板 */
+.gh-nav__results {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  width: 340px;
+  max-height: 400px;
+  overflow-y: auto;
+  padding: 8px;
+  border-radius: var(--gh-r-md);
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid var(--gh-line);
+  box-shadow: var(--gh-sh-3);
+  backdrop-filter: blur(18px);
+  z-index: 20;
+}
+
+.gh-nav__results-empty {
+  padding: 18px 12px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--gh-ink-3);
+  line-height: 1.7;
+}
+
+.gh-nav__results-group {
+  padding: 10px 11px 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  color: var(--gh-ink-3);
+}
+
+/* 内容详情弹窗里的正文块（项目没有内容详情路由，直接在弹窗里读接口返回的正文） */
+.gh-nav__preview-body {
+  padding: 14px 16px;
+  border-radius: var(--gh-r-md);
+  background: rgba(124, 152, 184, 0.07);
+  border: 1px solid var(--gh-line);
+  font-size: 13.5px;
+  line-height: 1.9;
+  color: var(--gh-ink-2);
+  max-height: 260px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+}
+
+.gh-nav__result {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  padding: 10px 11px;
+  border: none;
+  background: none;
+  border-radius: var(--gh-r-sm);
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.2s var(--gh-ease);
+}
+
+.gh-nav__result:hover,
+.gh-nav__result:focus-visible {
+  background: rgba(240, 127, 169, 0.09);
+}
+
+.gh-nav__result-icon {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  border-radius: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  background: var(--gh-sky-3);
+}
+
+.gh-nav__result-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--gh-ink-1);
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gh-nav__result-desc {
+  font-size: 11.5px;
+  color: var(--gh-ink-3);
+  display: block;
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gh-nav__icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  background: rgba(255, 255, 255, 0.62);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  color: #46586f;
+  font-size: 17px;
+  cursor: pointer;
+  transition: all 0.24s var(--gh-ease);
+}
+
+.gh-nav--solid .gh-nav__icon-btn {
+  background: rgba(255, 255, 255, 0.75);
+  border-color: rgba(124, 152, 184, 0.16);
+}
+
+.gh-nav__icon-btn:hover {
+  background: #fff;
+  color: #ef6f9f;
+  transform: translateY(-2px);
+  box-shadow: var(--gh-sh-1);
+}
+
+.gh-nav__user {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px 4px 4px;
+  border-radius: var(--gh-r-pill);
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  background: rgba(255, 255, 255, 0.62);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  cursor: pointer;
+  transition: all 0.24s var(--gh-ease);
+}
+
+/* 多模态感知开启时，顶栏图标亮起来 —— 这是它全站唯一的状态指示 */
+.gh-nav__icon-btn.is-active {
+  background: linear-gradient(135deg, #e3f4ff, #d9ecfb);
+  border-color: rgba(74, 159, 212, 0.42);
+  color: #2f6ea3;
+}
+
+.gh-nav--solid .gh-nav__icon-btn.is-active {
+  background: linear-gradient(135deg, #e3f4ff, #d9ecfb);
+  border-color: rgba(74, 159, 212, 0.42);
+}
+
+.gh-nav--solid .gh-nav__user {
+  background: rgba(255, 255, 255, 0.75);
+  border-color: rgba(124, 152, 184, 0.16);
+}
+
+.gh-nav__user:hover {
+  background: #fff;
+  box-shadow: var(--gh-sh-1);
+}
+
+.gh-nav__user-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #3f5069;
+  max-width: 76px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gh-nav .ant-avatar {
+  box-shadow: none !important;
+}
+
+.gh-nav__burger {
+  display: none;
+}
+
+/* ---------- 移动端抽屉 ---------- */
+
+.gh-nav-drawer-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 20px 18px;
+  border-bottom: 1px solid var(--gh-line);
+}
+
+.gh-nav-drawer-list {
+  padding: 10px;
+}
+
+.gh-nav-drawer-group {
+  padding: 14px 14px 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  color: var(--gh-ink-3);
+}
+
+.gh-nav-drawer-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 13px 14px;
+  border: none;
+  background: none;
+  border-radius: var(--gh-r-sm);
+  font-size: 15px;
+  color: var(--gh-ink-2);
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.2s var(--gh-ease), color 0.2s var(--gh-ease);
+}
+
+.gh-nav-drawer-item.is-active {
+  background: rgba(240, 127, 169, 0.1);
+  color: #d24a7c;
+  font-weight: 700;
+}
+
+/* ---------- 顶栏「更多」下拉 ---------- */
+
+/* antd Dropdown 渲染在 body 的 portal 里，只能通过 overlayClassName 定位 */
+.gh-more-menu .ant-dropdown-menu {
+  min-width: 236px;
+  padding: 8px;
+  border-radius: var(--gh-r-md);
+  border: 1px solid var(--gh-line);
+  box-shadow: var(--gh-sh-3);
+  background: rgba(255, 255, 255, 0.97);
+  backdrop-filter: blur(18px);
+}
+
+.gh-more-menu .ant-dropdown-menu-item {
+  padding: 9px 10px !important;
+  border-radius: var(--gh-r-sm) !important;
+}
+
+.gh-more-menu__label {
+  display: block;
+  line-height: 1.3;
+}
+
+.gh-more-menu__title {
+  display: block;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--gh-ink-1);
+}
+
+.gh-more-menu__desc {
+  display: block;
+  margin-top: 3px;
+  font-size: 11.5px;
+  color: var(--gh-ink-3);
+}
+
+/* ---------- 多模态感知 Popover ---------- */
+
+.gh-mm-pop .ant-popover-inner {
+  border-radius: var(--gh-r-md);
+  border: 1px solid var(--gh-line);
+  box-shadow: var(--gh-sh-3);
+}
+
+.gh-mm {
+  width: 262px;
+}
+
+.gh-mm__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.gh-mm__state {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--gh-ink-3);
+}
+
+.gh-mm__state.is-on {
+  color: #2f6ea3;
+}
+
+.gh-mm__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #cfdae6;
+}
+
+.gh-mm__state.is-on .gh-mm__dot {
+  background: #4a9fd4;
+  box-shadow: 0 0 0 3px rgba(74, 159, 212, 0.2);
+  animation: ghPulseRing 2.4s ease-in-out infinite;
+}
+
+.gh-mm__desc {
+  font-size: 12px;
+  line-height: 1.75;
+  color: var(--gh-ink-2);
+}
+
+.gh-mm__desc strong {
+  color: var(--gh-ink-1);
+}
+
+.gh-mm__notice {
+  margin-top: 8px;
+  padding: 7px 10px;
+  border-radius: 10px;
+  background: #fffbe6;
+  border: 1px solid #ffe58f;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: #8a6414;
+}
+
+.gh-mm__notice--muted {
+  background: rgba(124, 152, 184, 0.08);
+  border-color: var(--gh-line);
+  color: var(--gh-ink-3);
+}
+
+/* ============================================================================
+ * 2. 内容区骨架
+ * ========================================================================== */
+
+.gh-app {
+  min-height: 100vh;
+}
+
+/* 首页需要整幅出血的 Hero，所以不能有内边距 */
+.gh-app__main--flush {
+  padding: 0;
+}
+
+/*
+ * 页顶图条的包装层（见 components/home/PageTopImage.tsx）。
+ *
+ * 图条本身是 `position: absolute; top: 0; left: 0; right: 0`（见 home-hero.css），
+ * 相对**这一层**定位 —— 本层是 `<main>` 外面的全宽块（没有 max-width / 内边距），
+ * 所以图能整屏铺满，和首页 Hero 一样。
+ *
+ * `--gh-strip-h` 在这里定义并被图条继承；下面 `.gh-app__main--top-strip` 用同一个值
+ * 给图条占位（`padding-top = 图高 + 24px`，内容正好落在图下方一档呼吸处）。
+ * 一份值同时喂给"图有多高"和"页面给图留多少位"，写两处必然不同步。
+ *
+ * ⚠️ 两个选择器都写成 `.gh-app__main.gh-app__main--top-strip` / 双类形式（0-2-0 以上）：
+ * `.gh-app__page` 是 0-1-0，但为保险起见（它是页面级 padding 的唯一来源）不要与它平手。
+ */
+.gh-app__topstrip {
+  --gh-strip-h: 500px;
+  position: relative;
+  height: var(--gh-strip-h);
+  /* 图条页的图是整屏宽的，且页面背景是固定渐变，这里不需要额外背景 */
+}
+
+/* AI 倾诉页的对话区高度是 calc(100vh - 200px)，大图会把对话区压没，所以仍保留窄条 */
+.gh-app__topstrip:has(.gh-top-image--compact) {
+  --gh-strip-h: 150px;
+}
+
+@media (max-width: 1079px) {
+  .gh-app__topstrip {
+    --gh-strip-h: 420px;
+  }
+
+  .gh-app__topstrip:has(.gh-top-image--compact) {
+    --gh-strip-h: 130px;
+  }
+}
+
+@media (max-width: 767px) {
+  .gh-app__topstrip {
+    --gh-strip-h: 300px;
+  }
+
+  .gh-app__topstrip:has(.gh-top-image--compact) {
+    --gh-strip-h: 110px;
+  }
+}
+
+/*
+ * 大小图条都要的占位。
+ *
+ * 图条在 `<main>` **外面**、已经是文档流里的一个 500px 高块（`.gh-app__topstrip`），
+ * 所以 main 这里**不需要**再让出图高 —— 只留顶部一档 24px 呼吸即可。
+ * ⚠️ 这里曾经写成 `padding-top = 图高 + 24px`，结果内容被推下去两次（实测多出 244px 空白）。
+ *
+ * ⚠️ 还必须压过 `.gh-app__page` 的 padding 简写：两者特异性同为 0-2-0，
+ * 靠源码顺序决胜时会被它反盖（实测 padding-top 变成 244px 而非 24px），
+ * 所以写成 `.gh-page-shell.gh-app__main--top-strip`（0-3-0）+ `!important` 双保险。
+ */
+.gh-page-shell.gh-app__main--top-strip {
+  position: relative;
+  padding-top: 24px !important;
+}
+
+/* 其余患者端页面：给顶栏让位 + 统一左右留白（替代旧版 antd Content 的 padding） */
+.gh-app__page {
+  max-width: var(--gh-sec-w);
+  margin: 0 auto;
+  padding: calc(var(--gh-nav-h, 74px) + 20px) var(--gh-sec-pad) 40px;
+}
+
+/* ============================================================================
+ * 3. 首页内容区
+ * ========================================================================== */
+
+.gh-home {
+  position: relative;
+  padding-bottom: 0;
+  overflow-x: clip;
+}
+
+/* 内容区背后的柔光块：给"通透、有层次"打底，纯装饰 */
+.gh-home__glow {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.gh-home__glow span {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(60px);
+  opacity: 0.5;
+}
+
+.gh-home__glow span:nth-child(1) {
+  top: 6%;
+  left: -6%;
+  width: 340px;
+  height: 340px;
+  background: radial-gradient(circle, rgba(169, 220, 247, 0.6), rgba(169, 220, 247, 0));
+}
+
+.gh-home__glow span:nth-child(2) {
+  top: 32%;
+  right: -8%;
+  width: 380px;
+  height: 380px;
+  background: radial-gradient(circle, rgba(255, 201, 224, 0.55), rgba(255, 201, 224, 0));
+}
+
+.gh-home__glow span:nth-child(3) {
+  bottom: 12%;
+  left: 18%;
+  width: 420px;
+  height: 420px;
+  background: radial-gradient(circle, rgba(255, 225, 180, 0.45), rgba(255, 225, 180, 0));
+}
+
+.gh-home__body {
+  position: relative;
+  z-index: 1;
+  padding: 40px 0 0;
+}
+
+/* ============================================================================
+ * 3. 页脚
+ * ========================================================================== */
+
+.gh-footer {
+  position: relative;
+  z-index: 1;
+  margin-top: 56px;
+  padding: 40px 0 26px;
+  border-top: 1px solid rgba(124, 152, 184, 0.14);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0) 0%, rgba(255, 255, 255, 0.72) 100%);
+}
+
+.gh-footer__grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) repeat(3, minmax(0, 1fr));
+  gap: 32px;
+}
+
+.gh-footer__brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.gh-footer__brand-name {
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: 0.8px;
+  color: #26364f;
+}
+
+.gh-footer__intro {
+  font-size: 12.5px;
+  line-height: 1.85;
+  color: var(--gh-ink-2);
+  max-width: 330px;
+}
+
+.gh-footer__col-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #26364f;
+  margin-bottom: 12px;
+}
+
+.gh-footer__link {
+  display: block;
+  width: 100%;
+  border: none;
+  background: none;
+  padding: 0;
+  margin-bottom: 9px;
+  font-size: 12.5px;
+  color: var(--gh-ink-2);
+  text-align: left;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: color 0.2s var(--gh-ease);
+}
+
+.gh-footer__link:hover {
+  color: #d24a7c;
+}
+
+.gh-footer__crisis {
+  margin-top: 26px;
+  padding: 14px 18px;
+  border-radius: var(--gh-r-md);
+  background: rgba(255, 245, 245, 0.86);
+  border: 1px solid rgba(255, 120, 117, 0.24);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.gh-footer__crisis-text {
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: #8a4a4a;
+}
+
+.gh-footer__crisis-text strong {
+  color: #b03a3a;
+}
+
+.gh-footer__crisis a {
+  font-size: 13px;
+  font-weight: 700;
+  color: #c0392b;
+  text-decoration: none;
+  border-bottom: 1.5px solid rgba(192, 57, 43, 0.35);
+  padding-bottom: 1px;
+}
+
+.gh-footer__bottom {
+  margin-top: 22px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(124, 152, 184, 0.12);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 11.5px;
+  color: var(--gh-ink-3);
+}
+
+.gh-footer__legal {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.gh-footer__legal button {
+  border: none;
+  background: none;
+  padding: 0;
+  font-size: 11.5px;
+  color: var(--gh-ink-3);
+  cursor: pointer;
+}
+
+.gh-footer__legal button:hover {
+  color: #d24a7c;
+}
+
+/* ============================================================================
+ * 响应式
+ * ========================================================================== */
+
+/*
+ * 顶部导航断点（与 PatientLayout 里 navCompact = innerWidth < 1080 严格对应）：
+ * 主项共 5 个链接 + 「更多」，实测 1080px 是能完整放下这一行、且搜索框不被挤到
+ * 截断占位符的下限；再窄就整体收进汉堡抽屉，而不是硬塞。
+ */
+@media (max-width: 1199px) {
+  /* 收起标语，把宽度让给导航主项与搜索框 */
+  .gh-nav__brand-tag {
+    display: none;
+  }
+
+  .gh-nav__links {
+    gap: 0;
+  }
+
+  .gh-nav__link {
+    padding: 8px 11px;
+    font-size: 13.5px;
+  }
+}
+
+@media (max-width: 1079px) {
+  .gh-nav__links {
+    display: none;
+  }
+
+  .gh-nav__burger {
+    display: inline-flex;
+  }
+}
+
+@media (max-width: 959px) {
+  .gh-footer__grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 26px;
+  }
+}
+
+@media (max-width: 767px) {
+  :root {
+    --gh-nav-h: 64px;
+  }
+
+  .gh-app__page {
+    padding: calc(var(--gh-nav-h) + 14px) var(--gh-sec-pad) 84px;
+  }
+
+  .gh-nav__search {
+    display: none;
+  }
+
+  .gh-nav__user-name {
+    display: none;
+  }
+
+  .gh-nav__user {
+    padding: 4px;
+    border: none;
+    background: none;
+    backdrop-filter: none;
+  }
+
+  .gh-home__body {
+    padding-top: 26px;
+  }
+
+  .gh-nav__results {
+    width: min(92vw, 340px);
+  }
+
+  .gh-footer__grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .gh-footer {
+    margin-top: 36px;
+    padding-bottom: 84px; /* 给移动端底部 Tab 让位 */
+  }
+
+  .gh-footer__bottom {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}

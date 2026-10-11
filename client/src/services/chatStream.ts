@@ -24,6 +24,10 @@
  * `user` → `revise` → `done`。调用方不得依赖 `meta` 来创建气泡。
  */
 
+// 面部实时状态的类型来自唯一的构造处（`facialLiveState.ts`），本文件只做透传。
+// `import type` 在编译后被完全擦除，因此不会把表情模型的运行时依赖带进这条链路。
+import type { FacialLiveState } from './facialLiveState';
+
 export type ChatStreamEventName = 'user' | 'meta' | 'speak' | 'delta' | 'revise' | 'done' | 'error';
 
 /** `meta` 事件的载荷 */
@@ -147,6 +151,12 @@ function parseSseFrame(frame: string): [ChatStreamEventName, any] | null {
  * @param content 用户消息文本
  * @param callbacks 事件回调
  * @param contentType 消息类型，默认 `text`
+ * @param voiceFeatures 可选的声学特征摘要（通话期由 `useVoiceAnalysis` 提取）。
+ *   只传聚合统计量，不传原始帧；供算法层做跨模态矛盾检测（MIS）。
+ * @param facialFeatures 可选的面部**实时状态**摘要（由
+ *   `buildFacialLiveState` 构造）。只在"采集在跑 + 画面里有人脸 + 读数新鲜"
+ *   时才非空；供算法层作为**低权重内部参考**注入 prompt。
+ *   ⚠️ 它不参与风险等级/融合权重，也不带任何心理状态字段（见 `facialLiveState.ts`）。
  * @returns 可取消句柄；`completed` 在请求彻底结束时 resolve
  */
 export function sendChatMessageStream(
@@ -154,6 +164,8 @@ export function sendChatMessageStream(
   content: string,
   callbacks: ChatStreamCallbacks = {},
   contentType = 'text',
+  voiceFeatures?: Record<string, unknown>,
+  facialFeatures?: FacialLiveState,
 ): ChatStreamHandle {
   const controller = new AbortController();
   /** 服务端是否已回传落库后的用户消息 —— 决定了失败时能不能安全重发 */
@@ -172,7 +184,14 @@ export function sendChatMessageStream(
             Accept: 'text/event-stream',
             ...(token ? { Authorization: `Bearer ${token}` } : {}),
           },
-          body: JSON.stringify({ content, contentType }),
+          body: JSON.stringify({
+            content,
+            contentType,
+            // 声学特征只在通话/语音输入时存在；文字聊天不带该字段
+            ...(voiceFeatures ? { voiceFeatures } : {}),
+            // 面部实时状态同上：没有新鲜读数时**整段不发**（不用中性值凑数）
+            ...(facialFeatures ? { facialFeatures } : {}),
+          }),
           signal: controller.signal,
         },
       );

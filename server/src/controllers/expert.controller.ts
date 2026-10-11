@@ -127,6 +127,32 @@ class ExpertController {
       res.status(error.statusCode || 500).json({ code: error.code || 500, message: error.message });
     }
   }
+
+  // 管理端：咨询师列表（含待审核/已拒绝，按状态筛选）
+  async getConsultantsForAdmin(req: AuthRequest, res: Response) {
+    try {
+      const result = await expertService.getConsultantsForAdmin({
+        status: req.query.status as string,
+        page: parseInt(req.query.page as string) || 1,
+        pageSize: parseInt(req.query.pageSize as string) || 20,
+      });
+      res.json({ code: 0, data: result });
+    } catch (error: any) {
+      res.status(error.statusCode || 500).json({ code: error.code || 500, message: error.message });
+    }
+  }
+
+  // 管理端：审核咨询师资质
+  async updateConsultantStatus(req: AuthRequest, res: Response) {
+    try {
+      const { consultantId } = req.params;
+      const { status } = req.body;
+      const result = await expertService.updateConsultantStatus(consultantId as string, status);
+      res.json({ code: 0, message: '操作成功', data: result });
+    } catch (error: any) {
+      res.status(error.statusCode || 500).json({ code: error.code || 500, message: error.message });
+    }
+  }
 }
 
 export default new ExpertController();

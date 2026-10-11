@@ -52,6 +52,19 @@ export interface SmartChatRequest {
   message: string;
   conversation_history: { role: string; content: string }[];
   session_id?: string;
+  /** 消息来源类型：'voice' = 语音通话, 'text' = 文字聊天；算法层据此调整说话风格 */
+  content_type?: string;
+  /** 本轮声学特征摘要（通话期由客户端提取），用于跨模态矛盾检测 */
+  voice_features?: Record<string, unknown>;
+  /**
+   * 本轮**面部实时状态**摘要（由客户端 `buildFacialLiveState` 构造）。
+   *
+   * 只在"采集在跑 + 画面里有人脸 + 读数新鲜"时才有值；供算法层作为
+   * **低权重内部参考**注入 prompt。
+   * ⚠️ 它**不参与**风险等级、融合权重与量表分，也不含任何心理状态字段；
+   * 缺失时算法层整段不注入（绝不用中性值兜底）。
+   */
+  facial_features?: Record<string, unknown>;
 }
 
 /**
@@ -91,6 +104,37 @@ export interface SmartChatResponse {
   fallback: boolean;  // 是否使用了降级模式
   scene_retrieval?: SceneRetrievalMeta | null;
   cognitive_distortion?: CognitiveDistortionMeta | null;
+  tamer_result?: TamerResultMeta | null;
+}
+
+/**
+ * TAMER 框架输出
+ * （RQI 关系质量指数 / MIS 跨模态矛盾分 / CUSUM 情绪轨迹）。
+ *
+ * ⚠️ 这是**给前端做可视化的信号**，不是诊断结论：MIS 在文字聊天时没有真实
+ * 声学输入，RQI 由会话统计量估算。字段含义与诚实边界见
+ * `algorithm/assessment/tamer_framework.py`。
+ */
+export interface TamerResultMeta {
+  /** 关系质量指数 0~1（含时间衰减） */
+  rqi: number;
+  /** 关系阶段：陌生期 / 熟悉期 / 信任期 */
+  relationship_depth: string;
+  /** 跨模态矛盾分（1 - 余弦相似度） */
+  mis: number;
+  /** MIS 的自适应阈值（供前端画警戒线） */
+  mis_threshold: number;
+  /** congruent / masking / performative / other_incongruence */
+  incongruence_type: string;
+  /** worsening / improving / stable / none / unknown */
+  trajectory: string;
+  risk_level: string;
+  risk_score: number;
+  /** 本轮是否真的提供了声学特征。false 时 mis 是缺省声学值算出的，不构成跨模态证据 */
+  has_voice_input: boolean;
+  /** 是否建议转介（连续高风险轮次达到阈值） */
+  should_refer: boolean;
+  consecutive_high_risk: number;
 }
 
 // ============================================================
@@ -331,6 +375,10 @@ class AlgorithmBridgeService {
         fallback: false,
         scene_retrieval: (data.scene_retrieval as SceneRetrievalMeta | null) ?? null,
         cognitive_distortion: (data.cognitive_distortion as CognitiveDistortionMeta | null) ?? null,
+        // TAMER（RQI / MIS / CUSUM）：Python 侧返回 tamer_result，
+        // 此前**没有这一行** —— 于是前端 `donePayload.tamerResult` 恒为 undefined，
+        // 关系阶段指示器与矛盾提示只能走前端自算的兜底分支。
+        tamer_result: (data.tamer_result as TamerResultMeta | null) ?? null,
       };
     } catch (error) {
       console.error('[AlgorithmBridge] smartChat 失败，降级:', error);

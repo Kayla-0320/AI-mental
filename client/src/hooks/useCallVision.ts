@@ -11,14 +11,28 @@
  *
  * ## 它**不**做什么（这条比做什么更重要）
  *
- * - ❌ **不进融合、不进风险、不上报**（F7）。这个 hook 里没有任何 `fetch`、
+ * - ❌ **不进融合、不进风险、不写库**。这个 hook 里没有任何 `fetch`、
  *   没有任何 `reportToServer`、不碰 `AnxietyContext`。它只是"把读数摆出来"。
  *   硬验收标准是：**开/关摄像头两次，落库的 `riskLevel` 完全一致**。
- * - ❌ 不做眨眼频率。10 fps 采样下"次/分"是量纲级不准（`§S7.0`），
+ * - ❌ 不做眨眼频率。10 fps 采样下"次/分钟"是量纲级不准（`§S7.0`），
  *   上一轮已按用户决定暂缓；这里连字段都不暴露，免得将来被"顺手加回去"。
  * - ❌ 不做注视方向。`EyeMovementAnalysis.downwardGazeRatio` 名字说的是"目光向下"，
  *   实际算的是**头部角度** —— 通话里低头看手机是常态，会被持续误报成"回避"（F8）。
  *   所以这里用的是 `headPitchDeg` 这个**诚实名字**，而且**只上屏、不告警**。
+ *
+ * ## 2026-10-11 增加：本机三分类表情读数（`faceEmotion`）
+ *
+ * 用户要求"面部实时状态作为**临时提示词**进入通话"，因此本 hook 现在也跑
+ * `useFaceEmotion`（浏览器内 ONNX，happy/neutral/sad）。加了三道约束：
+ *
+ *  1. **跟随开关，不自动开流**：只有用户自己点了"摄像头"（`state.enabled`）才加载模型
+ *     （约 90 MB wasm 堆 + 一次 ONNX 会话）；不点就整条通道不存在。
+ *  2. **仍然不进风险**：`faceEmotion` 只上屏 + 经 `getFacialLiveState()` 交给通话轮次
+ *     作为**低权重内部参考**；不进融合、不改 `riskLevel`、不写库。
+ *     "开/关摄像头两次 `riskLevel` 一致"这条硬验收**依然成立**。
+ *  3. **没有新鲜读数就不给**：`getFacialLiveState()` 在"没开采集 / 画面没人脸 / 模型
+ *     未就绪 / 读数过期"时返回 `null`，由调用方决定"这一段不注入"，
+ *     绝不用中性值凑一个出来（见 `services/facialLiveState.ts`）。
  *
  * ## 为什么复用 `useFacialAnalysis` 而不是自己写一条管线
  *
@@ -40,7 +54,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { mediaStreamManager } from '../services/mediaStreamManager';
 import { useFacialAnalysis } from './useFacialAnalysis';
+import { useFaceEmotion } from './useFaceEmotion';
+import { FACE_EMOTION_MODEL_AVAILABLE } from './perceptionCapabilities';
+import { buildFacialLiveState, type FacialLiveState } from '../services/facialLiveState';
+import type { LandmarkPoint } from './eyePatch';
 import type { AgeGroup } from './ageConfig';
+import type {
+  FaceEmotionModelStatus,
+  FaceEmotionReading,
+} from '../types/multimodal.types';
 
 /** 通话期视觉的公开状态（全部是实测值或明确的"未知"） */
 export interface CallVisionState {
@@ -76,6 +98,15 @@ export interface CallVisionState {
   paused: boolean;
   /** 视觉采样是否处于低帧率模式（存在感只需 2–5 fps） */
   lowPower: boolean;
+  /**
+   * 本机三分类表情读数（happy/neutral/sad）。**只展示**：
+   * 不进风险、不进融合、不写库；仅供通话页小窗与"临时提示词"取用。
+   */
+  faceEmotion: FaceEmotionReading | null;
+  /** 表情模型通道状态（`disabled` = 用户没开摄像头） */
+  faceEmotionStatus: FaceEmotionModelStatus;
+  /** 表情模型不可用时的中文原因（可直接上屏）；正常时为空串 */
+  faceEmotionUnavailableReason: string;
 }
 
 const DEFAULT_STATE: CallVisionState = {
@@ -91,6 +122,9 @@ const DEFAULT_STATE: CallVisionState = {
   unavailableReason: '',
   paused: false,
   lowPower: true,
+  faceEmotion: null,
+  faceEmotionStatus: 'disabled',
+  faceEmotionUnavailableReason: '',
 };
 
 /** 通话期视觉采样周期（毫秒）—— 5 fps。存在感不需要 10 fps。 */
@@ -124,13 +158,43 @@ export interface UseCallVisionResult extends CallVisionState {
    * 放在这里，`stop()` 与卸载时一定能摘干净。
    */
   attachPreview: (host: HTMLElement | null) => void;
+  /**
+   * 取**当前**的面部实时状态快照（供通话轮次随消息上行）。
+   *
+   * 为什么是一个 getter 而不是一个 state 字段：通话轮次的发送发生在
+   * "用户说完话"那一刻，需要的是**那一刻**的读数，而不是最近一次渲染时的读数。
+   * 这个函数身份稳定（`useCallback([])`），内部读 ref，因此不会让
+   * `useVoiceCall` 的轮次回调因 200ms 一次的采样而重建。
+   *
+   * @returns 快照；**没有新鲜读数时为 `null`**（调用方必须处理，不许用中性值兜底）
+   */
+  getFacialLiveState: () => FacialLiveState | null;
 }
 
 export function useCallVision(options: UseCallVisionOptions = {}): UseCallVisionResult {
   const { ageGroup = null } = options;
 
-  const face = useFacialAnalysis(ageGroup, null, null);
   const [state, setState] = useState<CallVisionState>({ ...DEFAULT_STATE });
+
+  // ── 面部帧回调的中转 ref ────────────────────────────────────────────────
+  // `useFacialAnalysis` 必须先于 `useFaceEmotion` 创建（结果要写进它的 `overlayRef`），
+  // 所以用 ref 把后者的帧回调转发进去 —— 与 `AnxietyContext` 同一手法。
+  const onFaceFrameRef = useRef<
+    ((video: HTMLVideoElement, landmarks: readonly LandmarkPoint[]) => void) | null
+  >(null);
+  const onFaceFrame = useCallback((video: HTMLVideoElement, landmarks: readonly LandmarkPoint[]) => {
+    onFaceFrameRef.current?.(video, landmarks);
+  }, []);
+
+  const face = useFacialAnalysis(ageGroup, null, null, onFaceFrame);
+
+  // 表情模型通道：**跟随用户开关**（`state.enabled` 由 `start()` 置真）。
+  // 关闭时 `enabled=false` → 会话被释放（约 90 MB wasm 堆），不残留资源。
+  const faceEmotion = useFaceEmotion(state.enabled && FACE_EMOTION_MODEL_AVAILABLE, face.overlayRef);
+  onFaceFrameRef.current = faceEmotion.onFaceFrame;
+
+  /** 最近一拍的实时状态快照（`getFacialLiveState` 读它） */
+  const latestLiveStateRef = useRef<FacialLiveState | null>(null);
 
   // 我们自己的一拍一次采样（与面部管线解耦：它跑它的，我们只读结果）
   const timerRef = useRef(0);
@@ -220,6 +284,10 @@ export function useCallVision(options: UseCallVisionOptions = {}): UseCallVision
     const lightLevel: CallVisionState['lightLevel'] =
       brightness === null ? 'unknown' : brightness < 45 ? 'dark' : brightness < 80 ? 'dim' : 'ok';
 
+    // 面部实时状态快照：本拍一并算好，供"用户说完话那一刻"取用。
+    // 不新鲜/没人脸/模型没就绪时它是 null —— 这是有意的，调用方据此**不注入**。
+    latestLiveStateRef.current = buildFacialLiveState(m);
+
     setState({
       enabled: enabledRef.current,
       detecting: m.isDetecting,
@@ -234,6 +302,9 @@ export function useCallVision(options: UseCallVisionOptions = {}): UseCallVision
       unavailableReason: m.unavailableReason || '',
       paused: pausedRef.current,
       lowPower: true,
+      faceEmotion: m.faceEmotion ?? null,
+      faceEmotionStatus: m.faceEmotionStatus ?? 'disabled',
+      faceEmotionUnavailableReason: m.faceEmotionUnavailableReason ?? '',
     });
   }, [face.metrics, face.videoRef]);
 
@@ -257,11 +328,14 @@ export function useCallVision(options: UseCallVisionOptions = {}): UseCallVision
   useEffect(() => {
     return mediaStreamManager.onEnded('camera', (event) => {
       if (!enabledRef.current) return;
+      // 设备被收回：读数作废，别再让"最后一次看到的画面"当成本轮的状态
+      latestLiveStateRef.current = null;
       setState((prev) => ({
         ...prev,
         detecting: false,
         present: false,
         frameFresh: false,
+        faceEmotion: null,
         unavailableReason: event?.trackLabel
           ? `摄像头已断开（${event.trackLabel}）`
           : '摄像头已断开',
@@ -284,6 +358,7 @@ export function useCallVision(options: UseCallVisionOptions = {}): UseCallVision
     return () => {
       enabledRef.current = false;
       pausedRef.current = false;
+      latestLiveStateRef.current = null;
       window.clearInterval(timerRef.current);
       timerRef.current = 0;
       try {
@@ -346,6 +421,7 @@ export function useCallVision(options: UseCallVisionOptions = {}): UseCallVision
     lastFaceFrameTsRef.current = 0;
     tickTimesRef.current = [];
     pausedRef.current = document.visibilityState === 'hidden';
+    latestLiveStateRef.current = null; // 新一段采集从"没有读数"开始
     setState({ ...DEFAULT_STATE, enabled: true, detecting: true, paused: pausedRef.current });
     attachPreview(previewHostRef.current);
   }, [attachPreview, face]);
@@ -356,6 +432,9 @@ export function useCallVision(options: UseCallVisionOptions = {}): UseCallVision
     window.clearInterval(timerRef.current);
     timerRef.current = 0;
     downRunMsRef.current = 0;
+    // 采样循环停了，不会再有 tick 来刷新快照 —— 必须在这里显式作废，
+    // 否则"关掉摄像头"之后 `getFacialLiveState()` 仍会返回关机前的那一拍。
+    latestLiveStateRef.current = null;
     detachPreview();
     try {
       face.stop();
@@ -365,11 +444,23 @@ export function useCallVision(options: UseCallVisionOptions = {}): UseCallVision
     setState({ ...DEFAULT_STATE });
   }, [detachPreview, face]);
 
+  /**
+   * 取当前快照。两道闸门：
+   *   ① 采集没在跑（用户没开摄像头 / 已关闭）→ `null`；
+   *   ② 本拍没有新鲜读数 → `null`。
+   * 身份稳定，供 `useVoiceCall` 在"用户说完话那一刻"直接调用。
+   */
+  const getFacialLiveState = useCallback((): FacialLiveState | null => {
+    if (!enabledRef.current) return null;
+    return latestLiveStateRef.current;
+  }, []);
+
   return {
     ...state,
     videoRef: face.videoRef,
     start,
     stop,
     attachPreview,
+    getFacialLiveState,
   };
 }
