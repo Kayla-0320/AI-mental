@@ -117,12 +117,17 @@ export default function PatientLayout() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
   /**
-   * 中部导航在 <1080px 会被 CSS 收起（见 garden-shell.css 的 .gh-nav__links），
-   * 所以汉堡按钮的显示条件必须用**同一个断点**，而不是 768。
-   * 曾经用 isMobile 控制：768~959px 之间链接已经被藏起来、汉堡却也不显示，
+   * 中部导航的收起断点：**必须**与 garden-shell.css 里 `.gh-nav__links` 的媒体查询
+   * （max-width: 1299px）成对修改，否则会出现「链接被 CSS 藏了、汉堡却没渲染」的空档
+   * —— 曾经用 isMobile(768) 控制过：768~959px 之间链接已经被藏起来、汉堡却也不显示，
    * 结果这一段宽度下**完全没有导航入口**。
+   *
+   * 1300 是品牌放大 2 倍后重新实测的下限：品牌块 247px + 主菜单 + 搜索/动作区，
+   * 再窄就放不下（实测能挤到 ~1230px，但搜索框会被挤扁）。把 --gh-brand-scale 改回 1 时，
+   * 这里和上面那处媒体查询一起改回 1080。
    */
-  const [navCompact, setNavCompact] = useState(window.innerWidth < 1080);
+  const NAV_COMPACT_BP = 1300;
+  const [navCompact, setNavCompact] = useState(window.innerWidth < NAV_COMPACT_BP);
   const [scrolled, setScrolled] = useState(false);
 
   // 全局弹窗（心理电话 / 反馈评价）：从顶栏「更多」进入，因此在 Layout 层持有状态
@@ -184,7 +189,7 @@ export default function PatientLayout() {
   useEffect(() => {
     const handleResize = () => {
       setIsMobile(window.innerWidth < 768);
-      setNavCompact(window.innerWidth < 1080);
+      setNavCompact(window.innerWidth < NAV_COMPACT_BP);
     };
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
@@ -269,7 +274,7 @@ export default function PatientLayout() {
               </span>
             </button>
 
-            {/* 中部导航（<1080px 收起为抽屉） */}
+            {/* 中部导航（<1300px 收起为抽屉，断点见 NAV_COMPACT_BP） */}
             <nav className="gh-nav__links" aria-label="主导航">
               {NAV_ITEMS.map((item) => (
                 <button
@@ -464,7 +469,7 @@ export default function PatientLayout() {
           <div className="gh-nav-drawer-brand">
             <LogoMark size={32} />
             <div>
-              <div style={{ fontSize: 16, fontWeight: 800, color: '#26364f', letterSpacing: 1 }}>心灵花园</div>
+              <div className="gh-brand-text" style={{ fontSize: 16, color: '#26364f', letterSpacing: 1 }}>心灵花园</div>
               <div style={{ fontSize: 11, color: '#7d8ca3' }}>陪你，遇见更好的自己</div>
             </div>
           </div>

@@ -5,8 +5,56 @@
  * （styles/healing-theme.css），但页背景在本次改版中统一成天空蓝→奶油白的柔和渐变。
  * ========================================================================== */
 
+/* ── 品牌字体：站酷快乐体（ZCOOL KuaiLe，SIL OFL 1.1，免费商用） ───────────────
+ * 只裁剪了品牌文案实际用到的字（标题「心灵花园」+ 副标题 + 导航词 + 基本 ASCII），
+ * 全量 1.4MB → 7KB，随包自托管在 client/public/fonts/，**不依赖任何 CDN**——
+ * 断网、内网演示都不掉字形。裁剪脚本见 _nav_brand_verify/subset_fonts.py，
+ * 授权与出处见 public/fonts/NOTICE-zcool-kuaile.txt。
+ *
+ * ⚠️ 换字体时：替换 woff2 文件 → 同步改下面的 font-family 名与 src 路径 →
+ *    同步改 --gh-font-brand。裁剪过的字体只含上面那批字，改文案要重跑裁剪脚本。
+ * ⚠️ 该字体只有 400 一档字重，所以品牌文字一律写 font-weight: 400；
+ *    写 800 会被浏览器伪粗体拉变形。
+ */
+@font-face {
+  font-family: 'ZCOOL KuaiLe';
+  src: url('/fonts/ZCOOLKuaiLe-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
-  --gh-nav-h: 74px;
+  /* 品牌字体栈：站酷快乐体 → 系统黑体兜底（字体文件缺失时至少还是清楚的） */
+  --gh-font-brand: 'ZCOOL KuaiLe', 'Microsoft YaHei', 'PingFang SC', sans-serif;
+
+  /* ── 品牌（花朵 + 「心灵花园」标题）整体放大倍数 ──────────────────────────
+   * 1 = 原始尺寸（花朵 38px / 标题 17px / 副标题 10.5px）；
+   * 2 = 花朵 76px / 标题 34px（当前值）。
+   *
+   * 下面所有尺寸都由这一个数乘出来，顶栏高度也由品牌块反推（见 --gh-nav-h），
+   * 所以调倍数只需要改这一行 —— 但**必须同步改两处断点**，否则会出现
+   * 「链接藏了、汉堡也不显示」的空档：
+   *   · 本文档末尾「主菜单收起」的媒体查询（max-width: 1299px）
+   *   · PatientLayout.tsx 里的 NAV_COMPACT_BP
+   * 品牌块从 1 倍的 124px 涨到 2 倍的 247px（站酷快乐体实测），主菜单能完整放下的
+   * 下限随之从 1080px 抬到 1300px（实测勉强能挤到 ~1230px，但搜索框会被挤扁，
+   * 所以留到 1300 才把主菜单收起来）；改回 1 倍时这两处都改回 1080。 */
+  --gh-brand-scale: 2;
+
+  --gh-logo: calc(38px * var(--gh-brand-scale));
+  --gh-brand-gap: calc(11px * var(--gh-brand-scale));
+  --gh-brand-pad: calc(4px * var(--gh-brand-scale));
+  --gh-brand-r: calc(14px * var(--gh-brand-scale));
+  --gh-brand-name-fs: calc(17px * var(--gh-brand-scale));
+  --gh-brand-name-ls: calc(1px * var(--gh-brand-scale));
+  --gh-brand-tag-fs: calc(10.5px * var(--gh-brand-scale));
+  --gh-brand-tag-ls: calc(0.6px * var(--gh-brand-scale));
+
+  /* 顶栏高度 = 品牌块高（花朵 + 上下内边距）+ 一点呼吸位。
+     scale=1 时算出来是 54px，仍被 max() 兜到原来的 74px —— 也就是说
+     把倍数改回 1，顶栏高度自动回到改版前的样子。 */
+  --gh-nav-h: max(74px, calc(var(--gh-logo) + var(--gh-brand-pad) * 2 + 8px));
 }
 
 /* DISABLED 下面这段 body 背景是**刻意关掉的**，不是漏写注释结束符。
@@ -74,21 +122,30 @@ body {
 .gh-nav__brand {
   display: flex;
   align-items: center;
-  gap: 11px;
+  gap: var(--gh-brand-gap);
   border: none;
   background: none;
-  padding: 4px;
-  margin-left: -4px;
+  padding: var(--gh-brand-pad);
+  margin-left: calc(-1 * var(--gh-brand-pad));
   cursor: pointer;
-  border-radius: 14px;
+  border-radius: var(--gh-brand-r);
   flex: 0 0 auto;
 }
 
+/* 盒子尺寸完全由 --gh-logo 决定，里面的 SVG 撑满它 ——
+   这样调放大倍数不用动 TSX 里的 size={38}（那个 38 现在只表示「1 倍的基准尺寸」） */
 .gh-nav__logo {
-  width: 38px;
-  height: 38px;
+  width: var(--gh-logo);
+  height: var(--gh-logo);
+  display: block;
   flex: 0 0 auto;
   transition: transform 0.36s var(--gh-ease);
+}
+
+.gh-nav__logo svg {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 .gh-nav__brand:hover .gh-nav__logo {
@@ -103,16 +160,20 @@ body {
 }
 
 .gh-nav__brand-name {
-  font-size: 17px;
-  font-weight: 800;
-  letter-spacing: 1px;
+  font-family: var(--gh-font-brand);
+  font-size: var(--gh-brand-name-fs);
+  font-weight: 400;
+  letter-spacing: var(--gh-brand-name-ls);
   color: #26364f;
 }
 
+/* 2 倍的副标题会宽到 222px，和中部主菜单 + 搜索框在同一行里放不下（1240px 容器），
+   所以这里整体收起；品牌块留给花朵与标题。改回 1 倍时把 display 去掉即可恢复。 */
 .gh-nav__brand-tag {
-  font-size: 10.5px;
+  display: none;
+  font-size: var(--gh-brand-tag-fs);
   color: #6b7d96;
-  letter-spacing: 0.6px;
+  letter-spacing: var(--gh-brand-tag-ls);
 }
 
 /* ---------- 中部导航 ---------- */
@@ -751,10 +812,19 @@ body {
 }
 
 .gh-footer__brand-name {
+  font-family: var(--gh-font-brand);
   font-size: 16px;
-  font-weight: 800;
+  font-weight: 400;
   letter-spacing: 0.8px;
   color: #26364f;
+}
+
+/* 品牌字：凡是用品牌字体写「心灵花园」的地方都挂这个类（抽屉品牌、登录页标题）。
+   ⚠️ 用 !important 是为了压过 antd 的 .ant-typography 字重与字体栈——
+   它们由 cssinjs 在运行时插到 <head> 末尾，同优先级时后加载的会赢。 */
+.gh-brand-text {
+  font-family: var(--gh-font-brand) !important;
+  font-weight: 400 !important;
 }
 
 .gh-footer__intro {
@@ -860,9 +930,10 @@ body {
  * ========================================================================== */
 
 /*
- * 顶部导航断点（与 PatientLayout 里 navCompact = innerWidth < 1080 严格对应）：
- * 主项共 5 个链接 + 「更多」，实测 1080px 是能完整放下这一行、且搜索框不被挤到
- * 截断占位符的下限；再窄就整体收进汉堡抽屉，而不是硬塞。
+ * 顶部导航断点（与 PatientLayout 里的 NAV_COMPACT_BP = 1300 严格对应，改一处必须改另一处）：
+ * 主项共 5 个链接 + 「更多」。品牌放大到 2 倍后，品牌块从 168px 涨到 266px（副标题已收起），
+ * 实测 1300px 才是「这一行放得下、且搜索框不被挤到截断占位符」的下限
+ * （1 倍时这个下限是 1080px）；再窄就整体收进汉堡抽屉，而不是硬塞。
  */
 @media (max-width: 1199px) {
   /* 收起标语，把宽度让给导航主项与搜索框 */
@@ -880,7 +951,7 @@ body {
   }
 }
 
-@media (max-width: 1079px) {
+@media (max-width: 1299px) {
   .gh-nav__links {
     display: none;
   }
@@ -899,6 +970,9 @@ body {
 
 @media (max-width: 767px) {
   :root {
+    /* 手机宽度放不下 2 倍品牌：390px 实测顶栏一行只剩 25px 余量，
+       而 2 倍品牌要多占 137px。手机维持原始尺寸 + 原来 64px 的紧凑顶栏。 */
+    --gh-brand-scale: 1;
     --gh-nav-h: 64px;
   }
 

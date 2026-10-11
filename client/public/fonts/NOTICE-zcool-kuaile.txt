@@ -1,0 +1,8 @@
+﻿品牌字体：站酷快乐体 ZCOOL KuaiLe Regular
+出处：https://github.com/google/fonts/tree/main/ofl/zcoolkuaile （原设计：站酷 ZCOOL）
+授权：SIL Open Font License 1.1（可免费商用，全文见同目录 OFL-zcool-kuaile.txt）
+
+随包文件 ZCOOLKuaiLe-Regular.woff2 是原字体的**子集**：
+只保留品牌文案实际用到的字形（心灵花园 / 陪你，遇见更好的自己 / 顶栏导航词 / 基本 ASCII，
+共 60 余字），由 fontTools pyftsubset 生成（脚本：_nav_brand_verify/subset_fonts.py）。
+全量字体 1.4MB → 7KB。子集同样受 OFL 约束（保留本声明即可）。
