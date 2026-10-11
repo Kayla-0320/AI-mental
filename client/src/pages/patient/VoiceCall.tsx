@@ -21,6 +21,16 @@
  * 三条边界不变：**不进风险等级、不进融合权重、不写画像分数**；没开摄像头就整段不存在。
  * 界面上的文案必须如实说明这一点（"会作为 AI 回应的内部参考"），不许只说"只给你自己看"。
  *
+ * ## 「打断并发送」按钮（2026-10-11）
+ *
+ * 用户反馈"说话被截断太快"，因此把服务端的自动判停放宽到 1.8 s 静音
+ * （见 `algorithm/asr/streaming.py` 的 rule2），并补上这个手动出口：
+ * **立刻停掉小安的声音 + 把已经说出口的话马上定稿发出去**，不用等那 1.8 s。
+ *
+ * 它只是调用 `useVoiceCall().interruptAndSend`（打断与定稿都在 hook 里，
+ * 这个文件仍然"只负责看和点"）。插话本身仍走 F-4 的既有语义：
+ * 本轮不 abort、插话排队等 `done` 之后作为下一轮发 —— 按钮**不**绕过服务端顺序。
+ *
  * ## 为什么"开始通话"必须点一下（不是偷懒，是两个硬约束的交点）
  *
  * 1. `AudioContext` 必须在**用户手势**里 `resume()`，否则自动播放策略会让第一句话没声音，
@@ -48,6 +58,7 @@ import {
   AudioMutedOutlined,
   AudioOutlined,
   PhoneFilled,
+  SendOutlined,
   VideoCameraOutlined,
 } from '@ant-design/icons';
 import { consultationApi } from '../../services';
@@ -682,7 +693,8 @@ export default function VoiceCall() {
 
         {call.aiSpeaking && (
           <Text data-hint="barge-in" type="secondary" style={{ fontSize: 12, textAlign: 'center' }}>
-            随时可以打断 —— 直接开口说话，小安会立刻停下来听你说
+            随时可以打断 —— 直接开口说话（要连着说上一句，小安才确认不是在咳嗽），
+            或者点【打断并发送】立刻抢话
           </Text>
         )}
 
@@ -805,6 +817,27 @@ export default function VoiceCall() {
           </Button>
         </Tooltip>
 
+        <Tooltip
+          title={
+            '说完了就点它：小安立刻停下来，你已经说出口的话马上发出去，' +
+            '不用等停顿判停（自动判停会等到 1.8 秒静音）'
+          }
+        >
+          <Button
+            size="large"
+            shape="round"
+            data-action="interrupt-send"
+            icon={<SendOutlined />}
+            /* 聆听时高亮：这是"我说完了，该你了"的主按钮 */
+            type={phase === 'listening' ? 'primary' : 'default'}
+            disabled={phase === 'idle' || phase === 'connecting' || phase === 'ended'}
+            onClick={call.interruptAndSend}
+            style={{ height: 46, padding: '0 22px' }}
+          >
+            打断并发送
+          </Button>
+        </Tooltip>
+
         <Button
           size="large"
           shape="round"
@@ -898,6 +931,7 @@ export default function VoiceCall() {
               value={`${call.droppedEchoes}${call.lastEchoReason ? ` · ${call.lastEchoReason}` : ''}`}
             />
             <DebugRow label="打断次数" value={String(call.bargeIns)} />
+            <DebugRow label="手动打断并发送" value={String(call.manualSends)} />
             <DebugRow label="并发轮次峰值" value={String(call.maxConcurrentTurns)} />
             <DebugRow label="跳过号码片段" value={String(call.skippedPhoneUnits)} />
             <DebugRow label="复述用户未登记" value={String(call.parrotSkips)} />

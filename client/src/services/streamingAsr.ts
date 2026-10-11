@@ -442,6 +442,30 @@ export class StreamingAsrSession {
   }
 
   /**
+   * 手动定稿：把**已经送出去的**这一段音频立刻定稿，不等端点检测的静音窗口。
+   *
+   * 通话页的「打断并发送」用它：用户的诉求是"我说完了，现在就发" ——
+   * 而端点模式默认要等 `rule2`（服务端 1.8 s）的尾随静音才定稿，
+   * 手动的意思就是**跳过这段等待**。
+   *
+   * ⚠️ 与 `stop()` 的根本区别：这里**不**拆音频图、不关麦克风、不关连接。
+   *    服务端 `StreamingSession.finalize()` 定稿后会 `_start_new_segment()`，
+   *    下一次送帧自动开新的一段 —— 所以按一次之后还能接着说。
+   *    （`stop()` 是"挂断"用的：它会先把 `forwarding` 永久置 false。）
+   *
+   * 本段没有任何语音证据时（用户刚接通就按）：服务端返回一条空文本的 final，
+   * 前端只清掉临时候选，不会编出假句子。
+   *
+   * @returns 控制帧是否真的发出去了（连接没就绪时为 false，调用方可据此静默处理）。
+   */
+  flushSegment(): boolean {
+    const ws = this.ws;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    this.sendControl('finalize');
+    return true;
+  }
+
+  /**
    * 暂停 / 恢复"把音频帧送给服务端"（施工单 §S5.3，半双工窗口用）。
    *
    * ⚠️ **不要用 `track.enabled = false` 代替它**。那会让麦克风真的输出静音，

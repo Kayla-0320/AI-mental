@@ -16,10 +16,16 @@
 
 端点检测（定稿时机）：
     sherpa-onnx 内置三条规则，构造时配置：
-        rule1  一直没有语音时，静音多久算一段        → 1.6s
-        rule2  说过话之后，静音多久定稿（手机语音输入约 1s）→ 0.8s
+        rule1  一直没有语音时，静音多久算一段        → 2.0s
+        rule2  说过话之后，静音多久定稿              → 1.8s
         rule3  单段最长，防止无限增长                → 15s
-    实测：5.15s 语音 + 尾部静音，端点在 5.90s 触发，即静音 0.75s 后定稿。
+    实测（1.6/0.8 那一版）：5.15s 语音 + 尾部静音，端点在 5.90s 触发，
+    即静音 0.75s 后定稿 —— 就是这个"太快"促成了现在的放宽。
+    rule1/rule2 从 1.6/0.8 放宽到 2.0/1.8 的原因、以及"有效阈值 ≈
+    `min(rule1, rule2)`"这条实测结论，见 `RULE2_MIN_TRAILING_SILENCE` 的注释；
+    两条都可用 `ASR_RULE{1,2}_SILENCE_S` 环境变量覆盖，便于真机调手感，
+    复测用 `algorithm/tools/measure_endpoint_rules.py`。
+    端点只对**端点模式**（通话页）生效，聊天页的整段录入不看它。
 
 线程模型：
     每个 WebSocket 连接一个 `StreamingSession`（各持一条 OnlineStream）；
@@ -60,8 +66,62 @@ FEATURE_DIM = 80
 MIN_REFINE_SAMPLES = int(SAMPLE_RATE * 0.5)
 
 # ── 端点规则（秒）────────────────────────────────────────────────────────────
-RULE1_MIN_TRAILING_SILENCE = 1.6   # 一直没有语音：静音多久算一段
-RULE2_MIN_TRAILING_SILENCE = 0.8   # 说过话之后：静音多久定稿
+def _env_float(name: str, default: float) -> float:
+    """从环境变量读一个正浮点数；缺失/非法/非正时回落默认值（并留一条日志）。
+
+    只给端点规则用：通话的手感（"停顿多久才算说完"）必须在**真机上调**，
+    而调一次就改代码、重启、重测的循环太慢。非法值不抛异常 ——
+    一个打错的环境变量不该让整个 ASR 服务起不来。
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning("[ASR:stream] %s=%r 不是数字，用默认值 %.2fs", name, raw, default)
+        return default
+    if value <= 0:
+        logger.warning("[ASR:stream] %s=%r 非正数，用默认值 %.2fs", name, raw, default)
+        return default
+    logger.info("[ASR:stream] %s=%s（覆盖默认 %.2fs）", name, value, default)
+    return value
+
+
+RULE1_MIN_TRAILING_SILENCE = _env_float("ASR_RULE1_SILENCE_S", 2.0)  # 一直没有语音：静音多久算一段
+#: 说过话之后：静音多久定稿。**通话页唯一的"说完了一句"判据**。
+#:
+#: ## 为什么从 0.8 s 放到 1.8 s
+#:
+#: 真机反馈是"话还没说完就被截断了"。实测（`algorithm/tools/measure_endpoint_rules.py`，
+#: sherpa-onnx 1.13 + 本机 streaming-zipformer-zh-14M，真实语音 wav 逐 100 ms 喂入）：
+#:
+#: ```
+#:   rule1/rule2 = 1.6/0.8  →  尾随静音 1.00 s 定稿；句中停 0.8 s 被切开  ← 改之前
+#:   rule1/rule2 = 1.8/1.5  →  尾随静音 1.70 s 定稿；句中停 0.8 s 仍被切开
+#:   rule1/rule2 = 2.0/1.8  →  尾随静音 2.00 s 定稿；句中停 0.8 s 保住了  ← 现在这组
+#: ```
+#:
+#: ⚠️ **有效阈值 ≈ `min(rule1, rule2)`**（这一版 sherpa 里两条规则在"说过话之后"
+#: 都会生效）：只把 rule2 调到 2.4、rule1 留在 1.6，实测仍然只有 1.7 s。
+#: 所以两条必须一起定，改的时候别只看 rule2 —— 上一轮就是只调了 rule2。
+#:
+#: ## 代价，以及为什么可以接受
+#:
+#: 用户说完之后要等约 2 s 才开始接话（端点定稿 → 送 SSE），
+#: 加上 LLM/TTS 的首声预算，整段轮次间隔因此比 `voice_call_research.md` §3
+#: 建议的 300~600 ms 长得多 —— 这是**产品判断，刻意压过了研究文档的建议**：
+#: 中文口语里"我想想……然后……"式的思考停顿普遍 0.6~1.2 s，把它判成句末会让
+#: 用户当场重复一遍，而"被截断"比"被多等半秒"更伤"我在被听见"的体验。
+#:
+#: **急着说下一句的人有「打断并发送」按钮**（通话页控制栏）：它立刻停播 +
+#: 立刻定稿，完全跳过这条等待。自动判停因此可以保守，不必为了快而牺牲完整。
+#:
+#: 可用 `ASR_RULE2_SILENCE_S`（秒）在不改代码的前提下继续调手感 —— 改完
+#: 用 `algorithm/tools/measure_endpoint_rules.py` 复测，别凭感觉。
+#: 注意：它只影响**端点模式**（通话页，`finalize_on_endpoint=True`）；
+#: 聊天页的整段录入模式从不看端点（见 `accept()` 的分支）。
+RULE2_MIN_TRAILING_SILENCE = _env_float("ASR_RULE2_SILENCE_S", 1.8)
 RULE3_MIN_UTTERANCE_LENGTH = 15.0  # 单段最长
 
 # ── 整段录入模式（聊天页语音输入）────────────────────────────────────────────

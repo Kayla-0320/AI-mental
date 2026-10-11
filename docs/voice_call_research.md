@@ -332,6 +332,13 @@ src.stop();            // 或 src.onended = null; src.disconnect();
 
 ## 3. 轮次切换（Endpointing / Turn-taking）
 
+> ⚠️ **2026-10-11 更新：本节"把 rule2 压到 0.40 s"的建议已被推翻。**
+> 真机反馈"说话被截断太快"，最终取值是 `rule1/rule2 = 2.0/1.8 s`
+> （有效阈值 ≈ `min(rule1, rule2)`，实测尾随静音 2.0 s 才定稿），
+> 并用通话页的「打断并发送」按钮补回响应速度。
+> 现值、实测表与调参方式见 **`docs/voice_call_interrupt_tuning.md`**；
+> 本节下面的表格是当时的**研究快照**，不代表现状。
+
 ### 3.1 现状与目标
 
 现状（`algorithm/asr/streaming.py:63-65`）：

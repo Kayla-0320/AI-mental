@@ -1341,6 +1341,13 @@ setForwarding(on: boolean): void;
 
 #### S5.4 打断时序（**照抄 `voice_call_plan.md` §6.2 的时序表**）
 
+> ⚠️ **2026-10-11 修订：自动打断多了 0.6 s 确认窗口。**
+> 下面的"为假 → 判定为真实打断"改成了"为假 → 起 600 ms 候选计时器，
+> 到期才真打断"（一声咳嗽也会先吐一条 partial，不能据此切掉 AI 整句）；
+> 同时新增用户手动出口「打断并发送」（立刻停播 + 立刻定稿）。
+> 细节、代价与验收见 **`docs/voice_call_interrupt_tuning.md`**。
+> `G-1` / `G-2` 不变，S5.5 的闸门（判定之后 < 200 ms 静音、无并发轮次）不变。
+
 ```
 开始播 TTS 第 1 句（Web Audio）
   [-∞, 0)      麦克风正常流式识别（用户还在说 → 触发打断）
@@ -1348,7 +1355,7 @@ setForwarding(on: boolean): void;
   [400ms, ∞)   setForwarding(true)，靠 AEC + EchoFilter 过滤
 收到 ASR partial：
   EchoFilter.isEcho(partial) 为真 → 忽略（是 AI 自己的声音）
-  为假                          → 判定为真实打断 → 走 F-4 的四步
+  为假                          → 起 600ms 候选窗口 → 到期判定为真实打断 → 走 F-4 的四步
 收到 ASR final：作为「下一轮待发」文本挂进队列（F-4 的 ③）
 ```
 

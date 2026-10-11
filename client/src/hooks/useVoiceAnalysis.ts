@@ -576,6 +576,21 @@ export function useVoiceAnalysis(
     return asrSessionRef.current?.isForwarding ?? false;
   }, []);
 
+  /**
+   * 手动定稿（通话页「打断并发送」用）：把**已经送出去的**这一段音频立刻定稿，
+   * 不等端点检测的静音窗口 —— 端点模式默认要等 rule2（服务端 1.8 s）。
+   *
+   * 与 `stop()` 的区别就是"不挂断"：不释放麦克风、不关 16kHz AudioContext、
+   * 不拆 WebSocket。定稿之后服务端会开新的一段，用户接着说照样识别。
+   *
+   * @returns 控制帧是否发出（没有会话 / 连接没就绪时为 false）。
+   *   注意 false **不代表**"用户没说够" —— 那只由服务端的定稿结果体现
+   *   （没语音证据时它回一条空文本的 final）。
+   */
+  const flush = useCallback((): boolean => {
+    return asrSessionRef.current?.flushSegment() ?? false;
+  }, []);
+
   /** 麦克风轨道**实际生效**的约束（不假设 AEC 开了 —— 见 S5.3） */
   const getMicSettings = useCallback((): MediaTrackSettings | null => {
     const track = streamRef.current?.getAudioTracks()[0];
@@ -610,6 +625,7 @@ export function useVoiceAnalysis(
     reset,
     setForwarding,
     isForwarding,
+    flush,
     getMicSettings,
     audioContextRef,
     analyserRef,

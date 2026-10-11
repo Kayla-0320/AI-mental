@@ -20,7 +20,7 @@
  *                                     └──► 有插话排队 → 顺序发下一轮（不并发）
  * ```
  *
- * ## 五个刻意的取舍（都写在对应位置的注释里）
+ * ## 六个刻意的取舍（都写在对应位置的注释里）
  *
  * 1. **绝不 abort SSE（F-4）**：`consultation.service.ts:360` 收到 abort 后会回退到
  *    非流式 `smartChat`（**第二次完整 LLM 调用**，且不带中止信号），并在 `:432`
@@ -28,6 +28,9 @@
  *    打断只清本地播放，本轮让它跑完，插话排队等 `done` 之后作为**下一轮**发出去。
  * 2. **打断靠 partial，不靠 final（G-1）**：partial 每 ~330ms 一次，
  *    final 要等端点 0.45–1.2 s，用 final 会觉得"插话没反应"。
+ *    2026-10-11 起自动打断多了一个 `BARGE_IN_CONFIRM_MS`（0.6 s）的**确认窗口**：
+ *    第一条 partial 不再立刻掐停 AI（一声咳嗽也会先吐一条 partial），
+ *    要持续说话才打断；急着抢话的人用控制栏的「打断并发送」（零等待 + 立刻定稿）。
  * 3. **回声过滤是文本级的（S5.2）**：阈值与时间窗都是 `docs/echo_calibration.md`
  *    里 40 组真实配对标定出来的，不是拍的。
  * 4. **revise 只改字幕不重说**：话已经播出去收不回来（`voice_call_plan.md` §4.4）。
@@ -37,6 +40,11 @@
  *    它自己 `mediaStreamManager.acquire('microphone', ...)` —— 通话页**不再**单独持一份
  *    `'call'` 引用（同一份流被两个消费者各持一次是多余的，且给静音与释放增加歧义）。
  *    静音按钮改由页面直接切那一条共享轨道的 `enabled`。
+ * 6. **自动判停保守、手动发送即时（2026-10-11）**：服务端的端点静音阈值放宽到
+ *    rule1/rule2 = 2.0/1.8 s（原来 1.6/0.8），让"我想想……"式的停顿不再被切成两段；
+ *    代价由 {@link interruptAndSend}（「打断并发送」按钮）补上 —— 说完了就点，
+ *    不用等那 1.8 s。真机参数可用 `ASR_RULE1_SILENCE_S` / `ASR_RULE2_SILENCE_S`
+ *    覆盖，不必改代码；完整记录见 `docs/voice_call_interrupt_tuning.md`。
  *
  * ## 为什么不用 `useAnxiety()`
  *
@@ -114,6 +122,23 @@ const END_CALL_WAIT_MS = 8000;
  * （"余 1 次落在 400ms 半双工窗口内，**这是设计接受范围内的**，要如实告知"）。
  */
 const HALF_DUPLEX_WINDOW_MS = 400;
+
+/**
+ * 自动打断的**确认窗口**（S5.4 修订）：用户开口后要持续这么久才真把 AI 掐停。
+ *
+ * 为什么需要它：原实现是"第一条非回声 partial 就打断"。而 partial 是**解码器
+ * 刚听到一点点就吐出来的中间结果** —— 一声咳嗽、桌椅响、或者用户只是"嗯"了一下
+ * 换气，都会先吐一条 partial。结果是 AI 的句子被切在半句上，用户还得再听一遍。
+ * （实测数据见 `docs/echo_calibration.md`：partial 首条约在开口后 700ms，
+ * 之后每 ~330ms 一条。）
+ *
+ * 0.6s ≈ 两条 partial 的间隔：要求"用户确实在连续说话"，而不是"响了一声"。
+ * 这段时间里 AI 只会多说半句 —— 与"被无缘无故切掉半句"相比，后者更伤体验。
+ *
+ * ⚠️ 它只延缓**自动**打断；用户真想立刻打断时用控制栏的「打断并发送」按钮，
+ * 那条路径是**立即**停播、零延迟（见 `interruptAndSend`）。
+ */
+const BARGE_IN_CONFIRM_MS = 600;
 
 /**
  * 送 TTS 前的最后一道保险（施工单 §S6.3）：**含电话号码特征的片段一律不合成**。
@@ -318,6 +343,8 @@ export interface UseVoiceCallResult {
   lastEchoReason: string | null;
   /** 触发过几次打断（用户真的插上话了） */
   bargeIns: number;
+  /** 用户点「打断并发送」且控制帧真的发出去了的次数（诊断用） */
+  manualSends: number;
   /** 因"含号码特征"而被跳过合成（只上屏）的片段数 */
   skippedPhoneUnits: number;
   /** 纯标点片段（`「」`、破折号）被跳过合成的数量 —— 合成它们只会得到空白音频 */
@@ -345,6 +372,14 @@ export interface UseVoiceCallResult {
   startCall: () => Promise<void>;
   /** 挂断：冲刷最后一段定稿 → 等本轮跑完（有上限）→ 释放资源 */
   endCall: () => Promise<void>;
+  /**
+   * 「打断并发送」：立刻停掉 AI 的声音，并把**已经说出口的话**马上定稿发出去，
+   * 不等服务端的静音判停（rule2 = 1.8 s）。
+   *
+   * 语义边界：插话仍走 F-4 的既有路径 —— 本轮不 abort、插话排队等 `done` 之后
+   * 作为下一轮发。所以它是"不用等静音判停"，不是"绕过服务端顺序"。
+   */
+  interruptAndSend: () => void;
   /** AI 正在出声（UI 据此显示"小安在说话"而不是"暂停收音"） */
   aiSpeaking: boolean;
   /** 半双工窗口是否正开着（`?debug=1` 用；窗口内不向服务端送帧） */
@@ -364,6 +399,8 @@ export function useVoiceCall(options: UseVoiceCallOptions): UseVoiceCallResult {
   const [droppedEchoes, setDroppedEchoes] = useState(0);
   const [lastEchoReason, setLastEchoReason] = useState<string | null>(null);
   const [bargeIns, setBargeIns] = useState(0);
+  /** 用户点「打断并发送」且控制帧真的发出去了的次数（诊断用） */
+  const [manualSends, setManualSends] = useState(0);
   const [skippedPhoneUnits, setSkippedPhoneUnits] = useState(0);
   /** 纯标点片段（「」——……）不送合成的计数；合成它们只会得到空白音频 */
   const [skippedUnspeakableUnits, setSkippedUnspeakableUnits] = useState(0);
@@ -506,6 +543,15 @@ export function useVoiceCall(options: UseVoiceCallOptions): UseVoiceCallResult {
   /** 本轮是否已经被插话打断过（一次打断只算一次） */
   const bargedInRef = useRef(false);
   /**
+   * 自动打断的**候选时刻**（本轮的相对毫秒数；0 = 当前没有候选）。
+   *
+   * 收到第一条非回声 partial 时置上，`BARGE_IN_CONFIRM_MS` 之后才真打断 ——
+   * 这样"一声响 / 一次换气"不会把 AI 的整句切掉。见 `handleVoicePartial`。
+   */
+  const bargeCandidateAtRef = useRef(0);
+  /** 上面那个确认窗口的定时器 id（换轮/打断/卸载时必须清掉） */
+  const bargeConfirmTimerRef = useRef(0);
+  /**
    * 插话队列：本轮还在飞的时候收到的用户定稿，按顺序等本轮 `done` 之后再发。
    * **不并发**（S5.5 闸门项），也**不丢弃**（那是用户真说的话）。
    */
@@ -591,6 +637,45 @@ export function useVoiceCall(options: UseVoiceCallOptions): UseVoiceCallResult {
   }, [settleToListening]);
 
   // ── 打断：partial 判定（S5.4 / G-1）──────────────────────────────────────
+  /**
+   * 真打断：把 AI 掐停，并且本轮剩下的句子不再出声。**立即生效，零等待**。
+   *
+   * 两条调用路径共用它，保证"自动"与"手动"的收尾完全一致：
+   *   ① 自动打断的确认窗口到期（`handleVoicePartial` 起的定时器）；
+   *   ② 用户点控制栏的「打断并发送」（`interruptAndSend`）。
+   *
+   * @returns 是否真的发生了打断（本轮已经是打断态 / 本轮已结束时为 false）。
+   */
+  const commitBargeIn = useCallback((): boolean => {
+    const acc = accRef.current;
+    if (!acc.active || bargedInRef.current) return false;
+    if (phaseRef.current === 'ended') return false;
+    window.clearTimeout(bargeConfirmTimerRef.current);
+    bargeConfirmTimerRef.current = 0;
+    bargeCandidateAtRef.current = 0;
+
+    const now = performance.now();
+    // ── G-2 —— 先清本地队列，再谈别的，绝不等服务端回执 ──
+    bargedInRef.current = true;
+    // 本轮剩下的句子**不再出声**：已经"立刻静音"了，几百毫秒后又自己说起来
+    // 会让人以为打断失败了。字幕照旧追加（内容不藏），回答由队列里的插话开新一轮。
+    mutedByBargeInRef.current = true;
+    // 打断前还没随音频上屏的字幕不会再有音频了，立刻兑现（内容不藏）
+    flushSubtitleRemainder(acc.subtitle);
+    acc.interruptMs = Math.round(now - acc.startedAt);
+    // S5.5 的判据：**从"判定为真打断"到"本地已经不响了"**（这一段全是客户端可控的），
+    // 要求 < 200ms。`stopAll()` 同步掐断，不 await、不回调。
+    const stopAt = performance.now();
+    ttsRef.current?.stopAll();
+    acc.interruptStopMs = Math.round(performance.now() - stopAt);
+    echoRef.current?.retireAll(now);
+    setBargeIns((n) => n + 1);
+    // 相位回到聆听：这样"边说边出字"的临时候选会显示出来，
+    // 用户能立刻看到自己的话被听见了（本轮 SSE 仍在跑，F-4）
+    applyPhase('listening');
+    return true;
+  }, [applyPhase]);
+
   const handleVoicePartial = useCallback(
     (text: string) => {
       const t = (text || '').trim();
@@ -607,26 +692,25 @@ export function useVoiceCall(options: UseVoiceCallOptions): UseVoiceCallResult {
       }
       if (bargedInRef.current) return;
 
-      // ── 真打断：G-2 —— 先清本地队列，再谈别的，绝不等服务端回执 ──
-      bargedInRef.current = true;
-      // 本轮剩下的句子**不再出声**：已经"立刻静音"了，几百毫秒后又自己说起来
-      // 会让人以为打断失败了。字幕照旧追加（内容不藏），回答由队列里的插话开新一轮。
-      mutedByBargeInRef.current = true;
-      // 打断前还没随音频上屏的字幕不会再有音频了，立刻兑现（内容不藏）
-      flushSubtitleRemainder(accRef.current.subtitle);
-      accRef.current.interruptMs = Math.round(now - accRef.current.startedAt);
-      // S5.5 的判据：**从"判定为真打断"到"本地已经不响了"**（这一段全是客户端可控的），
-      // 要求 < 200ms。`stopAll()` 同步掐断，不 await、不回调。
-      const stopAt = performance.now();
-      ttsRef.current?.stopAll();
-      accRef.current.interruptStopMs = Math.round(performance.now() - stopAt);
-      echoRef.current?.retireAll(now);
-      setBargeIns((n) => n + 1);
-      // 相位回到聆听：这样"边说边出字"的临时候选会显示出来，
-      // 用户能立刻看到自己的话被听见了（本轮 SSE 仍在跑，F-4）
-      applyPhase('listening');
+      // ── 打断确认窗口（S5.4 修订）──────────────────────────────────────
+      // 第一条非回声 partial **先不打断**：partial 是解码器"刚听到一点"就吐出来的
+      // 中间结果，一声咳嗽也会先吐一条。等 `BARGE_IN_CONFIRM_MS` 才能确认
+      // "用户确实在说话"（细节与取舍见常量注释）。
+      if (!bargeCandidateAtRef.current) {
+        bargeCandidateAtRef.current = now;
+        window.clearTimeout(bargeConfirmTimerRef.current);
+        bargeConfirmTimerRef.current = window.setTimeout(() => {
+          bargeConfirmTimerRef.current = 0;
+          bargeCandidateAtRef.current = 0;
+          commitBargeIn();
+        }, BARGE_IN_CONFIRM_MS);
+        return;
+      }
+      // 候选期间又来了非回声 partial：用户还在说 —— 但**仍然等满确认窗口**，
+      // 不提前打断（"打断间隔改长一点"就是这一步）。计时器刻意不重置：
+      // 窗口从"第一次开口"算起，否则一个一直说话的插话者会让 AI 永远说不完。
     },
-    [applyPhase],
+    [commitBargeIn],
   );
 
   // ── 定稿 = 一轮的起点（或插话队列的入口）────────────────────────────────
@@ -673,6 +757,43 @@ export function useVoiceCall(options: UseVoiceCallOptions): UseVoiceCallResult {
   voiceMetricsRef.current = voice.metrics;
   voiceSetForwardingRef.current = voice.setForwarding;
   voiceGetMicSettingsRef.current = voice.getMicSettings;
+  const voiceFlushRef = useRef(voice.flush);
+  voiceFlushRef.current = voice.flush;
+
+  /**
+   * 「打断并发送」—— 用户手动抢话的按钮（控制栏那个）。
+   *
+   * ## 它做两件事，顺序不能反
+   *
+   * 1. **立刻打断**：`commitBargeIn()` 停播 + 本轮剩余句子不再出声。
+   *    只有"本轮还在飞"时才有这一步；AI 没在说话时点它就是纯"发送"。
+   * 2. **立刻定稿当前这一段**：`flush()` 让服务端马上把已经收到的音频定稿，
+   *    **跳过端点检测那条 rule2 等待**（服务端默认 1.8 s 静音才判"说完了"）。
+   *
+   * ## 为什么顺序是"先打断再定稿"
+   *
+   * 打断会把相位切回 `listening`，并且（若处于半双工窗口）停掉送帧；
+   * 而定稿依赖的音频**已经送到服务端了**，不受影响。反过来先定稿同样可行，
+   * 但那样会让"用户按下按钮 → AI 还在响"多存在一次网络往返 ——
+   * 手动打断的体感要求是**零等待**（与自动打断同一条 `stopAll()` 路径）。
+   *
+   * ## 定稿文本去哪了
+   *
+   * 服务端定稿后回 `final`，走的是 `handleVoiceFinal`：
+   *   · 本轮还在飞（刚被打断，SSE 没收完）⇒ **排队**，等 `done` 之后作为下一轮发
+   *     （F-4：不 abort、不并发 —— 这条不能因为"用户很急"而破例）；
+   *   · 本轮已经结束 ⇒ 立刻开新一轮。
+   * 所以按钮的语义是"**你的话一秒钟都不会丢，而且不用等静音判停**"，
+   * 而不是"绕过服务端插队"。
+   */
+  const interruptAndSend = useCallback(() => {
+    if (phaseRef.current === 'ended') return;
+    // ① 手动打断（本轮没在飞时是空操作，返回 false）
+    commitBargeIn();
+    // ② 立刻定稿。没接通/连接没就绪时 `flush()` 返回 false —— 此时什么都不做，
+    //    不弹提示：按下去没反应的最可能原因是"还没说话"，而不是出了错。
+    if (voiceFlushRef.current()) setManualSends((n) => n + 1);
+  }, [commitBargeIn]);
 
   /**
    * 把本轮累计量发布成 `turn` 状态。
@@ -739,6 +860,11 @@ export function useVoiceCall(options: UseVoiceCallOptions): UseVoiceCallResult {
       mutedByReviseRef.current = false;
       mutedByBargeInRef.current = false;
       bargedInRef.current = false;
+      // 上一轮如果还挂着"等确认窗口"的定时器，必须先清掉：它属于上一轮，
+      // 晚了 600ms 触发会把这一轮刚开的口误判成插话打断（跨轮串味的来源）。
+      window.clearTimeout(bargeConfirmTimerRef.current);
+      bargeConfirmTimerRef.current = 0;
+      bargeCandidateAtRef.current = 0;
       acc.subtitle = newSubtitleSync();
       speakPlanRef.current = null;
       speakCursorRef.current = 0;
@@ -762,6 +888,10 @@ export function useVoiceCall(options: UseVoiceCallOptions): UseVoiceCallResult {
       const finish = (): void => {
         acc.active = false;
         acc.doneMs = Math.round(performance.now() - acc.startedAt);
+        // 本轮结束：确认窗口作废（否则它会在下一轮里凭空打断一次）
+        window.clearTimeout(bargeConfirmTimerRef.current);
+        bargeConfirmTimerRef.current = 0;
+        bargeCandidateAtRef.current = 0;
         activeTurnsRef.current = Math.max(0, activeTurnsRef.current - 1);
         publishTurn();
         resolveDone();
@@ -1079,6 +1209,10 @@ export function useVoiceCall(options: UseVoiceCallOptions): UseVoiceCallResult {
     applyPhase('ended');
     window.clearTimeout(forwardingTimerRef.current);
     forwardingTimerRef.current = 0;
+    // 挂断：打断确认窗口也一并作废（否则它会在通话结束后再"打断"一次）
+    window.clearTimeout(bargeConfirmTimerRef.current);
+    bargeConfirmTimerRef.current = 0;
+    bargeCandidateAtRef.current = 0;
     // 挂断时把"等 speak 计划"的宽限定时器也停掉：迟到的 flush 只会往已结束的
     // 通话里塞音频（`ttsSay` 对已 dispose 的通道是空操作，但没必要留着跑）。
     window.clearTimeout(deferTimerRef.current);
@@ -1140,6 +1274,8 @@ export function useVoiceCall(options: UseVoiceCallOptions): UseVoiceCallResult {
     return () => {
       window.clearTimeout(forwardingTimerRef.current);
       forwardingTimerRef.current = 0;
+      window.clearTimeout(bargeConfirmTimerRef.current);
+      bargeConfirmTimerRef.current = 0;
       echoRef.current?.clear();
       const tts = ttsRef.current;
       ttsRef.current = null;
@@ -1169,6 +1305,7 @@ export function useVoiceCall(options: UseVoiceCallOptions): UseVoiceCallResult {
     droppedEchoes,
     lastEchoReason,
     bargeIns,
+    manualSends,
     skippedPhoneUnits,
     skippedUnspeakableUnits,
     parrotSkips,
@@ -1179,6 +1316,7 @@ export function useVoiceCall(options: UseVoiceCallOptions): UseVoiceCallResult {
     turn,
     startCall,
     endCall,
+    interruptAndSend,
     aiSpeaking: phase === 'speaking',
     forwardingPaused,
   };
