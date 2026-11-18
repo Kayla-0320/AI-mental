@@ -1,5 +1,10 @@
 import { config } from '../config';
 import { AppError } from '../middlewares/errorHandler';
+import {
+  SUMMARY_SYSTEM_PROMPT,
+  normalizeSummaryFields,
+  type ConversationSummaryFields,
+} from './summary.prompt';
 
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -403,6 +408,39 @@ ${JSON.stringify(assessmentResults)}
     } catch {
       return { isCrisis: false, level: 'LOW', suggestion: '' };
     }
+  }
+
+  /**
+   * 生成"对话纪要"（元宝纪要风格）—— 总结功能的核心调用。
+   *
+   * 与非流式对话走**同一个** {@link chat}（同一把 key、同一套超时与错误语义），
+   * 只是换了一份提示词。⚠️ 失败时**必须抛出**，不能像 `analyzeEmotionDeep` 那样
+   * 兜一个默认值：总结是用户主动点的动作，静默返回一段编出来的套话
+   * （"情绪状态平稳"）比明确报错更糟 —— 用户会以为 AI 真的读完并总结了这段对话。
+   *
+   * @param title 会话标题（模型据此把握主题，可为空）
+   * @param transcript 已拼好的对话原文（见 summary.prompt.buildTranscriptText）
+   * @returns 规范化后的纪要素材（字段为空即不渲染，不用占位文案）
+   */
+  async generateConversationSummary(
+    title: string,
+    transcript: string,
+  ): Promise<{ fields: ConversationSummaryFields; model: string }> {
+    const messages: ChatMessage[] = [
+      { role: 'system', content: SUMMARY_SYSTEM_PROMPT },
+      {
+        role: 'user',
+        content: `对话标题：${title || '（无标题）'}\n\n===== 对话原文开始 =====\n${transcript}\n===== 对话原文结束 =====`,
+      },
+    ];
+
+    // 纪要要求稳定、可复现，温度取低值（与情绪分析同一档，高于纯判定类任务）
+    const response = await this.chat(messages, { temperature: 0.3 });
+
+    return {
+      fields: normalizeSummaryFields(response.content || ''),
+      model: config.dashscope.model,
+    };
   }
 
   // 构建心理咨询系统提示

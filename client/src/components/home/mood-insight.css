@@ -1,0 +1,379 @@
+/* ============================================================================
+ * 心理状态与数据洞察卡 —— 组件级样式
+ *
+ * 依赖 styles/garden.css 的共享 token 与 `.gh-*` 基础类（全局已引入）。
+ * 这里只写本组件独有的布局与细节，颜色一律走 var(--gh-*)，不新造色值。
+ *
+ * 全部类名以 `gh-insight-` 起头，避免与并行开发的其他首页模块碰撞。
+ * 响应式：≥1080 桌面 4 列数据块 / 768-1079 平板 2 列 / <768 手机 2 列 + 轴标签抽稀。
+ * ========================================================================== */
+
+.gh-insight {
+  /* 曲线主色：天空蓝，与 .gh-card--sky 的底色同一族 */
+  --gh-insight-accent: var(--gh-sky-1);
+}
+
+.gh-insight__box {
+  padding: 22px 24px 18px;
+}
+
+/* ---- 头部 ---- */
+
+.gh-insight__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.gh-insight__title {
+  font-size: 21px;
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: 0.2px;
+  color: var(--gh-ink-1);
+}
+
+.gh-insight__sub {
+  margin-top: 6px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--gh-ink-3);
+}
+
+.gh-insight__profile {
+  flex: 0 0 auto;
+}
+
+/* ---- 主体 ---- */
+
+.gh-insight__body {
+  display: block;
+}
+
+/* 曲线区：左侧曲线，右侧数据块（桌面并排，把"形状"和"数字"放在同一视线内） */
+.gh-insight__chart {
+  min-width: 0;
+}
+
+.gh-insight__svg {
+  display: block;
+  width: 100%;
+  height: 132px;
+  overflow: visible;
+}
+
+.gh-insight__grid {
+  stroke: var(--gh-line);
+  stroke-width: 1;
+  stroke-dasharray: 4 6;
+}
+
+.gh-insight__area {
+  stroke: none;
+}
+
+/* 2px 圆头折线；vector-effect 保证 preserveAspectRatio="none" 拉伸时线宽不被拉扁 */
+.gh-insight__line {
+  fill: none;
+  stroke: var(--gh-insight-accent);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.gh-insight__dot {
+  fill: #fff;
+  stroke: var(--gh-insight-accent);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+/* 今天：稍大的实心点 + 外圈光晕，是全图唯一的强调 */
+.gh-insight__dot--today {
+  fill: var(--gh-sakura-1);
+  stroke: var(--gh-sakura-1);
+  stroke-width: 0;
+  filter: drop-shadow(0 0 6px rgba(240, 127, 169, 0.55));
+}
+
+/* x 轴标签：用 flex 均分，和 SVG 的点位一一对应（n 个点 → n 份） */
+.gh-insight__axis {
+  display: flex;
+  margin-top: 8px;
+}
+
+.gh-insight__tick {
+  flex: 1 1 0;
+  min-width: 0;
+  text-align: center;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--gh-ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.gh-insight__tick.is-blank {
+  color: rgba(125, 140, 163, 0.55);
+}
+
+.gh-insight__tick.is-today {
+  color: var(--gh-sakura-1);
+  font-weight: 700;
+}
+
+.gh-insight__today {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--gh-ink-2);
+  text-align: center;
+}
+
+/* ---- 数据块 ---- */
+
+.gh-insight__cols {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.gh-insight__tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+  min-width: 0;
+  padding: 13px 12px;
+  border: 1px solid var(--gh-line);
+  border-radius: var(--gh-r-md);
+  background: rgba(255, 255, 255, 0.66);
+  text-align: center;
+}
+
+.gh-insight__tile-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--gh-ink-3);
+}
+
+.gh-insight__tile-value {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  font-size: 23px;
+  font-weight: 700;
+  line-height: 1.2;
+  color: var(--gh-ink-1);
+  font-variant-numeric: tabular-nums;
+}
+
+.gh-insight__tile-unit {
+  font-size: 12px;
+  font-weight: 500;
+  font-style: normal;
+  color: var(--gh-ink-3);
+}
+
+.gh-insight__tile-hint {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--gh-ink-3);
+}
+
+/* 稳定度细条：底色浅、填充色随分档变化 */
+.gh-insight__bar {
+  display: block;
+  width: 100%;
+  height: 6px;
+  border-radius: var(--gh-r-pill);
+  background: rgba(124, 152, 184, 0.16);
+  overflow: hidden;
+}
+
+.gh-insight__bar i {
+  display: block;
+  height: 100%;
+  border-radius: var(--gh-r-pill);
+  background: var(--gh-sky-1);
+  transition: width 0.5s var(--gh-ease);
+}
+
+.gh-insight__bar.is-high i { background: var(--gh-mint-1); }
+.gh-insight__bar.is-mid i { background: var(--gh-sky-1); }
+.gh-insight__bar.is-low i { background: var(--gh-sun-1); }
+
+/* 较上周：方向只做颜色区分，措辞保持中性（见组件里的 deltaMeta） */
+.gh-insight__delta {
+  font-size: 21px;
+}
+
+.gh-insight__delta.is-up { color: var(--gh-mint-1); }
+.gh-insight__delta.is-down { color: var(--gh-sky-1); }
+.gh-insight__delta.is-flat { color: var(--gh-ink-2); }
+
+/* ---- 关键词 ---- */
+
+.gh-insight__keywords {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--gh-line);
+}
+
+.gh-insight__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 9px;
+}
+
+.gh-insight__keywords .gh-chip {
+  background: rgba(240, 127, 169, 0.1);
+  color: var(--gh-ink-2);
+}
+
+/* ---- 空态 ---- */
+
+.gh-insight__empty {
+  padding: 6px 0 2px;
+}
+
+.gh-insight__empty-box {
+  padding: 26px 20px;
+}
+
+.gh-insight__empty-main {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.7;
+  color: var(--gh-ink-1);
+}
+
+.gh-insight__empty-sub {
+  margin-top: 6px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--gh-ink-3);
+}
+
+/* ---- 脚注（数据来源与免责） ---- */
+
+.gh-insight__foot {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--gh-line);
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--gh-ink-3);
+}
+
+/* ---- 骨架屏 ---- */
+
+.gh-insight__sk-chart {
+  height: 132px;
+  border-radius: var(--gh-r-md);
+}
+
+.gh-insight__sk-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 13px 12px;
+  border: 1px solid var(--gh-line);
+  border-radius: var(--gh-r-md);
+}
+
+.gh-insight__sk-line {
+  display: block;
+  height: 12px;
+}
+
+.gh-insight__sk-line--sm { width: 56%; }
+.gh-insight__sk-line--lg { width: 78%; height: 20px; }
+
+/* ============================================================================
+ * 桌面：曲线与数据块并排（曲线 1.6 份 : 数据 1 份）
+ * ========================================================================== */
+
+@media (min-width: 1080px) {
+  .gh-insight__body {
+    display: grid;
+    grid-template-columns: minmax(0, 1.6fr) minmax(280px, 1fr);
+    gap: 22px;
+    align-items: start;
+  }
+
+  /* 显式指定两列位置：不写的话 grid 自动流会把 .gh-insight__cols 换到第二行去 */
+  .gh-insight__chart { grid-column: 1; }
+
+  /* 桌面把四个数据块排成 2×2，塞进右列 */
+  .gh-insight__cols {
+    grid-column: 2;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin-top: 0;
+  }
+
+  /* 关键词横跨整行 */
+  .gh-insight__keywords {
+    grid-column: 1 / -1;
+  }
+}
+
+/* 平板：曲线全宽，数据块两列 */
+@media (min-width: 768px) and (max-width: 1079px) {
+  .gh-insight__cols {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* ============================================================================
+ * 手机：单列堆叠；轴标签抽稀（只留偶数位，最后一格"今天"始终显示）
+ * ========================================================================== */
+
+@media (max-width: 767px) {
+  .gh-insight__box {
+    padding: 18px 16px 15px;
+  }
+
+  .gh-insight__head {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+
+  .gh-insight__profile {
+    align-self: flex-start;
+  }
+
+  .gh-insight__cols {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .gh-insight__svg {
+    height: 112px;
+  }
+
+  /* 7 个标签在 320px 宽下必然挤成一团，隔一个隐藏一个 */
+  .gh-insight__tick:nth-child(odd):not(.is-today) {
+    visibility: hidden;
+  }
+}
+
+/* 无障碍：尊重系统"减少动态效果" */
+@media (prefers-reduced-motion: reduce) {
+  .gh-insight__bar i {
+    transition: none;
+  }
+
+  .gh-insight__dot--today {
+    filter: none;
+  }
+}

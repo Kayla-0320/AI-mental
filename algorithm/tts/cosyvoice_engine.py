@@ -60,8 +60,8 @@ _CONNECT_TIMEOUT_S = 5.0
 #: （实测本机 2–4 s），慢机器留足余量，避免把正常的首块等待误判为超时。
 _READ_TIMEOUT_S = 60.0
 
-#: 每次 ``read()`` 的字节数。16 kHz/24 kHz int16 下 8192 字节≈170–256 ms 音频，
-#: 与服务的分块粒度匹配，不会引入额外等待。
+#: 单次读取上限。HTTPResponse.read(n) 会跨HTTP块攒满n字节，
+#: 必须用read1(n)交付已经到达的数据，避免短块被扣到下一次模型输出。
 _READ_CHUNK_BYTES = 8192
 
 
@@ -316,10 +316,19 @@ class CosyVoiceTtsEngine:
                     except ValueError:
                         logger.warning("[TTS:cosyvoice] 响应头 X-Sample-Rate 非法：%r", raw_sr)
 
+                read_chunk = getattr(resp, "read1", resp.read)
+                trailing = b""
                 while True:
-                    block = resp.read(_READ_CHUNK_BYTES)
+                    block = read_chunk(_READ_CHUNK_BYTES)
                     if not block:
                         break
+                    # HTTP分块边界不保证与int16样本对齐，保留半个样本到下一块。
+                    block = trailing + block
+                    aligned_size = len(block) - len(block) % 2
+                    trailing = block[aligned_size:]
+                    block = block[:aligned_size]
+                    if not block:
+                        continue
                     if not first_chunk_ms:
                         first_chunk_ms.append((time.perf_counter() - t0) * 1000.0)
                     samples = _pcm16_to_float32(block)
@@ -327,6 +336,8 @@ class CosyVoiceTtsEngine:
                         cancelled = True
                         break
                     delivered_samples += len(samples)
+                if trailing and not cancelled:
+                    logger.warning("[TTS:cosyvoice] 流结束时剩余一个不完整PCM字节")
         except urllib.error.HTTPError as exc:
             detail = ""
             try:

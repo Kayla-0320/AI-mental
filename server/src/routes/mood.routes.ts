@@ -13,6 +13,14 @@ router.post('/checkin', authenticate, async (req: AuthRequest, res: Response, ne
   } catch (e) { next(e); }
 });
 
+// 更正今天的打卡（点错表情可改；仍是每天一条）
+router.put('/checkin', authenticate, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const record = await moodService.updateTodayCheckIn(req.userId!, req.body);
+    res.json({ code: 0, data: record });
+  } catch (e) { next(e); }
+});
+
 // 获取打卡历史
 router.get('/checkin/history', authenticate, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {

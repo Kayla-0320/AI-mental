@@ -56,8 +56,13 @@ model User {
   feedbacks         UserFeedback[]
   healthReports     HealthReport[]
   crisisRecords     CrisisRecord[]
+  consents          ConsentRecord[]
 
   refreshToken      RefreshToken?
+
+  /// 数据保留期限（天）。超过此期限的感知/对话记录由 retention 任务硬删除。
+  /// 默认 90 天；用户在「隐私与数据控制」里可改。
+  dataRetentionDays Int @default(90)
 
   @@map("users")
 }
@@ -675,4 +680,36 @@ model CrisisRecord {
   @@index([userId, status])
   @@index([severity])
   @@map("crisis_records")
+}
+
+// ==================== 数据授权（同意管理） ====================
+//
+// 为什么必须落库而不是留在前端：
+//   平台采集文本、语音、面部、行为等敏感信号。授权状态是「能不能采集/能不能给咨询师看」
+//   的唯一依据，如果它只存在于某个组件的 useState 里（刷新即回默认），
+//   那么「用户可以随时关闭感知」这句话在工程上不成立。
+//
+// 粒度：(userId, dataType, purpose) 三元组唯一 —— 按用途分别授权，而不是一次性全部同意。
+// 撤销不删行：保留 granted=false + revokedAt 才能回答「什么时候授权的、什么时候撤的」。
+model ConsentRecord {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// text | voice | facial | behavior | sleep | assessment | physiological
+  /// | emotion_result | risk_assessment | phenotype
+  dataType  String
+  /// emotion_analysis | risk_assessment | consultant_view | research
+  /// | federated_learning | crisis_intervention
+  purpose   String
+  granted   Boolean   @default(false)
+  /// 同意书版本号：条款变更时据此要求重新确认
+  version   String    @default("1.0")
+  grantedAt DateTime?
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@unique([userId, dataType, purpose])
+  @@index([userId])
+  @@map("consent_records")
 }

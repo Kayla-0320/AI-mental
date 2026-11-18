@@ -1,0 +1,8 @@
+# 第二轮离线研究的增量依赖；运行时预测不需要 pandas/openpyxl。
+# 其余 PyTorch/FastAPI 等沿用 requirements.txt。
+numpy>=1.26
+scikit-learn>=1.4
+pandas>=2.2
+openpyxl>=3.1
+requests>=2.31
+Pillow>=10.0

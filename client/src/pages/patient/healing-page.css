@@ -1,0 +1,44 @@
+/* ============================================================================
+ * 疗愈空间页面级样式（只放"编排层"自己的东西，游戏卡片的样式在 Healing.tsx 内部）
+ *
+ * 页面结构对齐首页：顶部整幅出血 Hero（components/home/PageHero.tsx，
+ * 与首页共用 .gh-hero 那套样式与背景图机制），下面接一块 `.gh-sec` 内容区。
+ * ========================================================================== */
+
+.gh-healing {
+  position: relative;
+  padding-bottom: 8px;
+}
+
+/* 与首页 Hero 的收尾一致：内容区在 Hero 下方，靠 .gh-sec 自己管左右留白 */
+.gh-healing__body {
+  margin-top: 8px;
+}
+
+.gh-healing__head {
+  /* 顶栏是 fixed 的，锚点跳转要给它让位，否则标题会被顶栏压住 */
+  scroll-margin-top: calc(var(--gh-nav-h, 74px) + 16px);
+}
+
+.gh-healing__title {
+  display: flex;
+  align-items: center;
+  font-size: 21px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  color: var(--gh-ink-1);
+  line-height: 1.3;
+}
+
+.gh-healing__sub {
+  margin-top: 6px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--gh-ink-3);
+}
+
+@media (max-width: 767px) {
+  .gh-healing__title {
+    font-size: 18px;
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "schema_version": "emotion_knowledge.v1",
+  "status": "engineering_candidates_not_expert_reviewed",
+  "scope": "概念检索和离线消融；来源用于概念出处，以下中文释义与词表为工程整理，尚未专业审核。不是诊断或个体因果知识。",
+  "nodes": [
+    {"id":"emotion_positive","text":"积极感受可以与事件、解读和其他感受共同记录。","aliases":["开心","快乐","高兴","幸福","喜欢","满意","happy","glad","joy","love","pleased"],"source_url":"https://github.com/allenai/comet-atomic-2020","review_status":"candidate","reviewer":"","reviewed_at":"","relations":[{"predicate":"possible_reaction_to","target":"event"}]},
+    {"id":"emotion_sadness","text":"悲伤表达是待本人核对的主观感受，不能自动等同于心理障碍。","aliases":["难过","伤心","悲伤","失落","委屈","sad","upset","unhappy","disappointed"],"source_url":"https://github.com/allenai/comet-atomic-2020","review_status":"candidate","reviewer":"","reviewed_at":"","relations":[{"predicate":"possible_reaction_to","target":"event"}]},
+    {"id":"emotion_fear","text":"担心或恐惧可能与情境解读有关，应保留不确定性并由本人确认。","aliases":["担心","害怕","紧张","焦虑","恐惧","worried","afraid","anxious","scared","nervous"],"source_url":"https://github.com/allenai/comet-atomic-2020","review_status":"candidate","reviewer":"","reviewed_at":"","relations":[{"predicate":"possibly_related_to","target":"subjective_interpretation"}]},
+    {"id":"emotion_anger","text":"愤怒是一种可表达的感受，不据此推断人品或他人意图。","aliases":["生气","愤怒","气死","恼火","讨厌","angry","furious","annoyed","hate"],"source_url":"https://github.com/allenai/comet-atomic-2020","review_status":"candidate","reviewer":"","reviewed_at":"","relations":[{"predicate":"possible_reaction_to","target":"event"}]},
+    {"id":"interpersonal_event","text":"人际事件和对事件的解读应分别记录；他人真实动机不能仅从一句话确定。","aliases":["朋友","同学","老师","妈妈","爸爸","家人","friend","mother","father","teacher","family"],"source_url":"https://github.com/allenai/comet-atomic-2020","review_status":"candidate","reviewer":"","reviewed_at":"","relations":[{"predicate":"has_possible_reaction","target":"subjective_feeling"},{"predicate":"not_equivalent_to","target":"others_true_intent"}]},
+    {"id":"future_uncertainty","text":"对未来的担忧与已发生的事实需要区分。","aliases":["明天","以后","未来","万一","会不会","tomorrow","future","what if"],"source_url":"https://github.com/allenai/comet-atomic-2020","review_status":"candidate","reviewer":"","reviewed_at":"","relations":[{"predicate":"not_equivalent_to","target":"observed_event"}]}
+  ]
+}

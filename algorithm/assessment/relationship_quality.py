@@ -116,20 +116,26 @@ def compute_rqI(
 
 
 def rqi_to_relationship_depth(rqi: float) -> str:
-    """将 RQI 转换为关系阶段
-    
+    """将 RQI 转换为关系阶段。
+
+    ⚠️ 返回**中文阶段名**（与模块 docstring、注入 prompt 的默认值、
+    前端 ``RelationshipStageIndicator`` 的分档标签三处一致）。
+    原实现返回的是英文 ``stranger/acquainted/trusted``，与另外三处对不上：
+    prompt 里的默认值是"陌生期"、前端 ``getStage`` 也按中文渲染，
+    导致后端算出的阶段在 UI 与 prompt 里都落不进任何一档。
+
     Args:
         rqi: 关系质量指数 (0-1)
-    
+
     Returns:
-        str: 关系阶段（stranger/acquainted/trusted）
+        str: 关系阶段，取值 ``陌生期 / 熟悉期 / 信任期``
     """
     if rqi < 0.3:
-        return "stranger"
+        return "陌生期"
     elif rqi < 0.6:
-        return "acquainted"
+        return "熟悉期"
     else:
-        return "trusted"
+        return "信任期"
 
 
 # ============================================================

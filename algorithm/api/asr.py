@@ -75,6 +75,16 @@ class StatusResponse(BaseModel):
     # 标点模型：只有定稿才会用到，缺失不影响识别
     punctuation_available: bool = False
     punctuation_error: str = ""
+    """
+    流式端点规则**实际生效**的值（秒）：`rule1/rule2_trailing_silence_s`、`rule3_max_utterance_s`。
+
+    为什么要把它放进状态接口（2026-10-11）：这些值在**进程启动时**从
+    `algorithm/asr/streaming.py`（可被 `ASR_RULE{1,2}_SILENCE_S` 覆盖）读一次。
+    改完代码却忘了重启算法服务时，通话里仍然按旧阈值截断，而界面上看不出任何异常
+    —— 实测踩过一次（服务进程比代码早一天）。这里让"新代码到底生效没有"
+    变成**一条 HTTP 请求就能回答**的问题。
+    """
+    endpoint_rules: dict[str, float] = {}
 
 
 def _update_payload(u: StreamingAsrUpdate) -> dict[str, object]:
@@ -305,6 +315,10 @@ def status() -> StatusResponse:
         streaming_error=str(si["error"]),
         punctuation_available=bool(pi["available"]),
         punctuation_error=str(pi["error"]),
+        endpoint_rules={
+            str(k): float(v)  # type: ignore[arg-type]
+            for k, v in (si.get("endpoint_rules") or {}).items()
+        },
     )
 
 

@@ -1,16 +1,35 @@
-"""统一人本取向提示词与追问规则测试
+"""提示词契约与追问规则测试
 
-覆盖三处改动：
+覆盖三处：
 
-1. EMPATHY/SOCRATIC 双分支合并为一段提示词（``dialogue_mode`` 不再影响话术）；
-2. 追问与否改由 :func:`_ask_question_this_turn` 判定（风格 + 风险 + 拒绝表达）；
+1. **统一提示词**（2026-10-05 首次重写；**2026-10-11 用户两次指定改版**）：
+   只保留 AI 身份、风格要求、安全底线与「**提问是选项，不是义务**」的优先级规则；
+   不再注入示范对话、逐句禁用清单、情绪线索与节拍规则
+   —— 这些示范句本身就是模型最容易照抄的句子（实测连续四轮都以同一句示范开头）。
+   ⚠️ 旧版的硬契约是"**每轮**最后一句必须是一个关心 ta 的问题"，实测让每轮都以
+   「你觉得呢？」收尾，用户反馈"听起来像机械地执行话术"，2026-10-11 已删除；
+   现在只在"这一轮确实要问"时要求问句落在最后一句（口语轮次的交接信号）。
+   ⚠️ 2026-10-11 第二次改版：改用用户给的《角色设定：温暖的心理陪伴伙伴》七条原则
+   （自然真诚 / 简洁适度 / 先倾听再引导 / 适时提问 / 尊重 / 适合语音 / 保持边界），
+   删掉上一版的"按情况回应""说之前先想"两节（用户："提示词我觉得可以少点"），
+   并把"敷衍式短回复"写成抽象判据（截图里 ta 只说半句「我说。」→ 回复「我在听。」）。
+2. 追问与否仍由 :func:`_ask_question_this_turn` 判定（拒绝表达 / 激动 / 高风险）；
+   它现在是**否决权**而不是"必须问"的义务，所以寒暄轮不再单独拦尾问句，
+   高风险/危机反而放行（安全确认就是一句问话）。
 3. 降级模板在"本轮不追问"时**不得反问**（此前的 CALM 池自身含问句）。
+4. 收束/结束语（2026-10-11："当用户说我感觉好些了，就可以不用再问问题了，
+   可以说一些结束对话的语言"）：命中好转/结束意图时本轮不追问，prompt 换成
+   收束指令（承接 → 复述 → 小提醒 → 留门），并与寒暄规则、「不要提问」互斥。
+5. **`speak` 计划的完整性契约**（2026-10-11，用户报告"回复和语音内容不匹配、
+   语音输出不全"）：客户端按 `speak.segments` 送合成，所以"分段拼接必须等于
+   定稿文本"是文字与语音同源的前提。这里把它测成不变量。
 
 测试不发起任何网络调用：``api.intervention.requests.post`` 被替换为抓取器。
 """
 from __future__ import annotations
 
 import os
+import re
 import sys
 
 import pytest
@@ -19,6 +38,16 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import api.intervention as iv  # noqa: E402
 from intervention.style_detector import UserStyle  # noqa: E402
+
+
+def _no_space(text: str) -> str:
+    """比对用归一化：去掉所有空白。
+
+    ⚠️ 必须归一化再比：`_split_speak_units` 会 `strip()` 每个片段并丢弃纯空白片段，
+    所以带空格/换行的回复 `''.join(segments)` **本来就不等于**原文 ——
+    那不是契约违约，直接判违约会把正常计划全部误伤。
+    """
+    return re.sub(r"\s+", "", text or "")
 
 # 中性偏高 / 悲伤偏高的两组概率 [快乐, 悲伤, 焦虑, 愤怒, 中性]
 NEUTRAL_PROBS = [0.13, 0.07, 0.0, 0.0, 0.80]
@@ -108,39 +137,82 @@ class TestAskQuestionThisTurn:
 
 
 class TestUnifiedPrompt:
-    """一段提示词取代 EMPATHY/SOCRATIC 双分支。"""
+    """精简版提示词：只留 AI 身份、话术总则与安全底线。"""
 
-    def test_contains_person_centered_sections(self, captured_prompt):
-        """人本取向的定位 + 安全底线必须都在同一段 prompt 里。
-
-        2026-09-26 改写后"人本取向"这个词被换成了更好操作的角色描述
-        （会听人说话的陪伴者），断言随之改为按**行为**判断。
-        """
+    def test_contains_identity_and_safety(self, captured_prompt):
+        """身份 + 安全底线必须都在同一段 prompt 里。"""
         iv._call_llm("我好难受", [], SAD_PROBS, "low", style=UserStyle.CALM)
         prompt = captured_prompt["messages"][0]["content"]
-        assert "# 角色定位" in prompt
-        assert "有人真的听懂我在说什么" in prompt  # 人本取向的落地表述
+        assert "AI 陪伴者" in prompt
         assert "# 底线" in prompt
-        assert "硬性边界" in prompt  # 保留旧称，便于检索
-        assert "不能替代线下持证心理咨询师与精神科医生" in prompt
+        assert "不能替代线下持证的心理咨询师与精神科医生" in prompt
+        assert "心理危机热线" in prompt  # 安全转介
         assert "想开一点" in prompt  # 禁止否定感受的负面清单
 
-    def test_asks_about_the_event_not_only_the_feeling(self, captured_prompt):
-        """追问方向必须包含"探事件"，不能只往"什么感觉"走。
+    def test_question_is_optional_with_priority_rule(self, captured_prompt):
+        """本版核心契约（2026-10-11）：提问是选项，优先级 倾听 > 建议 > 引导性提问。
 
-        实测发现的退化：「我好难受」会稳定被回成"这种难受是什么样的感觉？"，
-        因为示例基本都是探感受。保留探事件方向后，输出才可能落到
-        "发生了什么事，让你这么难受？"上。
+        ⚠️ 反向断言同样重要：旧版那句"每一轮回复的最后一句，必须是一个关心 ta
+        的问题"**必须消失** —— 它正是"每轮都用『你觉得呢？』收尾"的来源。
         """
         iv._call_llm("我好难受", [], SAD_PROBS, "low", style=UserStyle.CALM)
         prompt = captured_prompt["messages"][0]["content"]
-        assert "探事件" in prompt
-        assert "探感受" in prompt
-        assert "探想法" in prompt
-        assert "事件类问题最好接" in prompt
+        assert "提问是选项，不是义务" in prompt
+        assert "ta 只想倾诉" in prompt
+        assert "才提一个引导性问题" in prompt
+        assert "每一轮回复的最后一句，必须是一个关心 ta 的问题" not in prompt
+
+    def test_prompt_carries_no_copyable_example_dialogue(self, captured_prompt):
+        """提示词里不许再出现可被整句照抄的示范台词与示范场景。
+
+        回归：旧版写了「你一说这事我就听出来了，搁谁身上都难受。」等示范句，
+        实测连续四轮回复都以它开头 —— 用户反馈"每次回复都是一样的话术"。
+        """
+        iv._call_llm("我现在有点难受", [], SAD_PROBS, "low", style=UserStyle.CALM)
+        prompt = captured_prompt["messages"][0]["content"]
+        for copied in (
+            "你一说这事我就听出来了",
+            "搁谁身上都难受",
+            "这话太重了",
+            "我听着是",
+            "示范一",
+            "示范二",
+            "被当着全班",
+            "ta：",
+        ):
+            assert copied not in prompt, copied
+
+    def test_prompt_is_compact(self, captured_prompt):
+        """防止约束回涨：提示词长度必须控制住（旧版曾膨胀到 3200 字）。
+
+        ⚠️ 上限三次调整的记录（每次都以**实测基线 + 一点余量**为准）：
+          · 1600 → 2400（2026-10-11 第一版统一提示词，实测 2287 字）；
+          · 2400 → 2000（2026-10-11 用户第二次改版，见 TestPersonaDraft）——
+            用户原话"提示词我觉得可以少点"，改用七条原则版后实测 **1829 字**
+            （草稿本体 1778 + 针对"半句输入"补的 51 字）。
+        留余量的意义：这条断言是**防回涨**的闸门，不是精确断言；再加约束就会顶到它。
+        """
+        iv._call_llm("我好难受", [], SAD_PROBS, "low", style=UserStyle.CALM)
+        prompt = captured_prompt["messages"][0]["content"]
+        assert len(prompt) < 2000, len(prompt)
+
+    def test_reply_length_is_capped_and_graded(self, captured_prompt):
+        """长度要求是**分档的短回复**（2026-10-05 用户反馈"又有点长了"）。
+
+        闲聊/寒暄 40 字以内，说到情绪或事情 100 字以内；定稿侧的硬截断必须
+        与 prompt 同源，否则模型写长了也没人拦。
+        """
+        iv._call_llm("我好难受", [], SAD_PROBS, "low", style=UserStyle.CALM)
+        prompt = captured_prompt["messages"][0]["content"]
+        assert "短一点，别铺陈" in prompt
+        assert "40 字以内" in prompt
+        assert "绝不超过 100 字" in prompt
+        assert "第一句必须是陈述" in prompt
+        assert iv._MAX_REPLY_CHARS <= 120
+        assert iv._MAX_SOCIAL_REPLY_CHARS <= 60
 
     def test_direction_annotations_are_not_for_output(self, captured_prompt):
-        """括号内的方向标注不得被模型当场输出。"""
+        """括号内的说明不得被模型当场输出。"""
         iv._call_llm("我好难受", [], SAD_PROBS, "low", style=UserStyle.CALM)
         prompt = captured_prompt["messages"][0]["content"]
         assert "不要输出给来访者" in prompt
@@ -169,14 +241,64 @@ class TestUnifiedPrompt:
     def test_no_question_rule_on_refusal(self, captured_prompt):
         iv._call_llm("别问了", [], SAD_PROBS, "low", style=UserStyle.CALM)
         prompt = captured_prompt["messages"][0]["content"]
-        assert "本轮**不要提问**" in prompt
+        assert "这一轮**不要提问**" in prompt
 
-    def test_ask_rule_when_appropriate(self, captured_prompt):
-        """默认动作是**追问**（2026-09-26 用户反馈"追问的环节也没有了"）。"""
+    def test_normal_turn_does_not_forbid_question(self, captured_prompt):
+        """普通情绪轮次不该出现"不要提问"，但也不再强制问。
+
+        ``_ask_question_this_turn`` 是否决权：返回 True 只代表"这轮允许问"，
+        提示词里的默认动作是"ta 只想倾诉就先接住，可以一个问题都不问"。
+        """
         iv._call_llm("我好难受", [], SAD_PROBS, "low", style=UserStyle.CALM)
         prompt = captured_prompt["messages"][0]["content"]
-        assert "本轮**不要提问**" not in prompt
-        assert "本轮**要追问**" in prompt
+        assert "这一轮**不要提问**" not in prompt
+        assert "提问是选项，不是义务" in prompt
+        assert "把问话放在最后一句" in prompt
+
+    def test_high_risk_keeps_the_safety_question(self, captured_prompt):
+        """高风险/危机不放"不要提问"，反而明示结尾仍要落在关心 ta 的问句上。
+
+        安全确认本身就是一句要问的话：按"高风险不追问"去删尾问句，
+        会把「你现在安全吗？」一起删掉。
+        """
+        iv._call_llm("我不想活了", [], SAD_PROBS, "crisis", style=UserStyle.CALM)
+        prompt = captured_prompt["messages"][0]["content"]
+        assert "这一轮**不要提问**" not in prompt
+        assert "先按上面「底线」做安全确认" in prompt
+
+    def test_duplicate_trailing_user_turn_is_dropped(self, captured_prompt):
+        """回归（2026-10-11）：历史最后一条 == 本轮发言时，**不得**把它喂两遍。
+
+        真机症状（用户截图）："为什么显示我说了两遍？我每个句子都只说了一遍" ——
+        AI 连着三轮回「听你轻轻说了两遍」「你连着问了两遍」「你说了两遍『难受』」。
+        根因在 server 侧（先落库再取历史，于是把本轮也取了回来），而算法侧又会
+        追加本轮发言 —— 模型确实看到了两遍，它没说错，是输入错了。
+        """
+        iv._call_llm(
+            "你好。", [{"role": "user", "content": "你好。"}],
+            NEUTRAL_PROBS, "low", style=UserStyle.CALM,
+        )
+        user_turns = [m["content"] for m in captured_prompt["messages"] if m["role"] == "user"]
+        assert user_turns.count("你好。") == 1, user_turns
+
+    def test_duplicate_dedupe_ignores_whitespace(self, captured_prompt):
+        """历史里带尾随空白的同一条发言，同样算重复（服务端文本会原样落库）。"""
+        iv._call_llm(
+            "你好。", [{"role": "user", "content": " 你好。\n"}],
+            NEUTRAL_PROBS, "low", style=UserStyle.CALM,
+        )
+        user_turns = [m["content"] for m in captured_prompt["messages"] if m["role"] == "user"]
+        assert len(user_turns) == 1, user_turns
+
+    def test_repeat_across_turns_is_kept(self, captured_prompt):
+        """**隔轮**重复同一句话是真实表达，不能被去重删掉（只比紧邻的前一条）。"""
+        history = [
+            {"role": "user", "content": "你好。"},
+            {"role": "assistant", "content": "你好呀。还想说点什么？"},
+        ]
+        iv._call_llm("你好。", history, NEUTRAL_PROBS, "low", style=UserStyle.CALM)
+        user_turns = [m["content"] for m in captured_prompt["messages"] if m["role"] == "user"]
+        assert user_turns.count("你好。") == 2, user_turns
 
     def test_history_roles_are_sanitized(self, captured_prompt):
         """历史里的脏 role 不能破坏 messages 结构。"""
@@ -196,78 +318,51 @@ class TestUnifiedPrompt:
 _BANNED_OPENINGS = ("我能感受到你", "听起来你", "我理解你", "抱抱", "你已经很勇敢了")
 
 
-class TestPromptBansTemplatedReplies:
-    """提示词必须**显式禁止**固定开场与「共情+提问」公式。
+class TestLoosePromptContract:
+    """"限制松一点"之后必须守住的几条。
 
-    这是一组"防退化"测试：风格问题无法用功能断言覆盖（LLM 输出天然不稳定），
-    但可以让**提示词退回到套路写法**这件事在单测里立刻失败。
-    2026-09-26 用户截图反馈：「我还是觉得这种回答很套路，只能令患者更加无语」。
+    1. 不许再出现可照抄的示范句 —— 旧的「我听着是」「这话太重了」
+       「搁谁身上都难受」正是模型每轮照搬的来源；
+    2. 不许替 ta 编状态（截图里"看你有点没精神"的根因）；
+    3. 反套路的要求只保留抽象一条（同一句话最多用一次），不做逐句点名。
     """
 
-    def test_bans_restating_emotion_as_opening(self, captured_prompt):
-        """必须点名禁止「我能感受到你现在X」这类只复述情绪的开场。"""
+    def test_no_few_shot_dialogue_left(self, captured_prompt):
+        """示范对话必须整段删除 —— 模型对 few-shot 句子的模仿是字面级的。"""
         iv._call_llm("我考试没考好", [], SAD_PROBS, "low", style=UserStyle.CALM)
         prompt = captured_prompt["messages"][0]["content"]
-        assert "禁止用这个句式开头" in prompt
-        assert "每轮同一句式开头" in prompt
-        # 该句式只允许出现在"反例 / 禁止"的语境里
-        for line in prompt.splitlines():
-            if "我能感受到你" in line:
-                assert "反例" in line or "禁止" in line or "❌" in line, line
+        assert "示范" not in prompt
+        assert "✅" not in prompt and "❌" not in prompt
+        assert "本轮硬性禁用" not in prompt
 
-    def test_empathy_is_still_required(self, captured_prompt):
-        """共情不能因为"反套路"被删掉 —— 用户要的是不死板的共情。"""
-        iv._call_llm("我考试没考好", [], SAD_PROBS, "low", style=UserStyle.CALM)
-        prompt = captured_prompt["messages"][0]["content"]
-        assert "共情是每个情绪轮次的必做动作" in prompt
-        # 共情要落到 ta 真说过的话上，并给出示范句，否则模型只能回到复读情绪标签
-        assert "共情要" in prompt and "指着 ta 说过的话说" in prompt
-        assert "谁也受不了" in prompt  # 示范里的指着事说的共情
+    def test_ban_is_abstract_not_a_phrase_list(self, captured_prompt):
+        """别每轮说同一句只写成一条总则，不再列出被禁的具体句子。
 
-    def test_bans_empathy_plus_question_formula(self, captured_prompt):
-        """「复述情绪 → 发生了什么事？」不许成为每轮固定节拍。
-
-        注意与旧版的区别：现在**不是**禁止连着追问（那是上一版做过头的地方），
-        而是禁止每轮都走同一个节拍。
+        旧版把「我听着是」「这话太重了」等句子列成禁用清单，等于在 prompt 里
+        又把这些句子念了一遍 —— 越禁越照抄。
         """
-        iv._call_llm("我考试没考好", [], SAD_PROBS, "low", style=UserStyle.CALM)
+        history = [
+            {"role": "user", "content": "我这次考试没考好"},
+            {"role": "assistant", "content": "我听着是，这事儿现在还压着你呢？"},
+        ]
+        iv._call_llm("我还是觉得难受", history, SAD_PROBS, "medium", style=UserStyle.CALM)
         prompt = captured_prompt["messages"][0]["content"]
-        assert "每轮都走" in prompt
-        assert "这个固定节拍" in prompt
-        # 连着两轮追问是允许的，只拦连着三轮
-        assert "不要连着三轮都在问" in prompt
-        assert "连着两轮都追问是可以的" in prompt
+        assert "同一句话、同一个开场、同一句安慰，整段对话里最多用一次" in prompt
+        assert "我听着是" not in prompt
 
     def test_forbids_inventing_the_users_state(self, captured_prompt):
         """不许替用户编状态 —— 截图里"看你有点没精神"的根因。"""
         iv._call_llm("你好", [], NEUTRAL_PROBS, "low", style=UserStyle.CALM)
         prompt = captured_prompt["messages"][0]["content"]
-        assert "只回应 ta 说的话，不要替 ta 编话" in prompt
-        assert "你今天看起来有点没精神" in prompt  # 必须作为反例出现
+        assert "不许说 ta 没讲过的事" in prompt
 
-    def test_prompt_does_not_smuggle_a_copyable_scenario(self, captured_prompt):
-        """提示词里不能出现可被照抄的**具体情节**。
-
-        回归：截图里用户只说"我现在有点难受"，模型却回"被当着全班说那种话"——
-        因为旧 prompt 的 ✅ 示范句直接写了这个场景，模型把它当成 ta 说的话搬了出来。
-        """
-        iv._call_llm("我现在有点难受", [], SAD_PROBS, "low", style=UserStyle.CALM)
-        prompt = captured_prompt["messages"][0]["content"]
-        assert "被当着全班" not in prompt
-        assert "搁谁都得缓半天" not in prompt
-        # 明确禁止把示范/旧背景当成 ta 本轮说的话
-        assert "绝不要把示范中出现过的情节当成 ta 说的话" in prompt
-        assert "先接住情绪，再问发生了什么" in prompt
-
-    def test_greeting_gets_its_own_playbook(self, captured_prompt):
-        """打招呼时只回招呼，不提情绪、不追问。"""
+    def test_greeting_still_gets_its_own_line(self, captured_prompt):
+        """打招呼时只回招呼、不评价 ta 的状态；想邀请 ta 开口就问一句（不是必须）。"""
         iv._call_llm("你好", [], NEUTRAL_PROBS, "low", style=UserStyle.CALM)
         prompt = captured_prompt["messages"][0]["content"]
-        assert "本轮用户只说了寒暄/客套话" in prompt
-        assert "今天想说点什么" in prompt
-        assert "问了就是硬造" in prompt
-        assert "本轮**要追问**" not in prompt
-        assert "不提问" in prompt
+        assert "只说了寒暄" in prompt
+        assert "不要评价 ta 的状态" in prompt
+        assert "想邀请 ta 开口" in prompt
 
     def test_second_greeting_does_not_greet_again(self, captured_prompt):
         """同一段对话里第二次说"你好"，不能又问一次好。"""
@@ -277,78 +372,13 @@ class TestPromptBansTemplatedReplies:
         ]
         iv._call_llm("你好", history, NEUTRAL_PROBS, "low", style=UserStyle.CALM)
         prompt = captured_prompt["messages"][0]["content"]
-        assert "不要再重复问好" in prompt
+        assert "不要再问一次好" in prompt
 
-    def test_normal_message_has_no_social_rule(self, captured_prompt):
-        """非寒暄轮次不得出现寒暄规则，否则会挤掉正常的共情追问要求。"""
+    def test_normal_message_has_no_social_line(self, captured_prompt):
+        """非寒暄轮次不得出现寒暄规则，否则会挤掉正常的话术总则。"""
         iv._call_llm("老师骂我了", [], SAD_PROBS, "low", style=UserStyle.CALM)
         prompt = captured_prompt["messages"][0]["content"]
-        assert "本轮用户只说了寒暄/客套话" not in prompt
-        assert "本轮**要追问**" in prompt
-
-    def test_first_sentence_must_land_on_concrete_content(self, captured_prompt):
-        """回应必须碰到用户说的具体人/事/原话。"""
-        iv._call_llm("老师骂我了", [], SAD_PROBS, "low", style=UserStyle.CALM)
-        prompt = captured_prompt["messages"][0]["content"]
-        assert "接住 ta 说的具体内容" in prompt
-
-    def test_bans_bare_acknowledgement_as_default(self, captured_prompt):
-        """「嗯，我在」这类留白句不能变成新的万能回复。
-
-        实测复现：把"禁止复述情绪"加狠之后，模型转向每轮都回
-        「嗯，我在。」（场景二 4/4 轮完全相同）—— 套路只是换了个样子。
-        """
-        iv._call_llm("我很难受", [], SAD_PROBS, "low", style=UserStyle.CALM)
-        prompt = captured_prompt["messages"][0]["content"]
-        assert "全篇只能用一次" in prompt
-
-    def test_bans_quoteback_plus_label_formula(self, captured_prompt):
-        """「『原话』—— 再贴个情绪判断」不能成为默认开场。
-
-        实测复现：第 2 轮「嗯，考试没考好确实挺让人难受的。」、
-        第 4 轮「『爸妈昨天又吵架了』——这事儿现在还在你心里搅着吧？」
-        —— 换了句式但骨架没变。
-        """
-        iv._call_llm("爸妈又吵架了", [], SAD_PROBS, "low", style=UserStyle.CALM)
-        prompt = captured_prompt["messages"][0]["content"]
-        assert "把 ta 的原话加个问号抛回去" in prompt
-        assert "等于没说" in prompt
-
-    def test_bans_repeating_users_self_deprecation(self, captured_prompt):
-        """用户说「他说我很废物」，不能回「你觉得你是废物」。"""
-        iv._call_llm("他说我很废物", [], SAD_PROBS, "low", style=UserStyle.CALM)
-        prompt = captured_prompt["messages"][0]["content"]
-        assert "贬低自己的话复读" in prompt
-        assert "你觉得你是废物" in prompt  # 作为禁止的反例出现
-
-    def test_offers_multiple_moves(self, captured_prompt):
-        """必须给出多种可轮换的动作/示范，否则模型只会抓住一个句式不放。"""
-        iv._call_llm("我很难受", [], SAD_PROBS, "low", style=UserStyle.CALM)
-        prompt = captured_prompt["messages"][0]["content"]
-        # 两段不同情境的完整对话示范
-        assert "示范一" in prompt
-        assert "示范二" in prompt
-        # 追问至少给出多种方向（事件/感受/想法），不是只有"什么感觉"
-        assert "探事件" in prompt
-        assert "探想法" in prompt
-
-    def test_used_openings_are_called_out(self, captured_prompt):
-        """用过「我能感受到…」之后，prompt 要点名提醒换说法。"""
-        history = [
-            {"role": "user", "content": "我很难受"},
-            {"role": "assistant", "content": "我能感受到你现在很难受。发生什么了吗？"},
-        ]
-        iv._call_llm("考试没考好", history, SAD_PROBS, "low", style=UserStyle.CALM)
-        prompt = captured_prompt["messages"][0]["content"]
-        assert "本轮硬性禁用" in prompt
-        assert "我能感受到" in prompt
-        assert "禁止用作" in prompt
-
-    def test_no_opening_reminder_on_first_turn(self, captured_prompt):
-        """首轮没有任何历史时不该出现这条提醒（避免噪音）。"""
-        iv._call_llm("我很难受", [], SAD_PROBS, "low", style=UserStyle.CALM)
-        prompt = captured_prompt["messages"][0]["content"]
-        assert "你已经用过" not in prompt
+        assert "只说了寒暄" not in prompt
 
     def test_used_openings_dedupes(self):
         history = [
@@ -358,66 +388,190 @@ class TestPromptBansTemplatedReplies:
         ]
         assert iv._used_openings(history) == ["我能感受到", "听起来你"]
 
-    def test_question_directions_are_documented(self, captured_prompt):
-        """追问要落到具体内容上，三个方向都要在。"""
-        iv._call_llm("我很难受", [], SAD_PROBS, "low", style=UserStyle.CALM)
+
+class TestPersonaDraft:
+    """用户草稿版提示词的契约（2026-10-11 第二次改版）。
+
+    用户把整段提示词换成了自己写的《角色设定：温暖的心理陪伴伙伴》（七条对话原则
+    + 对话目标），并说"提示词我觉得可以少点"。这一版**以草稿为准**，只补三块
+    机器与安全上必须的东西（身份/格式长度/不许做+底线），本类把这三块都钉住。
+
+    为什么"少点"不是审美偏好：上一版 2287 字里塞了"分档提问优先级 + 按情况回应 +
+    说之前先想 + 禁用清单"，约束条数一多，模型为了同时满足它们会把回复压到最保险的
+    形状上 —— 真机截图（ta 只说半句「我说。」）回复「我在听。」就是这种压窄的结果。
+    """
+
+    # 草稿里的七条原则标题，一个字都不许改（改了就说明有人又"顺手重写"了草稿）
+    PRINCIPLE_TITLES = (
+        "**自然真诚**",
+        "**简洁适度**",
+        "**先倾听，再引导**",
+        "**适时提问**",
+        "**尊重 ta**",
+        "**适合语音交流**",
+        "**保持合理边界**",
+    )
+
+    def test_persona_is_the_users_draft(self, captured_prompt):
+        """草稿本体必须在 prompt 里（标题 + 对话目标）。"""
+        iv._call_llm("我好难受", [], SAD_PROBS, "low", style=UserStyle.CALM)
         prompt = captured_prompt["messages"][0]["content"]
-        assert "探事件" in prompt
-        assert "探感受" in prompt
-        assert "探想法" in prompt
-        assert "不要输出给来访者" in prompt
+        assert "# 角色设定：温暖的心理陪伴伙伴" in prompt
+        for title in self.PRINCIPLE_TITLES:
+            assert title in prompt, title
+        assert "# 对话目标" in prompt
+        assert "灵活选择倾听、安慰、共情、提问或建议" in prompt
+
+    def test_content_free_short_reply_is_forbidden_abstractly(self, captured_prompt):
+        """真机回归（2026-10-11 截图）：ta 说「我说。」→ 回复「我在听。」
+
+        一句表态、什么内容都没接住，用户反馈"这最后一句回复明显不对"。
+        判据写成**抽象的**（"只表个态、什么内容都没接住 = 没回应"），并针对"只剩半句"
+        给出可执行的下一步（先复述听出来的方向，再请 ta 接着说）；
+        ⚠️ 反面示范**不许**写进 prompt：把「我在听」念一遍就是提示模型说它一次
+        （2026-10-05 的事故就是 prompt 里的示范句被整句照抄）。
+        """
+        iv._call_llm("我说。", [], SAD_PROBS, "low", style=UserStyle.CALM)
+        prompt = captured_prompt["messages"][0]["content"]
+        assert "只表个态、什么内容都没接住的短回复，等于没回应" in prompt
+        assert "明显没说完" in prompt
+        assert "再请 ta 接着说" in prompt
+        assert "细节不许补" in prompt          # 接话头不等于替 ta 编细节
+        assert "我在听" not in prompt
+
+    def test_verbose_sections_are_gone(self, captured_prompt):
+        """上一版那两节被删掉了 —— 这条断言是"少点"的闸门。
+
+        "按情况回应"（七种情境逐条给打法）与"说之前先想"（思考步骤）都是**额外约束**：
+        它们与七条原则重复，却在模型眼里是"必须逐条满足的清单"，正是回复被压窄的来源。
+        """
+        iv._call_llm("我好难受", [], SAD_PROBS, "low", style=UserStyle.CALM)
+        prompt = captured_prompt["messages"][0]["content"]
+        assert "# 按情况回应" not in prompt
+        assert "说之前先想" not in prompt
+
+    def test_safety_and_identity_survive_the_rewrite(self, captured_prompt):
+        """改草稿**不能**把身份与安全红线改掉（AGENTS.md：安全规则不得被顺手改）。"""
+        iv._call_llm("我不想活了", [], SAD_PROBS, "crisis", style=UserStyle.CALM)
+        prompt = captured_prompt["messages"][0]["content"]
+        assert "AI 陪伴者" in prompt
+        assert "不能替代线下持证的心理咨询师与精神科医生" in prompt
+        assert "# 底线" in prompt
+        assert "心理危机热线" in prompt
+        assert "不许诊断、不许提药物" in prompt
 
 
 class TestCapQuestions:
-    """一轮最多一个问句 —— 提示词写了但实测仍会抛两个。"""
+    """一轮最多一个问句 —— 提示词写了但实测仍会抛两个。
 
-    def test_two_questions_in_one_turn_keeps_the_first(self):
+    ⚠️ 保留的是**最后**一个问句（2026-10-05 改）：定稿侧要求"要问就问在最后
+    一句"（口语轮次的交接信号），保留第一个会把结尾整段砍掉，实测把模型真正想
+    问的那句连同后面的内容一起删掉，只剩 9 个字的反问。
+    """
+
+    def test_two_questions_in_one_turn_keeps_the_last(self):
         raw = "是有什么特别的事要发生吗？还是最近在学校遇到什么烦心事了？"
-        assert iv._cap_questions(raw) == "是有什么特别的事要发生吗？"
+        assert iv._cap_questions(raw) == "还是最近在学校遇到什么烦心事了？"
 
     def test_question_plus_statement_afterwards_is_preserved(self):
         """删掉多余问句时，句中的陈述句必须留着。"""
-        raw = "他们吵得严重吗？你在旁边肯定很难受吧？"
+        raw = "他们吵得严重吗？那后来呢？你在旁边肯定挺难受的。"
         capped = iv._cap_questions(raw)
         assert capped.count("？") == 1
-        assert capped == "他们吵得严重吗？"
+        assert capped == "那后来呢？你在旁边肯定挺难受的。"
 
     def test_single_question_is_untouched(self):
         raw = "老师当着全班说的？这也太让人下不来台了。"
         assert iv._cap_questions(raw) == raw
 
-    def test_statement_scattered_questions_keep_first_only(self):
+    def test_statement_scattered_questions_keep_last_only(self):
         raw = "嗯，我知道了。是那样吗？那后来呢？"
         capped = iv._cap_questions(raw)
-        assert capped == "嗯，我知道了。是那样吗？"
+        assert capped == "嗯，我知道了。那后来呢？"
 
     def test_no_question_is_noop(self):
         raw = "嗯，我在听。你不用急着说。"
         assert iv._cap_questions(raw) == raw
 
     def test_rewrites_when_capping_would_empty_the_reply(self):
-        """整段都是问句时不能删成空串，保留第一个问句（但不改写文本）。"""
+        """整段都是问句时不能删成空串，保留最后一个问句（但不改写文本）。"""
         raw = "发生了什么？你现在是什么感觉？后来呢？"
         capped = iv._cap_questions(raw)
-        assert capped == "发生了什么？"
+        assert capped == "后来呢？"
 
     def test_cap_never_invents_text(self):
         """压问句必须只做删除 —— 历史事故：它把回复改写成了无关的通用安慰。
 
         原样复现：「老师当着全班说的？那次是什么事？」曾被压成
         「那次一定有原因。」，用户看到的是一句跟 ta 说的话没关系的话。
+        现在同样只做删除：留下的是原文里的最后一句。
         """
         raw = "老师当着全班说的？那次是什么事？"
-        assert iv._cap_questions(raw) == "老师当着全班说的？"
+        assert iv._cap_questions(raw) == "那次是什么事？"
 
-    def test_two_questions_with_no_statement_are_rewritten(self):
+    def test_two_questions_with_no_statement_are_capped(self):
         """压完只剩一个问句时也是**保留该问句**，不做改写。"""
         raw = "发生了什么？你现在是什么感觉？"
-        assert iv._cap_questions(raw) == "发生了什么？"
+        assert iv._cap_questions(raw) == "你现在是什么感觉？"
 
     def test_finalize_applies_cap_even_when_question_allowed(self):
         raw = "他们吵得严重吗？你在旁边吗？"
-        assert iv._finalize_reply(raw, allow_question=True) == "他们吵得严重吗？"
+        assert iv._finalize_reply(raw, allow_question=True) == "你在旁边吗？"
+
+
+class TestQuestionLast:
+    """契约：**要问**就问在最后一句（本轮没有问句时原样返回，不补问句）。"""
+
+    def test_moves_the_only_question_to_the_end(self):
+        """问句在中间时整句挪到末尾（切句以句末标点为准，"嗯，"跟着它那一句走）。"""
+        raw = "嗯，最近有什么事让你觉得难受吗？我在这儿听着呢。"
+        assert iv._ensure_question_last(raw) == "我在这儿听着呢。嗯，最近有什么事让你觉得难受吗？"
+
+    def test_noop_when_question_is_already_last(self):
+        raw = "嗯，我在听。最近发生什么了？"
+        assert iv._ensure_question_last(raw) == raw
+
+    def test_noop_when_several_questions(self):
+        """问句不唯一时不猜 —— 先由 :func:`_cap_questions` 压到一个。"""
+        raw = "是那样吗？那后来呢？"
+        assert iv._ensure_question_last(raw) == raw
+
+    def test_noop_without_question(self):
+        raw = "嗯，我在听。你慢慢说。"
+        assert iv._ensure_question_last(raw) == raw
+
+    def test_split_merges_lone_closing_quote(self):
+        """切句会切出孤立的收尾引号，必须先并回前一句。"""
+        parts = iv._split_sentences_merged("他问我：“你还好吗？”")
+        assert parts == ["他问我：“你还好吗？”"]
+
+    def test_question_with_closing_quote_is_detected(self):
+        assert iv._is_question_sentence("…哪里会不一样？”") is True
+        assert iv._is_question_sentence("…哪里会不一样。") is False
+
+    def test_ensure_question_last_does_not_move_quotes(self):
+        """回归：引号曾被当成独立句子挪到句中间（「那……”考完之后…」）。"""
+        raw = "那……考完之后，你有没有偷偷翻过课本，心里悄悄问自己：“如果再来一次，哪里会不一样？”"
+        assert iv._ensure_question_last(raw) == raw
+
+    def test_moves_quoted_question_to_the_end(self):
+        raw = "“你还好吗？”我在旁边听着，心里也不好受。"
+        assert iv._ensure_question_last(raw) == "我在旁边听着，心里也不好受。“你还好吗？”"
+
+    def test_finalize_puts_the_caring_question_last(self):
+        raw = "考试没考好确实挺让人难受的。你当时是什么心情呢？我在这儿陪着你。"
+        out = iv._finalize_reply(
+            raw, True, user_message="我考试没考好", risk_level="low",
+        )
+        assert out.endswith("？")
+        assert "我在这儿陪着你" in out
+
+    def test_trim_keeps_the_trailing_question(self):
+        """压长度不能把结尾那句问话丢掉（它是这一轮的落点）。"""
+        raw = "这是一句很长的承接话用来把长度顶上去。" * 10 + "你当时是什么心情呢？"
+        out = iv._trim_reply(raw, [])
+        assert out.endswith("？")
+        assert len(out) <= iv._MAX_REPLY_CHARS + 20
 
 
 class TestStripTrailingQuestion:
@@ -524,17 +678,18 @@ class TestStripTrailingQuestion:
             assert out.strip(), raw
 
     def test_multi_question_reply_keeps_one_question(self):
-        """两个问句时保留第一个：宁可留一个问句，也不改写成无关的话。"""
+        """两个问句时先压成一个（保留**最后**那个），本轮不许提问时再删掉。"""
         out = iv._finalize_reply("发生了什么？你现在是什么感觉？", allow_question=False)
-        assert out == "发生了什么？"
+        assert "？" not in out and "?" not in out
+        assert out == "你现在一定很不好受。"
 
     def test_finalize_reply_respects_allow_flag(self):
         raw = "考试没考好确实难受。哪一门啊？"
         assert iv._finalize_reply(raw, allow_question=True) == raw
         assert iv._finalize_reply(raw, allow_question=False) == "考试没考好确实难受。"
 
-    def test_prompt_cools_down_but_code_keeps_the_question(self, monkeypatch):
-        """连着三轮追问：prompt 里降温，但**生成的问句要被保留**。
+    def test_consecutive_questions_are_never_stripped(self, monkeypatch):
+        """连着三轮追问也**不删问句** —— 新话术本就要求每轮以问句结尾。
 
         这条替代了早先的 test_call_llm_strips_question_when_repeating ——
         那个行为已被证明是错的（会把「老师骂你了？」削成「老师骂你了。」）。
@@ -568,9 +723,9 @@ class TestStripTrailingQuestion:
         ]
         reply = iv._call_llm("他骂我废物", history, SAD_PROBS, "low", style=UserStyle.CALM)
 
-        # 连着三轮追问 → prompt 侧确实降温了
-        assert "前面已经连着三轮用问句结尾了" in captured["messages"][0]["content"]
-        # 但生成的问句原样保留（不再按轮数删文本）
+        # prompt 侧不再按轮数降温（旧版会注入"前面已经连着三轮用问句结尾了"）
+        assert "前面已经连着三轮用问句结尾了" not in captured["messages"][0]["content"]
+        # 生成的问句原样保留（不再按轮数删文本）
         assert reply == "你妈这么说，你夹在中间最难做。那你当时说话了吗？"
 
     def test_call_llm_keeps_question_when_only_consecutive(self, monkeypatch):
@@ -620,8 +775,12 @@ class TestStripTrailingQuestion:
         assert "？" not in reply and "?" not in reply
         assert reply == "你妈这么说，你夹在中间最难做。"
 
-    def test_call_llm_strips_question_when_greeting(self, monkeypatch):
-        """寒暄轮次也不许挂问句（prompt 已写明，代码兜底）。"""
+    def test_call_llm_keeps_question_on_greeting(self, monkeypatch):
+        """寒暄轮次放行尾问句 —— 邀请 ta 开口是**允许**的，不再被删成陈述句。
+
+        提示词把提问写成选项（"想邀请 ta 开口就轻轻问一句，也可以只应一声"），
+        代码侧只在"别问了 / 情绪太激动"这类**内容判据**上删尾问句。
+        """
         class _FakeResp:
             ok = True
             status_code = 200
@@ -629,14 +788,14 @@ class TestStripTrailingQuestion:
             @staticmethod
             def json():
                 return {"choices": [{"message": {
-                    "content": "你好呀。你今天看起来有点没精神，发生什么事了吗？"
+                    "content": "你好呀。今天想说点什么？"
                 }}]}
 
         monkeypatch.setenv("DASHSCOPE_API_KEY", "test-key")
         monkeypatch.setattr(iv.requests, "post", lambda url, **kw: _FakeResp())
 
         reply = iv._call_llm("你好", [], NEUTRAL_PROBS, "low", style=UserStyle.CALM)
-        assert "？" not in reply and "?" not in reply
+        assert reply == "你好呀。今天想说点什么？"
 
     def test_pure_question_reply_is_rewritten_or_kept(self, monkeypatch):
         """用户拒绝深谈时，模型只回一个问句也要处理掉（能改写就改写）。"""
@@ -782,7 +941,12 @@ class TestQuestionAlternation:
         ]
         assert iv._assistant_asked_repeatedly(history) is False
 
-    def test_prompt_suppresses_question_after_three_asking_turns(self, captured_prompt):
+    def test_prompt_no_longer_varies_by_question_history(self, captured_prompt):
+        """连问了几轮**不再**改变 prompt —— 旧版的隔轮节拍已删除。
+
+        旧版会因为"连着三轮以问句结尾"注入降温规则，还会按 turn_count%3
+        造一个"问、问、接一句"的落地拍；两处都是"每轮话术一个样"的来源。
+        """
         history = [
             {"role": "assistant", "content": "发生了什么事？"},
             {"role": "user", "content": "考试没考好"},
@@ -792,38 +956,9 @@ class TestQuestionAlternation:
         ]
         iv._call_llm("他说我很废物", history, SAD_PROBS, "low", style=UserStyle.CALM)
         prompt = captured_prompt["messages"][0]["content"]
-        assert "前面已经连着三轮用问句结尾了" in prompt
-        assert "本轮**要追问**" not in prompt
-
-    def test_prompt_allows_question_after_two_asking_turns(self, captured_prompt):
-        """连着两轮问过之后，第三轮不因"连着三轮"被抑制。
-
-        新版加入了"问、问、接一句"的落地节拍：当这一轮恰落在落地拍
-        （turn_count%3==2）时，它会是"先不往下问"的**主动留白**，而不是
-        "连着三轮问句"那种被动的审问抑制 —— 两者动机不同，必须可区分。
-        这里的历史为 4 条 → turn_count=2 → 落地拍，故断言落地而非审问抑制。
-        """
-        history = [
-            {"role": "user", "content": "我很难受"},
-            {"role": "assistant", "content": "发生了什么事？"},
-            {"role": "user", "content": "考试没考好"},
-            {"role": "assistant", "content": "老师说什么了？"},
-        ]
-        iv._call_llm("老师骂我了", history, SAD_PROBS, "low", style=UserStyle.CALM)
-        prompt = captured_prompt["messages"][0]["content"]
-        # 是落地拍的主动留白，不是"连着三轮"的审问抑制
-        assert "先不往下问" in prompt
-        assert "前面已经连着三轮" not in prompt
-
-    def test_prompt_asks_on_non_beat_turn(self, captured_prompt):
-        """非落地拍（turn_count%3!=2）且未连着三轮时，仍鼓励往下追问。"""
-        history = [
-            {"role": "user", "content": "我很难受"},
-            {"role": "assistant", "content": "发生了什么事？"},
-        ]
-        iv._call_llm("考试没考好", history, SAD_PROBS, "low", style=UserStyle.CALM)
-        prompt = captured_prompt["messages"][0]["content"]
-        assert "本轮**要追问**" in prompt
+        for gone in ("前面已经连着三轮用问句结尾了", "先不往下问", "本轮**要追问**"):
+            assert gone not in prompt, gone
+        assert "提问是选项，不是义务" in prompt
 
 
 class TestFallbackTemplates:
@@ -920,6 +1055,20 @@ class TestClicheDedupAndLength:
         assert "我会一直在这里陪着你" not in out
         assert len(out) <= iv._MAX_REPLY_CHARS + 20
 
+    def test_social_turn_gets_the_shorter_cap(self):
+        """闲聊轮次用 40 字上限（用户要求"一般的闲聊 40 字以内就够了"）。"""
+        long = "你好呀，很高兴见到你。今天天气挺好的，你最近过得怎么样呢？" * 3
+        out = iv._finalize_reply(long, True, user_message="你好", risk_level="low")
+        assert len(out) <= iv._MAX_SOCIAL_REPLY_CHARS + 20
+        assert out.endswith("？")
+
+    def test_normal_turn_gets_the_normal_cap(self):
+        """有内容的轮次用 100 字上限，且结尾那句问话被留在末尾。"""
+        long = "我听到你说的这些了，这件事确实不容易。" * 8 + "你愿意多说说吗？"
+        out = iv._finalize_reply(long, True, user_message="我最近压力很大", risk_level="low")
+        assert len(out) <= iv._MAX_REPLY_CHARS + 20
+        assert out.endswith("？")
+
 
 class TestStreamingGateGranularity:
     """闸门按小句释放，让流式观感是"陆续长出"而非"整段蹦出"。"""
@@ -1010,16 +1159,18 @@ class TestDominantEmotionCue:
         assert iv._dominant_emotion_cue([]) == ""
         assert iv._dominant_emotion_cue([None, "x"]) == ""  # type: ignore[list-item]
 
-    def test_cue_injected_into_prompt(self, captured_prompt):
-        """有线索时必须出现在 prompt 里，且带"不许说出口"的硬约束。"""
+    def test_cue_is_no_longer_injected(self, captured_prompt):
+        """线索行自 prompt 精简后不再注入（只留负性强度数值）。
+
+        ⚠️ 断言用线索行的**完整形状**（``失落 —— <说明>``，见
+        :func:`_dominant_emotion_cue`）而不是光秃秃的"失落"二字：2026-10-11 的那版
+        提示词曾在"按情况回应"一节里正常地列举了"委屈、焦虑、孤独、失落"这些情绪名，
+        按词断言会误报成"线索又被注回来了"（那一节已随第二次改版删除，但判据照旧
+        —— 情绪名出现在 prompt 里属于正常，只有"线索行"才算注入）。
+        """
         iv._call_llm("我这次考试没考好", [], [0.01, 0.96, 0.0, 0.0, 0.03], "medium")
         prompt = captured_prompt["messages"][0]["content"]
-        assert "失落" in prompt
-        assert "不许出现上面那个词" in prompt
-
-    def test_no_cue_for_neutral_prompt(self, captured_prompt):
-        iv._call_llm("你好", [], NEUTRAL_PROBS, "low")
-        prompt = captured_prompt["messages"][0]["content"]
+        assert "失落 ——" not in prompt
         assert "最可能是在" not in prompt
 
 
@@ -1050,13 +1201,8 @@ class TestNarrativeThread:
         assert iv._narrative_thread("我很难受", []) == ""
         assert iv._narrative_thread("我很难受", [], scene_context="") == ""
 
-    def test_no_anchor_on_first_turn(self, captured_prompt):
-        """第一轮没有"上一句"可扣，硬造锚点会让模型对着寒暄接不存在的内容。"""
-        iv._call_llm("我这次考试没考好", [], SAD_PROBS, "medium")
-        prompt = captured_prompt["messages"][0]["content"]
-        assert "# 必须扣住的那条线" not in prompt
-
-    def test_anchor_and_bans_injected_with_history(self, captured_prompt):
+    def test_anchor_is_no_longer_injected(self, captured_prompt):
+        """锚点自 prompt 精简后不再注入（连贯性交给"ta 说什么你就接什么"）。"""
         iv._call_llm(
             "数学。我复习了整整一个月，结果还是这样。",
             [
@@ -1067,22 +1213,8 @@ class TestNarrativeThread:
             "medium",
         )
         prompt = captured_prompt["messages"][0]["content"]
-        assert "# 必须扣住的那条线" in prompt
-        assert "禁止跳题" in prompt
-        # 锚点取自历史里最后一条**用户**消息（本轮消息由 `_call_llm` 追加在末尾）
-        assert "我这次考试没考好" in prompt
-        assert "我听着是" in prompt  # 示范句复用禁令
-
-    def test_no_anchor_on_social_only_turn(self, captured_prompt):
-        """寒暄轮没有"线"可扣：注入了只会让模型对着"你好"去接不存在的内容。"""
-        iv._call_llm(
-            "你好",
-            [{"role": "user", "content": "你好"}, {"role": "assistant", "content": "你好呀。"}],
-            NEUTRAL_PROBS,
-            "low",
-        )
-        prompt = captured_prompt["messages"][0]["content"]
         assert "# 必须扣住的那条线" not in prompt
+        assert "禁止跳题" not in prompt
 
 
 class TestDemoSentenceReuse:
@@ -1105,7 +1237,8 @@ class TestDemoSentenceReuse:
         assert iv._used_openings([]) == []
         assert iv._used_openings([{"role": "assistant", "content": "我在。"}]) == []
 
-    def test_banned_opening_appears_in_prompt(self, captured_prompt):
+    def test_reuse_list_is_no_longer_injected(self, captured_prompt):
+        """"已用过的开场"不再注入 prompt（清单本身就是照抄源）。"""
         iv._call_llm(
             "我还是觉得难受",
             [
@@ -1116,10 +1249,300 @@ class TestDemoSentenceReuse:
             "medium",
         )
         prompt = captured_prompt["messages"][0]["content"]
-        assert "# 本轮硬性禁用" in prompt
-        assert "禁止用作**开场**" in prompt
+        assert "# 本轮硬性禁用" not in prompt
+        assert "我听着是" not in prompt
 
     def test_demo_constant_records_copy_prone_sentences(self):
         """常量是"已在示范里出现、最容易被照抄"的句子清单（记录 + 测试用）。"""
         assert "我听着是" in iv._DEMO_SENTENCES
         assert "这话太重了" in iv._DEMO_SENTENCES
+
+
+class TestClosingIntent:
+    """收束 / 结束语判据（2026-10-11 需求："我感觉好些了" → 可以收尾了）。
+
+    只测纯函数 :func:`_closing_intent`：命中面（好转 / 想结束）、不该命中的面
+    （否定表达、说的是别人、转折句里还压着负性），以及安全优先（高风险/危机
+    一律 None）。prompt 侧的接线见 :class:`TestClosingPrompt`。
+    """
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "我感觉好些了", "我好多了", "好一点了", "没那么难受了",
+            "轻松多了", "心里舒服多了", "想通了", "我明白了", "我知道怎么做了",
+        ],
+    )
+    def test_improvement_detected(self, text):
+        assert iv._closing_intent(text, "low") == "improved"
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "我先不聊了", "先这样吧", "下次再聊", "我要去忙了", "我去学习了",
+            "拜拜", "再见", "谢谢你，我好多了",
+        ],
+    )
+    def test_ending_detected(self, text):
+        assert iv._closing_intent(text, "low") == "ending"
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "我不好", "我不好受", "我不太好", "我没好", "我没好起来",
+            "还是老样子", "我不知道该怎么办",
+            "你好", "谢谢", "好的", "我好难受", "好",
+        ],
+    )
+    def test_negation_and_small_talk_do_not_hit(self, text):
+        """`好` 单独出现不算；"我不好 / 我不好受 / 我没好"必须不命中。"""
+        assert iv._closing_intent(text, "low") is None
+
+    @pytest.mark.parametrize("risk", ["high", "crisis"])
+    def test_high_risk_never_closes(self, risk):
+        """"我好多了"在危机后恰恰是最需要核实的一句 —— 不许据此收尾。"""
+        assert iv._closing_intent("我好多了", risk) is None
+        assert iv._closing_intent("先这样吧", risk) is None
+
+    def test_crisis_word_in_same_sentence_blocks_improvement(self):
+        """"我好多了，但有时候还是想死" 绝不能判成好转。"""
+        assert iv._closing_intent("我好多了，但有时候还是想死", "low") is None
+
+    def test_improvement_about_someone_else_is_not_ta(self):
+        """不带主语的"好多了"若在说别人，不算本轮好转。"""
+        assert iv._closing_intent("我朋友好多了，可我还是这样", "low") is None
+        assert iv._closing_intent("她好多了", "low") is None
+
+    def test_contrast_clause_with_residual_distress_blocks_closing(self):
+        """好转被同一句的转折句削弱时不收尾（宁可不收，也别提前关门）。"""
+        assert iv._closing_intent("我好多了，但还是有点担心", "low") is None
+
+    def test_first_person_improvement_after_address_still_hits(self):
+        """主语守卫只拦"说的是别人"，"妈妈，我好多了"仍是 ta 自己的好转。"""
+        assert iv._closing_intent("妈妈，我好多了", "low") == "improved"
+
+    def test_empty_message_is_none(self):
+        assert iv._closing_intent("", "low") is None
+        assert iv._closing_intent("   ", "low") is None
+
+    def test_ask_question_is_disabled_on_closing_turn(self):
+        """收束轮不再追问（两个调用点共用这一处判定）。"""
+        assert iv._ask_question_this_turn(
+            UserStyle.CALM, "low", "我感觉好些了"
+        ) is False
+
+    def test_ask_question_still_true_for_plain_distress(self):
+        """防误伤：普通情绪轮该问还是要问。"""
+        assert iv._ask_question_this_turn(
+            UserStyle.CALM, "low", "我今天被老师批评了，很难受",
+            negative_intensity=0.8,
+        ) is True
+
+
+class TestQuotableUserLines:
+    """收束复述的白名单：**只能**把用户原话交给模型（防幻觉的最后一环）。
+
+    2026-10-11 真机回归：空历史时模型编出了「刚才你提到，试着把心里的话说出来」。
+    提示词禁令压不住，改成"把可复述的原话列出来"这种结构性约束（见
+    :func:`_quotable_user_lines` 的 docstring）。
+    """
+
+    def test_keeps_only_user_lines(self):
+        hist = [
+            {"role": "user", "content": "我复习了一个月还是考砸了"},
+            {"role": "assistant", "content": "复习一个月还是这个结果，挺难接受的。"},
+            {"role": "system", "content": "内部说明"},
+        ]
+        assert iv._quotable_user_lines(hist) == ["我复习了一个月还是考砸了"]
+
+    def test_drops_blank_and_bare_acknowledgements(self):
+        """「嗯 / 好」这类应声复述回去像学舌，也不算"有用的一两点"。"""
+        hist = [
+            {"role": "user", "content": "   "},
+            {"role": "user", "content": "嗯"},
+            {"role": "user", "content": "好"},
+            {"role": "user", "content": "我今天特别累，什么都不想干"},
+        ]
+        assert iv._quotable_user_lines(hist) == ["我今天特别累，什么都不想干"]
+
+    def test_keeps_only_the_most_recent_lines(self):
+        hist = [{"role": "user", "content": f"第{i}句话说说看"} for i in range(5)]
+        assert iv._quotable_user_lines(hist) == [
+            "第2句话说说看", "第3句话说说看", "第4句话说说看",
+        ]
+
+    def test_dedupes_and_normalizes_whitespace(self):
+        """完全相同的原话只列一次；换行/多余空格归一成一个空格（不断词）。
+
+        ⚠️ 归一后**不同**的文本不算重复：「我今天\\n很累」会变成「我今天 很累」，
+        和「我今天很累」是两条 —— 去重按归一后的字面相等，不做模糊匹配。
+        """
+        hist = [
+            {"role": "user", "content": "我今天很累"},
+            {"role": "user", "content": " 我今天很累 "},
+            {"role": "user", "content": "我今天\n很累"},
+            {"role": "user", "content": "我今天很烦"},
+        ]
+        assert iv._quotable_user_lines(hist) == [
+            "我今天很累", "我今天 很累", "我今天很烦",
+        ]
+
+    def test_bad_input_is_safe(self):
+        assert iv._quotable_user_lines([]) == []
+        assert iv._quotable_user_lines(None) == []          # type: ignore[arg-type]
+        assert iv._quotable_user_lines(["x"]) == []         # type: ignore[list-item]
+        assert iv._quotable_user_lines([{"role": "user"}]) == []
+
+
+class TestClosingPrompt:
+    """收束轮与高危轮的 prompt 契约（走 :func:`_call_llm` 的真实接线）。"""
+
+    # 收束指令的关键短语。断言"在不在"比断言整段话术更稳：
+    # 话术会随用户反馈改措辞，而"这一轮要收束、要留门"是契约。
+    CLOSING_MARKERS = ("收束轮", "留门", "结尾不要出现问号")
+    # 断言禁语本身也在 prompt 里（以"绝不许说"的形式），守住安全红线。
+    FORBIDDEN_ASSERTIONS = ("你已经完全好了", "你没事了", "你治好了")
+
+    def test_improved_turn_switches_to_closing(self, captured_prompt):
+        iv._call_llm("我感觉好些了", [], SAD_PROBS, "low", style=UserStyle.CALM)
+        prompt = captured_prompt["messages"][0]["content"]
+        for marker in self.CLOSING_MARKERS:
+            assert marker in prompt
+        assert "说自己比刚才好一些了" in prompt
+        # 禁语清单要在 prompt 里（否则模型会把"听你这么说"写成疗效承诺）
+        assert "绝不许" in prompt
+        for phrase in self.FORBIDDEN_ASSERTIONS:
+            assert phrase in prompt
+
+    def test_ending_turn_switches_to_closing(self, captured_prompt):
+        iv._call_llm("我先不聊了", [], SAD_PROBS, "low", style=UserStyle.CALM)
+        prompt = captured_prompt["messages"][0]["content"]
+        for marker in self.CLOSING_MARKERS:
+            assert marker in prompt
+        assert "想先聊到这里" in prompt
+
+    def test_closing_forbids_reciting_things_ta_never_said(self, captured_prompt):
+        """真机回归（2026-10-11）：收束第 2 步的"复述"是幻觉源。
+
+        实测（空历史 + 用户只说"我感觉好些了，谢谢你陪我聊"）模型编出了
+        「刚才你说试着把心里的话说出来，整个人就轻松了一点；还提到今天早饭
+        吃得很慢，也没催自己」—— ta 一个字都没说过。收束话术**必须**写明
+        只能复述真说过的话、想不起来就跳过这一步，否则它正好绕过"不许编"。
+        """
+        iv._call_llm("我感觉好些了", [], SAD_PROBS, "low", style=UserStyle.CALM)
+        prompt = captured_prompt["messages"][0]["content"]
+        assert "只能复述 ta 真的说过的话" in prompt
+        assert "直接跳过这一步" in prompt
+        assert "刚才你提到" not in prompt   # 反面示范本身也不许写进 prompt
+
+    def test_closing_recital_is_whitelisted_to_the_users_own_words(self, captured_prompt):
+        """有历史时，可复述的原话被逐条列出来 —— 模型没有"凭空写"的余地。"""
+        history = [
+            {"role": "user", "content": "我复习了一个月还是考砸了"},
+            {"role": "assistant", "content": "复习一个月还是这个结果，挺难接受的。"},
+            {"role": "user", "content": "嗯"},
+        ]
+        iv._call_llm("我感觉好些了", history, SAD_PROBS, "low", style=UserStyle.CALM)
+        prompt = captured_prompt["messages"][0]["content"]
+        assert "只从下面这几句 ta **自己说过**的原话里" in prompt
+        assert "我复习了一个月还是考砸了" in prompt
+        assert "只能" in prompt
+
+    def test_closing_is_mutually_exclusive_with_social_and_no_question(self, captured_prompt):
+        """收束 > 寒暄/不提问：三段本轮规则最多只能生效一条。
+
+        收束轮要求"结尾不要出现问号"，寒暄轮则建议"想邀请 ta 开口就问一句"
+        —— 两段并存时模型会挑更显眼的那条，收束就静默失效了。
+        """
+        iv._call_llm("我感觉好些了", [], SAD_PROBS, "low", style=UserStyle.CALM)
+        prompt = captured_prompt["messages"][0]["content"]
+        assert "收束轮" in prompt
+        assert "想邀请 ta 开口" not in prompt            # 寒暄规则已让位
+        assert "这一轮**不要提问**" not in prompt       # 通用"不要提问"也已让位
+
+    def test_plain_distress_turn_has_no_closing(self, captured_prompt):
+        """防误伤：普通情绪轮不得出现收束指令。"""
+        iv._call_llm(
+            "我今天被老师批评了，很难受", [], SAD_PROBS, "low", style=UserStyle.CALM
+        )
+        prompt = captured_prompt["messages"][0]["content"]
+        assert "收束轮" not in prompt
+        assert "留门" not in prompt
+
+    def test_high_risk_turn_keeps_safety_confirmation(self, captured_prompt):
+        """高风险轮即便 ta 说"我好多了"，也必须继续走安全确认。"""
+        iv._call_llm("我好多了", [], SAD_PROBS, "high", style=UserStyle.CALM)
+        prompt = captured_prompt["messages"][0]["content"]
+        assert "收束轮" not in prompt
+        assert "先按上面「底线」做安全确认" in prompt
+
+    def test_greeting_turn_keeps_its_own_rule(self, captured_prompt):
+        """回归：收束逻辑不得把普通寒暄轮的打法改掉。"""
+        iv._call_llm("你好", [], NEUTRAL_PROBS, "low", style=UserStyle.CALM)
+        prompt = captured_prompt["messages"][0]["content"]
+        assert "想邀请 ta 开口" in prompt
+        assert "收束轮" not in prompt
+
+class TestSpeakPlanContract:
+    """`speak` 计划的完整性契约：**分段拼接必须等于定稿文本**（按空白归一化）。
+
+    为什么把它当成不变量：客户端是**按 `speak.segments` 送合成**的，字幕也以
+    `speak.text` 为准。两者一旦对不上，"听到的"和"看到的"从源头就分叉了 ——
+    2026-10-11 用户报告的"回复和语音内容完全不匹配"正是这一类。
+    """
+
+    CASES = (
+        "听起来今天在学校挺不好受的。老师批评你的时候，哪句话最扎心？",
+        "嗯， 我在。今天想从哪儿说起？",          # 句中带空格（服务端会 strip）
+        "可以打 400 161 9995 找值班老师。",        # 号码：客户端有意不合成
+        "你的 CBT 练习做得不错，继续这样。",        # 英文缩写（术语替换发生在更下游）
+        "第一句。第二句！第三句？第四句；第五句",
+        "这是一句没有标点的很长的话" * 8,          # 超长无标点
+        "……",                                   # 纯标点
+        "a b c d e. f g h?",
+    )
+
+    @pytest.mark.parametrize("text", CASES)
+    def test_split_speak_units_is_lossless(self, text):
+        segs = iv._split_speak_units(text)
+        if not _no_space(text):
+            assert segs == []
+            return
+        assert _no_space("".join(segs)) == _no_space(text), (
+            f"分段丢了字或改了字：{segs!r}"
+        )
+
+    @pytest.mark.parametrize("text", CASES)
+    def test_plan_segments_match_planned_text(self, text):
+        if not _no_space(text):
+            return
+        planned, segs = iv._plan_streamed_reply(
+            text, True, user_message="我今天有点累",
+            conversation_history=[], risk_level="low",
+        )
+        if segs is None:
+            # 定稿改动了文本时**刻意不给计划**（宁可不给，也不给对不上的计划）
+            assert _no_space(planned) != _no_space(text)
+            return
+        assert _no_space("".join(segs)) == _no_space(planned)
+
+    def test_plan_refuses_when_finalize_rewrites_text(self, monkeypatch):
+        """定稿改动了文本时必须返回 segments=None（宁可不给计划，也不给对不上的计划）。
+
+        契约原文：*"`segments` 为 None 表示计划不可信（定稿改动了文本），
+        消费端应退回按 delta 自行切分 —— 宁可不给计划，也不能给出与 text 对不上的计划。"*
+
+        这里把 `_finalize_reply` 换成"一定会改写"的桩，测的是**分支本身**；
+        定稿具体会改什么由其它测试覆盖。刻意**不用**"两个问句"做样例：
+        问句是在 `_cap_questions` 阶段压掉的，那时计划还没生成，属于正常路径。
+        """
+        monkeypatch.setattr(
+            iv, "_finalize_reply",
+            lambda text, *a, **k: text + "（审计改写）",
+        )
+        planned, segs = iv._plan_streamed_reply(
+            "你好呀。", True, user_message="你好",
+            conversation_history=[], risk_level="low",
+        )
+        assert planned.endswith("（审计改写）")
+        assert segs is None

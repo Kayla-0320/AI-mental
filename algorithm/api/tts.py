@@ -22,12 +22,17 @@
     {"type":"status","available":true,"engine":"qwen3-tts",
      "sample_rate":24000,"num_speakers":1,"num_threads":0,
      "voice_prompt":"温和、共情、成熟女性…","error":""}
-    {"type":"start","seq":1,"sample_rate":24000}
-    二进制帧（1 个）= int16 小端、单声道 PCM，即整句音频
+    {"type":"start","seq":1,"sample_rate":24000,"spoken_text":"实际被念出来的文本"}
+    二进制帧（0..N 个）= int16 小端、单声道 PCM，按到达顺序拼接即整句音频
     {"type":"end","seq":1,"spoken_text":"...","audio_ms":4101.1,
      "first_chunk_ms":443.4,"synth_ms":443.4,"rtf":0.108,"cancelled":false}
     {"type":"cancelled","seq":1}
     {"type":"error","seq":1,"message":"……"}
+
+⚠️ **`start` 必须带 `spoken_text`**（2026-10-05 起）：客户端改成"边收边播"——
+第一块 PCM 一到就排进播放时间轴，不再攒到 `end`。而 `onStart` 回调需要
+`spoken_text` 做字幕定位与自回声过滤，那时 `end` 还没到，只能靠 `start` 带过来。
+术语替换在 `say` 分支里就已经算好（`prepare_for_speech`），这里直接回传即可。
 
 **为什么用 `start` / `end` 文本帧把二进制帧包起来**：二进制帧自身没有边界语义，
 客户端无法知道"这一帧属于哪一句"。
@@ -61,6 +66,7 @@ from pydantic import BaseModel, Field
 from shared.dataclasses import TtsEngine
 from tts import create_engine, float_to_pcm16
 from tts.pronunciation import prepare_for_speech
+from tts.timeline import GAP_ALERT_MS, TtsTimeline
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +78,31 @@ _TTS_POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tts-synth")
 
 #: 收尾时等待在途合成结束的上限（秒）。超过就放弃，避免客户端断开后连接悬挂。
 _DRAIN_TIMEOUT_S = 8.0
+
+#: 供音时间线里的"供音不足"告警阈值（有效 RTF）。见 `tts/timeline.py` 的口径说明。
+#: `> 1` = 平均供音速度慢于播放速度 ⇒ 缓冲区会被逐渐吃空（用户体感：越说越卡）。
+_RTF_ALERT = 1.0
+
+#: 时间线日志总开关。默认开（用户口径：先用日志找出卡顿时缓冲区是否见底）；
+#: 置 `TTS_TIMELINE_LOG=0` 可关掉。
+_TIMELINE_LOG = (os.environ.get("TTS_TIMELINE_LOG", "1") or "1") not in ("0", "false", "False")
+
+
+def _log_timeline(line: "TtsTimeline", label: str = "") -> None:
+    """把一段的供音时间线写进日志（摘要 + 只在异常时展开逐块明细）。
+
+    为什么摘要与明细分开：一次回复有 3~5 句，每句十几到几十块，
+    全展开会把日志淹掉；而"卡顿那一刻"需要的正是明细。所以：
+      正常 → 一行摘要；有停顿或供音不足 → 摘要用 WARNING，并附逐块明细。
+    """
+    if not _TIMELINE_LOG:
+        return
+    insufficient = line.effective_rtf > _RTF_ALERT and line.audio_ms > 0
+    if line.gaps_ms or insufficient:
+        logger.warning("%s\n%s", line.summary(label), line.dump(limit=40))
+    else:
+        logger.info("%s", line.summary(label))
+
 
 
 def _voice_preferences() -> tuple[int, float]:
@@ -219,6 +250,10 @@ async def tts_stream(websocket: WebSocket) -> None:
 
             if not await _send_json(websocket, {
                 "type": "start", "seq": seq, "sample_rate": engine.sample_rate,
+                # `spoken_text` 必须在这里就给：客户端"边收边播"，第一块 PCM 到达时
+                # 就要用真文本触发 onStart（字幕定位 / 自回声过滤）。`end` 那时还早。
+                # 注意 `text` 是 say 分支里 `prepare_for_speech` 之后的文本。
+                "spoken_text": text,
             }):
                 return
 
@@ -255,6 +290,13 @@ async def tts_stream(websocket: WebSocket) -> None:
                 )
 
                 # 边合成边发送：从 Queue 取块并推送，直到收到 None（合成结束）
+                #
+                # 同时记**供音时间线**（`tts/timeline.py`）：每一块"从微服务收到 → 发给浏览器"
+                # 都记一次时间与字节数。用户口径的排查目标是"卡顿那一刻缓冲区是否见底"，
+                # 而缓冲区见底只有两种上游原因，分界线就在这条时间线上：
+                #   · 块与块之间出现 > GAP_ALERT_MS 的停顿 → 8002 推理慢/8001 事件循环被占；
+                #   · 块很密但有效 RTF > 1 → 平均供音速度慢于播放速度（缓冲区必然被吃空）。
+                timeline = TtsTimeline(stage="algorithm", seq=seq, sample_rate=engine.sample_rate)
                 try:
                     while True:
                         try:
@@ -266,6 +308,7 @@ async def tts_stream(websocket: WebSocket) -> None:
                             continue
                         if chunk is None:
                             break
+                        timeline.add_chunk(len(chunk))
                         # 发送二进制帧
                         try:
                             await websocket.send_bytes(chunk)
@@ -293,6 +336,15 @@ async def tts_stream(websocket: WebSocket) -> None:
                 if seq in cancelled or result.cancelled:
                     await _send_json(websocket, {"type": "cancelled", "seq": seq})
                     continue
+
+                # 供音时间线（在 `end` 之前打：这样它与 `end` 自报的 rtf 能并排对账）
+                timeline.sample_rate = int(result.sample_rate or engine.sample_rate or 0)
+                logger.debug(
+                    "[TTS:ws] 上游自报 seq=%s synth=%.0fms audio=%.0fms rtf=%.2f",
+                    seq, result.synth_ms, result.audio_ms,
+                    (result.synth_ms / result.audio_ms) if result.audio_ms else 0.0,
+                )
+                _log_timeline(timeline, label=f"字{len(text)}")
 
                 if result.error:
                     await _send_json(websocket, {

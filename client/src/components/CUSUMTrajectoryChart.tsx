@@ -103,6 +103,29 @@ function cusumDetect(
   return { cusumPos, cusumNeg, direction, changePoints };
 }
 
+/**
+ * 把后端 CUSUM 的方向取值归一化到本组件使用的三档。
+ *
+ * ⚠️ 两边词表不同源：`assessment/temporal_trajectory.py` 产出的是
+ * `worsening / improving / stable / unknown / none`，而这里的
+ * `getDirectionInfo` 只认 `deteriorating / improving / stable`。
+ * 不归一化的话 `worsening` 会落进 default 分支、把"恶化"显示成"稳定"。
+ */
+function normalizeDirection(
+  trajectory?: string | null,
+): 'deteriorating' | 'improving' | 'stable' | null {
+  if (!trajectory) return null;
+  switch (trajectory) {
+    case 'worsening':
+    case 'deteriorating':
+      return 'deteriorating';
+    case 'improving':
+      return 'improving';
+    default:
+      return 'stable';
+  }
+}
+
 function getDirectionInfo(direction: string) {
   switch (direction) {
     case 'deteriorating':
@@ -147,8 +170,8 @@ export default function CUSUMTrajectoryChart({ messages, tamerResult }: CUSUMTra
     }));
   }, [messages]);
 
-  // 优先使用后端 TAMER 结果，否则前端自算
-  const direction = tamerResult?.trajectory ?? useMemo(() => {
+  // 前端自算的兜底方向（后端没给 tamerResult 时用）
+  const localDirection = useMemo(() => {
     if (chartData.length === 0) return 'stable';
     const lastPos = chartData[chartData.length - 1]?.cusumPos ?? 0;
     const lastNeg = chartData[chartData.length - 1]?.cusumNeg ?? 0;
@@ -157,6 +180,15 @@ export default function CUSUMTrajectoryChart({ messages, tamerResult }: CUSUMTra
     if (lastNeg > threshold) return 'improving';
     return 'stable';
   }, [chartData]);
+
+  // 优先使用后端 TAMER 结果，否则前端自算。
+  //
+  // ⚠️ Hook 必须**无条件**调用：原写法 `tamerResult?.trajectory ?? useMemo(...)`
+  // 里 `??` 右侧是懒求值的，一旦 tamerResult 有值这一帧就少调一个 Hook ——
+  // React 会抛 "Rendered fewer hooks than expected"。此前后端恒不返回
+  // tamerResult（Node 层没透传），所以"因为没数据才没炸"，数据一接通必炸。
+  // ⚠️ 后端取值需归一化，见 `normalizeDirection`。
+  const direction = normalizeDirection(tamerResult?.trajectory) ?? localDirection;
 
   const dirInfo = getDirectionInfo(direction);
 

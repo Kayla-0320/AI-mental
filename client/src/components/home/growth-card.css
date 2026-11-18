@@ -1,0 +1,456 @@
+/* ============================================================================
+ * 首页「我的成长」卡片 —— 只服务 GrowthCard.tsx
+ *
+ * 约定：
+ *   · 所有类名以 gh-growth- 开头，避免与其它首页组件（gh-mood-* / gh-sec__*）撞车；
+ *   · 颜色一律走 garden.css 的 token，不另起一套色板；
+ *   · 卡片主题 = 奶油/日落橙（garden.css 的 .gh-card--sun 偏浅，这里再叠一层暖色）。
+ * ========================================================================== */
+
+.gh-growth {
+  position: relative;
+  overflow: hidden;
+  padding: 22px 24px 18px;
+  background: linear-gradient(145deg, var(--gh-cream-1) 0%, var(--gh-sun-3) 52%, var(--gh-cream-2) 100%);
+}
+
+/* ---- 装饰层：不拦截点击、不进无障碍树 ---- */
+.gh-growth__decor {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  border-radius: inherit;
+}
+
+.gh-growth__blob {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(38px);
+  opacity: 0.5;
+}
+
+.gh-growth__blob--sun {
+  top: -70px;
+  right: 8%;
+  width: 210px;
+  height: 210px;
+  background: radial-gradient(circle, rgba(255, 199, 138, 0.85) 0%, rgba(255, 199, 138, 0) 70%);
+}
+
+.gh-growth__blob--sakura {
+  bottom: -90px;
+  left: 6%;
+  width: 240px;
+  height: 240px;
+  background: radial-gradient(circle, rgba(255, 179, 205, 0.7) 0%, rgba(255, 179, 205, 0) 70%);
+}
+
+.gh-growth__blob--mint {
+  top: 34%;
+  right: -60px;
+  width: 180px;
+  height: 180px;
+  background: radial-gradient(circle, rgba(166, 224, 203, 0.6) 0%, rgba(166, 224, 203, 0) 70%);
+}
+
+.gh-growth__leaf {
+  position: absolute;
+  top: -26px;
+  right: -18px;
+  width: 200px;
+  height: 200px;
+  opacity: 0.22;
+  transform: rotate(-8deg);
+}
+
+/* ---- 标题行 ---- */
+.gh-growth__head {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.gh-growth__head-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.gh-growth__badge {
+  background: linear-gradient(140deg, var(--gh-mint-3) 0%, var(--gh-sun-3) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.85);
+  box-shadow: var(--gh-sh-1);
+}
+
+.gh-growth__titles {
+  min-width: 0;
+}
+
+.gh-growth__title {
+  font-size: 19px;
+  font-weight: 700;
+  line-height: 1.3;
+  color: var(--gh-ink-1);
+}
+
+.gh-growth__sub {
+  margin-top: 3px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--gh-ink-3);
+}
+
+.gh-growth__more {
+  flex: 0 0 auto;
+  margin-top: 4px;
+}
+
+/* ---- 主体：手机单列，≥768 起左右两栏 ---- */
+.gh-growth__body {
+  /* 必须显式抬到装饰层之上：.gh-growth__decor 里的模糊色块是 absolute，
+     若这里不给定位上下文，默认层级的色块会盖住圆环与维度卡（实测整块内容被糊掉）。 */
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 18px;
+  align-items: center;
+}
+
+/* ---- 圆环 ---- */
+.gh-growth__ring-wrap {
+  position: relative;
+  justify-self: center;
+  width: 168px;
+  height: 168px;
+  flex: 0 0 auto;
+}
+
+.gh-growth__ring {
+  width: 100%;
+  height: 100%;
+  display: block;
+  transform: rotate(-90deg); /* 12 点方向起笔 */
+  overflow: visible;
+}
+
+.gh-growth__ring-track {
+  fill: none;
+  stroke: rgba(124, 152, 184, 0.16);
+  stroke-width: 14;
+}
+
+.gh-growth__ring-fill {
+  fill: none;
+  stroke: url(#ghGrowthRing);
+  stroke-width: 14;
+  stroke-linecap: round;
+  animation: ghGrowthRing 1.1s var(--gh-ease) both;
+}
+
+@keyframes ghGrowthRing {
+  from { stroke-dashoffset: var(--gh-growth-dash); }
+}
+
+.gh-growth__ring-center {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  text-align: center;
+}
+
+.gh-growth__score {
+  font-size: 38px;
+  font-weight: 800;
+  line-height: 1;
+  color: var(--gh-ink-1);
+  letter-spacing: -0.5px;
+}
+
+.gh-growth__score-label {
+  font-size: 12px;
+  color: var(--gh-ink-3);
+}
+
+/* ---- 等级区 ---- */
+.gh-growth__level {
+  min-width: 0;
+}
+
+.gh-growth__lv {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--gh-ink-1);
+  line-height: 1.35;
+}
+
+.gh-growth__lv-icon {
+  font-size: 22px;
+  line-height: 1;
+}
+
+.gh-growth__summary {
+  margin-top: 6px;
+  font-size: 13.5px;
+  line-height: 1.7;
+  color: var(--gh-ink-2);
+}
+
+.gh-growth__xp {
+  margin-top: 14px;
+}
+
+.gh-growth__xp-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.gh-growth__xp-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--gh-ink-2);
+}
+
+.gh-growth__xp-pct {
+  font-size: 12px;
+  color: var(--gh-ink-3);
+}
+
+.gh-growth__bar {
+  position: relative;
+  height: 10px;
+  border-radius: var(--gh-r-pill);
+  background: rgba(124, 152, 184, 0.16);
+  overflow: hidden;
+}
+
+.gh-growth__bar-fill {
+  display: block;
+  height: 100%;
+  width: 100%;
+  border-radius: inherit;
+  transform-origin: left center;
+  background: linear-gradient(90deg, var(--gh-sun-2) 0%, var(--gh-sakura-2) 100%);
+  transition: transform 0.7s var(--gh-ease);
+}
+
+/* ---- 四维度卡 ---- */
+.gh-growth__tiles {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.gh-growth__tile {
+  padding: 10px 12px 12px;
+  border-radius: var(--gh-r-md);
+  border: 1px solid rgba(255, 255, 255, 0.8);
+  background: rgba(255, 255, 255, 0.66);
+  box-shadow: 0 1px 2px rgba(72, 108, 148, 0.04);
+}
+
+.gh-growth__tile-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.gh-growth__tile-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.gh-growth__tile-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--gh-ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gh-growth__tile-value {
+  margin-top: 4px;
+  font-size: 21px;
+  font-weight: 700;
+  line-height: 1.2;
+  color: var(--gh-ink-1);
+}
+
+.gh-growth__tile-max {
+  margin-left: 2px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--gh-ink-3);
+}
+
+.gh-growth__tile-track {
+  height: 5px;
+  margin-top: 8px;
+  border-radius: var(--gh-r-pill);
+  background: rgba(124, 152, 184, 0.16);
+  overflow: hidden;
+}
+
+.gh-growth__tile-fill {
+  display: block;
+  height: 100%;
+  width: 100%;
+  border-radius: inherit;
+  transform-origin: left center;
+  background: linear-gradient(90deg, var(--gh-mint-2) 0%, var(--gh-sun-2) 100%);
+  transition: transform 0.7s var(--gh-ease);
+}
+
+/* 样本不足：文字而不是 0，且不要抢视觉 */
+.gh-growth__tile-empty {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--gh-ink-3);
+}
+
+/* ---- 底部打卡小条 ---- */
+.gh-growth__stripe {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--gh-line);
+}
+
+.gh-growth__chip {
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid var(--gh-line);
+  color: var(--gh-ink-2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- 骨架屏尺寸（形状与真实内容对齐） ---- */
+.gh-growth__sk-ring {
+  width: 168px;
+  height: 168px;
+  border-radius: 50%;
+}
+
+.gh-growth__sk-line {
+  height: 12px;
+  margin-bottom: 10px;
+}
+
+.gh-growth__sk-line--lg {
+  width: 46%;
+  height: 18px;
+}
+
+.gh-growth__sk-line--sm {
+  width: 56%;
+  height: 10px;
+}
+
+.gh-growth__sk-bar {
+  height: 10px;
+  margin: 14px 0 4px;
+  border-radius: var(--gh-r-pill);
+}
+
+.gh-growth__sk-chip {
+  width: 96px;
+  height: 24px;
+  border-radius: var(--gh-r-pill);
+}
+
+/* ---- 响应式 ---- */
+@media (min-width: 768px) {
+  .gh-growth {
+    padding: 26px 28px 20px;
+  }
+
+  .gh-growth__body {
+    grid-template-columns: 196px minmax(0, 1fr);
+    gap: 26px;
+  }
+
+  .gh-growth__ring-wrap {
+    width: 188px;
+    height: 188px;
+  }
+}
+
+@media (min-width: 1080px) {
+  .gh-growth__body {
+    grid-template-columns: 216px minmax(0, 1fr);
+    gap: 32px;
+  }
+
+  .gh-growth__ring-wrap {
+    width: 208px;
+    height: 208px;
+  }
+
+  .gh-growth__tiles {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+/* 小屏：标题行竖排，"去看看"不再被挤成两行 */
+@media (max-width: 767px) {
+  .gh-growth {
+    padding: 18px 16px 16px;
+  }
+
+  .gh-growth__head {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .gh-growth__more {
+    align-self: flex-start;
+    margin-top: 0;
+  }
+
+  .gh-growth__leaf {
+    width: 150px;
+    height: 150px;
+    opacity: 0.16;
+  }
+}
+
+/* 降低动效偏好：圆环与进度条都直接给出终值，不做过渡 */
+@media (prefers-reduced-motion: reduce) {
+  .gh-growth__ring-fill {
+    animation: none !important;
+  }
+
+  .gh-growth__bar-fill,
+  .gh-growth__tile-fill {
+    transition: none !important;
+  }
+
+  .gh-growth__blob {
+    filter: none;
+    opacity: 0.28;
+  }
+}

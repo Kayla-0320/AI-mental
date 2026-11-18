@@ -201,70 +201,140 @@ def adaptive_threshold(
 # 矛盾类型判定
 # ============================================================
 
+# 通道方向性判据的边界（2026-10-10 标定）。
+#
+# 标定口径：先把客户端的原始声学量纲（dBFS / Hz / 原始语速刻度）经
+# `tamer_framework.normalize_*` 归一化，再在真实取值范围内扫描声学唤醒
+# （happy + anxious + angry），实测（`_tamer_arousal_probe.py`）：
+#
+#   很平静（轻声、低音、慢、多停顿） arousal ≈ 0.35
+#   平静偏中性                     arousal ≈ 0.46
+#   中性说话                       arousal ≈ 0.54
+#   略紧张                         arousal ≈ 0.63
+#   紧张/激动（大声、高音、快）       arousal ≈ 0.71
+#   非常激动                       arousal ≈ 0.77
+#   （理论下界 ≈ 0.14，上界 ≈ 0.65~0.77 视输入范围）
+#
+# 因此 0.62 以上算"声音紧张"，0.46 以下算"声音平静"，中间留一条**死区**：
+# 声学证据落在死区时不下"掩饰/表演"的结论（宁可漏报不误报）。
+# 文本侧 0.45 / 0.55 把"言语平静 / 言语痛苦"切开（实测平静文本 neg=0.30、
+# 痛苦文本 neg=0.93，留有余量）。
+_TEXT_CALM_MAX = 0.45       # 文本负性 ≤ 此值视为"言语平静"
+_TEXT_DISTRESS_MIN = 0.55   # 文本负性 ≥ 此值视为"言语痛苦"
+_VOICE_AROUSAL_HIGH = 0.62  # 声学唤醒 ≥ 此值视为"声音紧张"
+_VOICE_AROUSAL_LOW = 0.46   # 声学唤醒 ≤ 此值视为"声音平静"
+
+
+def _channel_confidence(*margins: float) -> float:
+    """把"离判定边界还有多远"折成 0.55~0.95 的置信度。
+
+    Args:
+        *margins: 每个已满足条件的归一化余量（0 = 刚好压线，1 = 远离边界）。
+
+    Returns:
+        float: 置信度。
+    """
+    if not margins:
+        return 0.55
+    m = min(max(0.0, min(1.0, x)) for x in margins)
+    return round(min(0.95, 0.55 + 0.4 * m), 4)
+
+
 def classify_incongruence(
     text_emotion: list[float],
     voice_emotion: list[float],
     mis_history: list[float],
     k: float = 1.5,
 ) -> dict:
-    """判定矛盾类型
-    
+    """判定跨模态矛盾类型。
+
+    ⚠️ 判据说明（2026-10-10 修正，请连同下面的实测一起读）
+    ---------------------------------------------------------
+    原实现把 ``MIS > threshold`` 当作**唯一开关**。实测证明这条开关在本项目的
+    特征空间里失效，而且方向是反的：
+
+    | 样本 | MIS |
+    | --- | --- |
+    | 一致：平静文本 + 平静声音 | 0.33 |
+    | 一致：痛苦文本 + 紧张声音 | **0.59** |
+    | 掩饰：平静文本 + 紧张声音 | 0.27 |
+    | 表演：痛苦文本 + 平静声音 | **0.14** |
+
+    真正一致的"痛苦 + 紧张"反而比教科书式的掩饰样本 MIS 更高。
+    原因是两条通道的向量来源不同：文本情绪是分类器输出的概率向量，声学情绪是
+    :func:`acoustic_to_emotion_vector` 这个粗粒度启发式映射的输出，其"形状"主要
+    由映射本身决定，而非由跨通道一致性决定；再加上两个概率向量的余弦相似度天然
+    偏高（随机分布对实测中位数仅 0.20、p90 仅 0.42），默认阈值 0.3 几乎不可达。
+
+    因此改用**通道方向性对比**作为主判据 —— 这正是本模块 docstring 与 Ekman
+    跨通道不一致理论所描述的量，也是"掩饰/表演"的临床定义：
+
+    - ``masking``：言语平静（低负性）∧ 声音紧张（高唤醒）
+    - ``performative``：言语痛苦（高负性）∧ 声音平静（低唤醒）
+
+    ``MIS`` 仍按原公式计算并返回，供**展示与可视化**（前端 MIS 数值、矛盾提示卡）
+    以及 confidence 调制使用，但不再单独决定"是否矛盾"。
+
     Args:
-        text_emotion: 文本情绪向量
-        voice_emotion: 声学情绪向量
-        mis_history: 历史 MIS 值
-        k: 灵敏度系数
-    
+        text_emotion: 文本情绪概率 ``[快乐, 悲伤, 焦虑, 愤怒, 中性]``。
+        voice_emotion: 声学情绪向量，同序 5 维。
+        mis_history: 历史 MIS 值（保留形参以兼容原接口并计算自适应阈值）。
+        k: 自适应阈值灵敏度系数（仅影响返回的 ``threshold`` 字段）。
+
     Returns:
-        dict: {
-            "type": str,  # congruent/masking/performative
-            "mis": float,
-            "threshold": float,
-            "confidence": float,
-        }
+        dict: ``{type, mis, threshold, confidence}``；``type`` ∈
+        ``congruent / masking / performative / other_incongruence``。
     """
-    # 计算 MIS
+    # MIS 照原公式算，仅作幅度展示（判据见上方说明，不作为开关）
     mis = compute_mis(text_emotion, voice_emotion)
-    
-    # 计算自适应阈值
     threshold = adaptive_threshold(mis_history, k)
-    
-    # 判定是否矛盾
-    if mis <= threshold:
+
+    # 通道方向性特征
+    text_negative = sum(text_emotion[1:4])          # 悲伤 + 焦虑 + 愤怒
+    text_calm = text_negative <= _TEXT_CALM_MAX
+    text_distressed = text_negative >= _TEXT_DISTRESS_MIN
+    voice_arousal = voice_emotion[0] + voice_emotion[2] + voice_emotion[3]  # 快乐 + 焦虑 + 愤怒
+    voice_aroused = voice_arousal >= _VOICE_AROUSAL_HIGH
+    voice_flat = voice_arousal <= _VOICE_AROUSAL_LOW
+
+    # 掩饰型：言语平静 ∧ 声音紧张
+    if text_calm and voice_aroused:
+        return {
+            "type": IncongruenceType.MASKING,
+            "mis": round(mis, 4),
+            "threshold": round(threshold, 4),
+            "confidence": _channel_confidence(
+                (_TEXT_CALM_MAX - text_negative) / _TEXT_CALM_MAX,
+                (voice_arousal - _VOICE_AROUSAL_HIGH) / (1.0 - _VOICE_AROUSAL_HIGH),
+            ),
+        }
+
+    # 表演型：言语痛苦 ∧ 声音平静
+    if text_distressed and voice_flat:
+        return {
+            "type": IncongruenceType.PERFORMATIVE,
+            "mis": round(mis, 4),
+            "threshold": round(threshold, 4),
+            "confidence": _channel_confidence(
+                (text_negative - _TEXT_DISTRESS_MIN) / (1.0 - _TEXT_DISTRESS_MIN),
+                (_VOICE_AROUSAL_LOW - voice_arousal) / _VOICE_AROUSAL_LOW,
+            ),
+        }
+
+    # 通道方向一致（平静配平静 / 痛苦配紧张）
+    if (text_calm and voice_flat) or (text_distressed and voice_aroused):
         return {
             "type": IncongruenceType.CONGRUENT,
             "mis": round(mis, 4),
             "threshold": round(threshold, 4),
             "confidence": 0.8,
         }
-    
-    # 矛盾类型判定
-    text_negative = sum(text_emotion[1:4])  # 悲伤 + 焦虑 + 愤怒
-    voice_arousal = voice_emotion[0] + voice_emotion[2] + voice_emotion[3]  # 快乐 + 焦虑 + 愤怒
-    
-    if text_negative < 0.3 and voice_arousal > 0.5:
-        # 言语平静但声音高唤醒 → 掩饰
-        confidence = min(0.95, 0.5 + (mis - threshold) * 2)
-        return {
-            "type": IncongruenceType.MASKING,
-            "mis": round(mis, 4),
-            "threshold": round(threshold, 4),
-            "confidence": round(confidence, 4),
-        }
-    elif text_negative > 0.5 and voice_arousal < 0.3:
-        # 言语痛苦但声音低唤醒 → 表演性
-        confidence = min(0.95, 0.5 + (mis - threshold) * 2)
-        return {
-            "type": IncongruenceType.PERFORMATIVE,
-            "mis": round(mis, 4),
-            "threshold": round(threshold, 4),
-            "confidence": round(confidence, 4),
-        }
-    else:
-        # 其他矛盾类型
-        return {
-            "type": "other_incongruence",
-            "mis": round(mis, 4),
-            "threshold": round(threshold, 4),
-            "confidence": 0.5,
-        }
+
+    # 中间地带（例如文本中性 + 声音中性）：既不算一致，也不算这两类矛盾
+    return {
+        "type": "other_incongruence",
+        "mis": round(mis, 4),
+        "threshold": round(threshold, 4),
+        "confidence": 0.5,
+    }
+

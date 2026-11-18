@@ -24,6 +24,10 @@
  * `user` → `revise` → `done`。调用方不得依赖 `meta` 来创建气泡。
  */
 
+// 面部实时状态的类型来自唯一的构造处（`facialLiveState.ts`），本文件只做透传。
+// `import type` 在编译后被完全擦除，因此不会把表情模型的运行时依赖带进这条链路。
+import type { FacialTurnInput } from './facialLiveState';
+
 export type ChatStreamEventName = 'user' | 'meta' | 'speak' | 'delta' | 'revise' | 'done' | 'error';
 
 /** `meta` 事件的载荷 */
@@ -98,16 +102,6 @@ export class ChatStreamTransportError extends Error {
   }
 }
 
-/**
- * 流被截断后的自动重试配置。
- *
- * 通话中 SSE 连接可能因网络波动断开，直接报错会让用户看到“回复生成中断”。
- * 自动重试（带退避）可以覆盖大多数瞬时断网场景。
- * ⚠️ 只在用户消息尚未被服务端落库时重试，否则会重复落库。
- */
-const SSE_MAX_RETRIES = 2;
-const SSE_RETRY_BASE_DELAY_MS = 800;
-
 /** 把一次请求抽成可取消的句柄，便于组件卸载时中止 */
 export interface ChatStreamHandle {
   /** 中止本次流式请求（不抛异常，回调不再触发） */
@@ -157,7 +151,12 @@ function parseSseFrame(frame: string): [ChatStreamEventName, any] | null {
  * @param content 用户消息文本
  * @param callbacks 事件回调
  * @param contentType 消息类型，默认 `text`
- * @param voiceFeatures 可选的声学特征摘要（通话期由 useVoiceAnalysis 提取）
+ * @param voiceFeatures 可选的声学特征摘要（通话期由 `useVoiceAnalysis` 提取）。
+ *   只传聚合统计量，不传原始帧；供算法层做跨模态矛盾检测（MIS）。
+ * @param facialFeatures 可选的面部**实时状态**摘要（由
+ *   `buildFacialLiveState` 构造）。只在"采集在跑 + 画面里有人脸 + 读数新鲜"
+ *   时才非空；供算法层作为**低权重内部参考**注入 prompt。
+ *   ⚠️ 它不参与风险等级/融合权重，也不带任何心理状态字段（见 `facialLiveState.ts`）。
  * @returns 可取消句柄；`completed` 在请求彻底结束时 resolve
  */
 export function sendChatMessageStream(
@@ -166,143 +165,135 @@ export function sendChatMessageStream(
   callbacks: ChatStreamCallbacks = {},
   contentType = 'text',
   voiceFeatures?: Record<string, unknown>,
+  facialFeatures?: FacialTurnInput,
 ): ChatStreamHandle {
   const controller = new AbortController();
   /** 服务端是否已回传落库后的用户消息 —— 决定了失败时能不能安全重发 */
   let userPersisted = false;
 
   const completed = (async () => {
-    let retriesLeft = SSE_MAX_RETRIES;
-    let needRetry = false;
-  
-    do {
-      needRetry = false;
-      let response: Response;
-      try {
-        const token = localStorage.getItem('accessToken');
-        response = await fetch(
-          `/api/consultation/conversations/${conversationId}/messages/stream`,
-          {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Accept: 'text/event-stream',
-              ...(token ? { Authorization: `Bearer ${token}` } : {}),
-            },
-            body: JSON.stringify({
-              content,
-              contentType,
-              ...(voiceFeatures ? { voiceFeatures } : {}),
-            }),
-            signal: controller.signal,
+    let response: Response;
+    try {
+      const token = localStorage.getItem('accessToken');
+      response = await fetch(
+        `/api/consultation/conversations/${conversationId}/messages/stream`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'text/event-stream',
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
           },
-        );
-      } catch (err) {
-        if (controller.signal.aborted) return;
-        throw new ChatStreamTransportError(
-          err instanceof Error ? err.message : '网络异常',
-          0,
-          userPersisted,
-        );
-      }
-  
-      if (!response.ok) {
-        throw new ChatStreamTransportError(
-          `流式接口返回 ${response.status}`,
-          response.status,
-          userPersisted,
-        );
-      }
-      if (!response.body) {
-        throw new ChatStreamTransportError('响应没有可读流', response.status, userPersisted);
-      }
-  
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder('utf-8');
-      let buffer = '';
-      /** 是否已经收到终结事件；用于识别「流被截断」并告知调用方 */
-      let settled = false;
-  
-      const dispatch = (eventName: ChatStreamEventName, payload: any) => {
-        switch (eventName) {
-          case 'user':
-            userPersisted = true;
-            callbacks.onUser?.(payload.userMessage ?? payload);
-            break;
-          case 'meta':
-            callbacks.onMeta?.(payload as ChatStreamMetaPayload);
-            break;
-          case 'speak': {
-            // 契约自检：`segments` 必须正好拼出 `text`。对不上就当作没收到这个事件 ——
-            // 宁可退回“按 delta 自行切分”，也不能按一份与全文不符的计划合成/上屏。
-            const speak = payload as Partial<ChatStreamSpeakPayload>;
-            const segs = Array.isArray(speak.segments) ? speak.segments.map(String) : [];
-            const full = String(speak.text ?? '');
-            if (!segs.length || segs.join('') !== full) {
-              console.warn('[chatStream] speak 计划与全文不一致，已忽略:', speak);
-              break;
-            }
-            callbacks.onSpeak?.({ text: full, segments: segs });
+          body: JSON.stringify({
+            content,
+            contentType,
+            // 声学特征只在通话/语音输入时存在；文字聊天不带该字段
+            ...(voiceFeatures ? { voiceFeatures } : {}),
+            // 表情摘要和原始画面独立：可以仅有三张有效帧，不补造缺失的表情读数。
+            ...(facialFeatures ? { facialFeatures } : {}),
+          }),
+          signal: controller.signal,
+        },
+      );
+    } catch (err) {
+      if (controller.signal.aborted) return;
+      throw new ChatStreamTransportError(
+        err instanceof Error ? err.message : '网络异常',
+        0,
+        userPersisted,
+      );
+    }
+
+    if (!response.ok) {
+      throw new ChatStreamTransportError(
+        `流式接口返回 ${response.status}`,
+        response.status,
+        userPersisted,
+      );
+    }
+    if (!response.body) {
+      throw new ChatStreamTransportError('响应没有可读流', response.status, userPersisted);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+    /** 是否已经收到终结事件；用于识别「流被截断」并告知调用方 */
+    let settled = false;
+
+    const dispatch = (eventName: ChatStreamEventName, payload: any) => {
+      switch (eventName) {
+        case 'user':
+          userPersisted = true;
+          callbacks.onUser?.(payload.userMessage ?? payload);
+          break;
+        case 'meta':
+          callbacks.onMeta?.(payload as ChatStreamMetaPayload);
+          break;
+        case 'speak': {
+          // 契约自检：`segments` 必须正好拼出 `text`。对不上就当作没收到这个事件 ——
+          // 宁可退回"按 delta 自行切分"，也不能按一份与全文不符的计划合成/上屏。
+          const speak = payload as Partial<ChatStreamSpeakPayload>;
+          const segs = Array.isArray(speak.segments) ? speak.segments.map(String) : [];
+          const full = String(speak.text ?? '');
+          if (!segs.length || segs.join('') !== full) {
+            console.warn('[chatStream] speak 计划与全文不一致，已忽略:', speak);
             break;
           }
-          case 'delta':
-            callbacks.onDelta?.(String(payload.text ?? ''));
-            break;
-          case 'revise':
-            callbacks.onRevise?.(String(payload.text ?? ''));
-            break;
-          case 'done':
-            settled = true;
-            callbacks.onDone?.(payload);
-            break;
-          case 'error':
-            settled = true;
-            callbacks.onError?.(payload as ChatStreamErrorPayload);
-            break;
-          default:
-            console.warn('[chatStream] 未知事件类型，已忽略:', eventName, payload);
+          callbacks.onSpeak?.({ text: full, segments: segs });
+          break;
         }
-      };
-  
-      try {
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-  
-          // 算法层用 "\n\n" 分帧，反向代理可能改写成 "\r\n\r\n"，统一归一化
-          buffer = buffer.replace(/\r\n/g, '\n');
-          let sep = buffer.indexOf('\n\n');
-          while (sep !== -1) {
-            const frame = buffer.slice(0, sep);
-            buffer = buffer.slice(sep + 2);
-            const parsed = parseSseFrame(frame);
-            if (parsed) dispatch(parsed[0], parsed[1]);
-            sep = buffer.indexOf('\n\n');
-          }
-        }
-  
-        // 连接结束但没收到 done/error：说明流被中途掐断（网关超时、服务重启）。
-        // 如果用户消息尚未落库且还有重试次数，自动重试。
-        if (!settled && !controller.signal.aborted) {
-          if (!userPersisted && retriesLeft > 0) {
-            retriesLeft--;
-            const delay = SSE_RETRY_BASE_DELAY_MS * (SSE_MAX_RETRIES - retriesLeft);
-            console.warn(`[chatStream] 流被截断，${delay}ms 后重试（剩余 ${retriesLeft} 次）`);
-            await new Promise((r) => setTimeout(r, delay));
-            needRetry = true;
-          } else {
-            callbacks.onError?.({
-              failed: true,
-              errorCode: 'STREAM_TRUNCATED',
-              errorMessage: '回复生成中断，请重试',
-            });
-          }
-        }
-      } finally {
-        reader.cancel().catch(() => undefined);
+        case 'delta':
+          callbacks.onDelta?.(String(payload.text ?? ''));
+          break;
+        case 'revise':
+          callbacks.onRevise?.(String(payload.text ?? ''));
+          break;
+        case 'done':
+          settled = true;
+          callbacks.onDone?.(payload);
+          break;
+        case 'error':
+          settled = true;
+          callbacks.onError?.(payload as ChatStreamErrorPayload);
+          break;
+        default:
+          // 未知事件：算法层新增了事件名但这里还没跟上。忽略而不是崩掉，
+          // 并在控制台留下线索。
+          console.warn('[chatStream] 未知事件类型，已忽略:', eventName, payload);
       }
-    } while (needRetry);
+    };
+
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        // 算法层用 "\n\n" 分帧，反向代理可能改写成 "\r\n\r\n"，统一归一化
+        buffer = buffer.replace(/\r\n/g, '\n');
+        let sep = buffer.indexOf('\n\n');
+        while (sep !== -1) {
+          const frame = buffer.slice(0, sep);
+          buffer = buffer.slice(sep + 2);
+          const parsed = parseSseFrame(frame);
+          if (parsed) dispatch(parsed[0], parsed[1]);
+          sep = buffer.indexOf('\n\n');
+        }
+      }
+
+      // 连接结束但没收到 done/error：说明流被中途掐断（网关超时、服务重启）。
+      // 如实告知调用方，让它走非流式回退拿一份完整回复，而不是留半句话在屏幕上。
+      if (!settled && !controller.signal.aborted) {
+        callbacks.onError?.({
+          failed: true,
+          errorCode: 'STREAM_TRUNCATED',
+          errorMessage: '回复生成中断，请重试',
+        });
+      }
+    } finally {
+      reader.cancel().catch(() => undefined);
+    }
   })();
 
   return {

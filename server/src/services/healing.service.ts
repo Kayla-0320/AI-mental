@@ -1,8 +1,11 @@
 import prisma from '../config/database';
+import achievementService from './achievement.service';
+import { AppError } from '../middlewares/errorHandler';
 
 class HealingService {
   // 创建疗愈会话
   async createSession(userId: string, type: string, title: string, duration?: number) {
+    if (type === 'support_agent_state') throw new AppError('该记录类型由持续陪伴服务管理', 400);
     return prisma.healingSession.create({
       data: {
         userId,
@@ -21,7 +24,12 @@ class HealingService {
     moodAfter?: string;
     metadata?: any;
   }) {
-    return prisma.healingSession.update({
+    const existing = await prisma.healingSession.findFirst({ where: { id: sessionId, userId } });
+    if (!existing) throw new AppError('练习不存在', 404);
+    let managedByAgent = existing.type === 'support_agent_state';
+    try { managedByAgent ||= JSON.parse(existing.metadata || '{}').schema === 'support-action.v1'; } catch { /* 普通练习允许非 JSON 历史备注 */ }
+    if (managedByAgent) throw new AppError('请通过持续陪伴记录活动回执', 409);
+    const session = await prisma.healingSession.update({
       where: { id: sessionId, userId },
       data: {
         completed: true,
@@ -32,11 +40,17 @@ class HealingService {
         metadata: data.metadata ? JSON.stringify(data.metadata) : undefined,
       },
     });
+
+    // 疗愈徽章在此解锁：旧实现只在打卡时判定，疗愈类徽章永远不会亮（spec G1）
+    const newlyUnlocked = await achievementService.evaluateAchievements(userId);
+
+    return { ...session, newlyUnlocked };
   }
 
   // 获取疗愈历史
   async getSessions(userId: string, type?: string, page: number = 1, pageSize: number = 20) {
-    const where: any = { userId };
+    if (type === 'support_agent_state') throw new AppError('设置记录不属于练习列表', 400);
+    const where: any = { userId, type: { not: 'support_agent_state' } };
     if (type) where.type = type;
 
     const [sessions, total] = await Promise.all([
@@ -55,7 +69,7 @@ class HealingService {
   // 获取疗愈统计
   async getStats(userId: string) {
     const sessions = await prisma.healingSession.findMany({
-      where: { userId, completed: true },
+      where: { userId, completed: true, type: { not: 'support_agent_state' } },
     });
 
     const totalDuration = sessions.reduce((sum, s) => sum + s.duration, 0);
@@ -75,7 +89,7 @@ class HealingService {
   // 计算连续练习天数
   private async calculateStreak(userId: string) {
     const sessions = await prisma.healingSession.findMany({
-      where: { userId, completed: true },
+      where: { userId, completed: true, type: { not: 'support_agent_state' } },
       orderBy: { createdAt: 'desc' },
       take: 60,
     });

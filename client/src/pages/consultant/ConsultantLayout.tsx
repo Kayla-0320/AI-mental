@@ -4,16 +4,19 @@ import { Layout, Menu, Avatar, Dropdown, Badge, Space, Typography, Tag, Popover,
 import {
   DashboardOutlined, CalendarOutlined, MessageOutlined,
   UserOutlined, BellOutlined, LogoutOutlined, SettingOutlined,
-  HeartOutlined,
+  HeartOutlined, AlertOutlined,
 } from '@ant-design/icons';
 import { useAuthStore } from '../../store/authStore';
 import api from '../../services/api';
+import { crisisApi } from '../../services';
+import PageTransition from '../../components/PageTransition';
 
 const { Header, Sider, Content } = Layout;
 const { Text } = Typography;
 
-const menuItems = [
+const baseMenuItems = [
   { key: '/consultant', icon: <DashboardOutlined />, label: '工作台' },
+  { key: '/consultant/crisis', icon: <AlertOutlined />, label: '危机待办' },
   { key: '/consultant/appointments', icon: <CalendarOutlined />, label: '预约管理' },
   { key: '/consultant/consultations', icon: <MessageOutlined />, label: '咨询记录' },
   { key: '/consultant/profiles', icon: <UserOutlined />, label: '来访者画像' },
@@ -26,6 +29,7 @@ export default function ConsultantLayout() {
   const { user, logout } = useAuthStore();
   const [notificationCount, setNotificationCount] = useState(0);
   const [notifications, setNotifications] = useState<any[]>([]);
+  const [crisisTodoCount, setCrisisTodoCount] = useState(0);
 
   useEffect(() => {
     const loadNotifications = async () => {
@@ -37,10 +41,28 @@ export default function ConsultantLayout() {
         }
       } catch {}
     };
+    // 危机待办数量：未被接收的记录必须在导航上就能看见，而不是要人主动点进去才发现
+    const loadCrisisTodo = async () => {
+      try {
+        const res = await crisisApi.getTodo() as any;
+        const list = Array.isArray(res.data) ? res.data : [];
+        setCrisisTodoCount(list.filter((r: any) => r.status === 'OPEN').length);
+      } catch {}
+    };
     loadNotifications();
-    const interval = setInterval(loadNotifications, 30000);
+    loadCrisisTodo();
+    const interval = setInterval(() => {
+      loadNotifications();
+      loadCrisisTodo();
+    }, 30000);
     return () => clearInterval(interval);
   }, []);
+
+  const menuItems = baseMenuItems.map(item =>
+    item.key === '/consultant/crisis' && crisisTodoCount > 0
+      ? { ...item, label: <Space size={6}>危机待办<Badge count={crisisTodoCount} size="small" /></Space> }
+      : item,
+  );
 
   const handleLogout = () => {
     logout();
@@ -167,7 +189,10 @@ export default function ConsultantLayout() {
         </Header>
 
         <Content style={{ padding: 24, overflow: 'auto' }}>
-          <Outlet />
+          {/* 内容区过渡：侧边栏 / 顶栏在 Content 之外，不跟着动 */}
+          <PageTransition>
+            <Outlet />
+          </PageTransition>
         </Content>
       </Layout>
     </Layout>

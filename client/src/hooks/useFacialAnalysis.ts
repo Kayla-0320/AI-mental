@@ -19,12 +19,13 @@
  * - AU9+AU10     → 厌恶 (鼻子皱起+上唇上扬)
  */
 import { useEffect, useRef, useState, useCallback } from 'react';
-import type { FacialAnalysis } from '../types/multimodal.types';
+import type { FacialAnalysis, FacialMetricsOverlay } from '../types/multimodal.types';
 import { defaultFacial } from '../types/multimodal.types';
 import type { AgeGroup } from './ageConfig';
 import { getFaceConfig } from './ageConfig';
 import { mediaStreamManager, MediaUnavailableError } from '../services/mediaStreamManager';
 import { EyePatchExtractor, type EyePatchPixels } from './eyePatchCanvas';
+import type { FaceFrameCallback } from './facePatchCanvas';
 import {
   DEFAULT_BLINK_FPS,
   METRICS_CHANNEL_HZ,
@@ -138,8 +139,22 @@ export function useFacialAnalysis(
   ageGroup: AgeGroup | null = null,
   onFrameSignal?: FrameSignalCallback | null,
   onEyePatchFrame?: EyePatchCallback | null,
+  /**
+   * 人脸帧回调（指标拍，默认 10fps）：只在有脸的那一拍触发，
+   * 供浏览器内三分类表情模型**在完全相同的帧上**裁脸推理。
+   * 刻意交出 `video + 关键点` 而不是 `ImageData`：裁不裁、跑不跑由消费者节流决定，
+   * 不为一次不会发生的推理付出 drawImage + getImageData 的代价。
+   */
+  onFaceFrame?: FaceFrameCallback | null,
 ) {
   const [metrics, setMetrics] = useState<FacialAnalysis>({ ...defaultFacial });
+  /**
+   * 外部异步通道（浏览器内 ONNX 等）写入的附加指标：每次 `setMetrics` 原样并入，
+   * 于是它们成为 `FacialAnalysis` 的一部分，能穿过 `AnxietyContext` 的
+   * `JSON.stringify` 同步 effect 进入 `comprehensiveState.facial`，而不会被覆盖。
+   * 会话结束时由 `stop()` 清空，避免"摄像头关了还挂着上一个读数"。
+   */
+  const overlayRef = useRef<FacialMetricsOverlay>({});
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -153,6 +168,9 @@ export function useFacialAnalysis(
    */
   const startingRef = useRef<Promise<void> | null>(null);
   const faceLandmarkerRef = useRef<any>(null);
+  const landmarkerInitRef = useRef<Promise<boolean> | null>(null);
+  const modelGenerationRef = useRef(0);
+  const sessionRef = useRef(0);
   const useMediaPipeRef = useRef(false);
   const microExprCountRef = useRef(0);
   const prevIntensityRef = useRef(0);
@@ -184,35 +202,35 @@ export function useFacialAnalysis(
   const faceConfig = getFaceConfig(ageGroup);
 
   // 初始化 MediaPipe FaceLandmarker
-  const initMediaPipe = useCallback(async () => {
-    try {
-      const vision = await import('@mediapipe/tasks-vision');
-      const { FaceLandmarker, FilesetResolver } = vision;
-
-      const filesetResolver = await FilesetResolver.forVisionTasks(
-        'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm'
-      );
-
-      const landmarker = await FaceLandmarker.createFromOptions(filesetResolver, {
-        baseOptions: {
-          modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
-          delegate: 'GPU',
-        },
-        runningMode: 'VIDEO',
-        numFaces: 1,
-        outputFaceBlendshapes: true,
-        outputFacialTransformationMatrixes: true,
-      });
-
-      faceLandmarkerRef.current = landmarker;
+  const initMediaPipe = useCallback((): Promise<boolean> => {
+    if (faceLandmarkerRef.current) {
       useMediaPipeRef.current = true;
-      console.log('[面部分析] ✅ MediaPipe Face Mesh 初始化成功');
-      return true;
-    } catch (err) {
-      console.warn('[面部分析] ⚠️ MediaPipe 初始化失败，回退到像素分析:', err);
-      useMediaPipeRef.current = false;
-      return false;
+      return Promise.resolve(true);
     }
+    if (landmarkerInitRef.current) return landmarkerInitRef.current;
+    const generation = modelGenerationRef.current;
+    const pending = (async (): Promise<boolean> => {
+      try {
+        const { createFaceLandmarker } = await import('../services/faceLandmarker');
+        const landmarker = await createFaceLandmarker();
+        if (generation !== modelGenerationRef.current) {
+          landmarker.close();
+          return false;
+        }
+        faceLandmarkerRef.current = landmarker;
+        useMediaPipeRef.current = true;
+        console.log('[面部分析] ✅ MediaPipe Face Mesh 初始化成功');
+        return true;
+      } catch (err) {
+        console.warn('[面部分析] ⚠️ MediaPipe 初始化失败，回退到像素分析:', err);
+        if (generation === modelGenerationRef.current) useMediaPipeRef.current = false;
+        return false;
+      }
+    })().finally(() => {
+      if (landmarkerInitRef.current === pending) landmarkerInitRef.current = null;
+    });
+    landmarkerInitRef.current = pending;
+    return pending;
   }, []);
 
   // 使用 MediaPipe 分析帧
@@ -438,6 +456,7 @@ export function useFacialAnalysis(
 
       setMetrics(prev => ({
         ...prev,
+        ...overlayRef.current,
         actionUnits: {
           au1_browRaise: Math.round(au1 * 100) / 100,
           au2_browOuterRaise: Math.round(au2 * 100) / 100,
@@ -488,6 +507,11 @@ export function useFacialAnalysis(
         const patches = patchExtractorRef.current.extract(video, lm);
         if (patches) onEyePatchFrame(patches);
       }
+
+      // ── 人脸裁剪通道（默认 10fps）：供浏览器内三分类表情模型 ──────────────
+      // 与眨眼/眼 patch 共用同一路摄像头与同一帧关键点，不新开流、不新开检测器；
+      // 这里只把「帧 + 关键点」交出去，真正的裁剪与推理节流在消费方（useFaceEmotion）。
+      if (onFaceFrame) onFaceFrame(video, lm);
     } catch (err) {
       console.error('[面部分析] MediaPipe 帧分析错误:', err);
     } finally {
@@ -518,7 +542,7 @@ export function useFacialAnalysis(
         );
       }
     }
-  }, [onFrameSignal, onEyePatchFrame]);
+  }, [onFrameSignal, onEyePatchFrame, onFaceFrame]);
 
   // 回退：像素分析法（当 MediaPipe 不可用时）
   const prevFrameRef = useRef<ImageData | null>(null);
@@ -622,6 +646,7 @@ export function useFacialAnalysis(
 
       setMetrics(prev => ({
         ...prev,
+        ...overlayRef.current,
         actionUnits: {
           ...prev.actionUnits,
           au1_browRaise: Math.round(au1 * 100) / 100,
@@ -664,19 +689,26 @@ export function useFacialAnalysis(
   const start = useCallback(async (): Promise<void> => {
     if (isActiveRef.current) return;
     if (startingRef.current) return startingRef.current;
+    const session = ++sessionRef.current;
 
     const run = async (): Promise<void> => {
       try {
+        // 本地检测器与设备授权并行准备；再次开启复用检测器，不重新编译 WASM。
+        const detectorReady = initMediaPipe();
         // 走统一的设备管理器：同一个 consumer 重复借用拿到的是同一份流，
         // 也不会和通话页抢设备（引用计数在这里兜底）。
         const stream = await mediaStreamManager.acquire('camera', 'perception-facial', {
           video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
         });
+        if (session !== sessionRef.current) {
+          mediaStreamManager.release('camera', 'perception-facial');
+          return;
+        }
         streamRef.current = stream;
 
         const video = document.createElement('video');
-        video.srcObject = stream;
         video.autoplay = true;
+        video.muted = true;
         video.playsInline = true;
         videoRef.current = video;
 
@@ -689,10 +721,12 @@ export function useFacialAnalysis(
             clearTimeout(timeout);
             video.play().then(resolve).catch(reject);
           };
+          video.srcObject = stream;
         });
+        if (session !== sessionRef.current) return;
 
-        // 尝试初始化 MediaPipe
-        await initMediaPipe();
+        await detectorReady;
+        if (session !== sessionRef.current) return;
 
         // 重置状态
         prevFrameRef.current = null;
@@ -718,11 +752,13 @@ export function useFacialAnalysis(
         analyzeFnRef.current = analyzeFn;
         intervalRef.current = window.setInterval(analyzeFn, intervalMs);
         currentIntervalRef.current = intervalRef.current;
+        analyzeFn();
 
         console.log(
           `[面部分析] 使用 ${useMediaPipeRef.current ? `MediaPipe Face Mesh（眨眼通道 ${DEFAULT_BLINK_FPS}fps / 指标通道 ${METRICS_CHANNEL_HZ}fps）` : '像素分析（5fps）'} 模式`,
         );
       } catch (err) {
+        if (session !== sessionRef.current) return;
         // 失败路径要自己收干净：半开的流 + 半初始化的状态比"没开"更糟
         isActiveRef.current = false;
         if (intervalRef.current) {
@@ -760,6 +796,7 @@ export function useFacialAnalysis(
   }, [initMediaPipe, analyzeFrameMediaPipe, analyzeFramePixel]);
 
   const stop = useCallback(() => {
+    sessionRef.current++;
     isActiveRef.current = false;
     if (intervalRef.current) {
       clearInterval(intervalRef.current);
@@ -777,12 +814,22 @@ export function useFacialAnalysis(
     // 管理器按引用计数决定是否真的停轨道。这正是以前"两套清理逻辑互相打架"的根源。
     mediaStreamManager.release('camera', 'perception-facial');
     streamRef.current = null;
+    if (videoRef.current) {
+      videoRef.current.pause();
+      videoRef.current.srcObject = null;
+    }
     videoRef.current = null;
+    // 会话结束：外部通道（表情模型等）的读数随会话一起失效，
+    // 否则下一次 setMetrics 还会把上一个会话的读数并回去。
+    overlayRef.current = {};
     setMetrics(prev => ({
       ...prev,
       isDetecting: false,
       facePresent: false,
       confidence: null,
+      faceEmotion: null,
+      faceEmotionStatus: 'disabled',
+      faceEmotionUnavailableReason: '',
     }));
   }, []);
 
@@ -793,14 +840,17 @@ export function useFacialAnalysis(
 
   useEffect(() => {
     return () => {
+      sessionRef.current++;
+      modelGenerationRef.current++;
       isActiveRef.current = false;
       if (intervalRef.current) clearInterval(intervalRef.current);
       if (currentIntervalRef.current) clearInterval(currentIntervalRef.current);
       analyzeFnRef.current = null;
       mediaStreamManager.releaseAll('perception-facial');
       faceLandmarkerRef.current?.close();
+      faceLandmarkerRef.current = null;
     };
   }, []);
 
-  return { metrics, start, stop, reset, videoRef, streamRef };
+  return { metrics, start, stop, reset, videoRef, streamRef, overlayRef };
 }

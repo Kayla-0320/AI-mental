@@ -8,7 +8,7 @@ const { Title, Text, Paragraph } = Typography;
 const assessments = [
   {
     type: 'PHQ9', title: 'PHQ-9 抑郁症筛查量表',
-    desc: '评估过去两周内的抑郁症状严重程度',
+    desc: '看看过去两周里，低落、疲惫这些感受有多常出现',
     questions: [
       '做事时提不起劲或没有兴趣', '感到心情低落、沮丧或绝望',
       '入睡困难、睡不安稳或睡眠过多', '感觉疲倦或没有活力',
@@ -19,7 +19,7 @@ const assessments = [
   },
   {
     type: 'GAD7', title: 'GAD-7 广泛性焦虑量表',
-    desc: '评估过去两周内的焦虑症状',
+    desc: '看看过去两周里，担心和紧张有多常出现',
     questions: [
       '感觉紧张、焦虑或急切', '不能够停止或控制担忧',
       '对各种各样的事情担忧过多', '很难放松下来',
@@ -65,11 +65,11 @@ export default function Assessment() {
     const levelColor = result.level === 'normal' ? 'success' : result.level === 'mild' ? 'warning' : 'error';
     return (
       <Card style={{ borderRadius: 12, maxWidth: 600, margin: '0 auto' }}>
-        <Result status={levelColor as any} title={`测评完成`}
+        <Result status={levelColor as any} title={`做完了，先看看这份结果`}
           subTitle={`总分：${result.totalScore} | 等级：${result.level}`}
           extra={[
             <Button type="primary" key="back" onClick={() => { setResult(null); setSelectedAssessment(null); setAnswers({}); }}>
-              返回
+              先返回
             </Button>,
           ]}>
           <Paragraph>{result.suggestion}</Paragraph>
@@ -81,9 +81,9 @@ export default function Assessment() {
   if (selectedAssessment) {
     return (
       <Card style={{ borderRadius: 12 }} title={selectedAssessment.title}
-        extra={<Button onClick={() => { setSelectedAssessment(null); setAnswers({}); }}>返回</Button>}>
+        extra={<Button onClick={() => { setSelectedAssessment(null); setAnswers({}); }}>先返回</Button>}>
         <Paragraph type="secondary">{selectedAssessment.desc}</Paragraph>
-        <Paragraph>请根据过去<strong>两周</strong>的情况，选择每项的程度：</Paragraph>
+        <Paragraph>回想一下过去<strong>两周</strong>，哪一项更像你？不用想太久，凭第一感觉就好。</Paragraph>
         <Paragraph type="secondary">0=完全没有，1=有几天，2=一半以上天数，3=几乎每天</Paragraph>
         <Space direction="vertical" style={{ width: '100%' }} size="middle">
           {selectedAssessment.questions.map((q: string, i: number) => (
@@ -101,7 +101,7 @@ export default function Assessment() {
           <Button type="primary" size="large" block onClick={handleSubmit}
             loading={submitting}
             disabled={Object.keys(answers).length < selectedAssessment.questions.length}>
-            提交测评
+            看看结果
           </Button>
         </Space>
       </Card>
@@ -110,7 +110,10 @@ export default function Assessment() {
 
   return (
     <div>
-      <Title level={4} style={{ marginBottom: 16 }}><FileTextOutlined /> 心理测评</Title>
+      <Title level={4} style={{ marginBottom: 8 }}><FileTextOutlined /> 心理测评</Title>
+      <Paragraph type="secondary" style={{ marginBottom: 16 }}>
+        不用急着给自己下结论。按最近两周的真实感觉来就好，做完也可以随时回来看看。
+      </Paragraph>
       <Space direction="vertical" style={{ width: '100%' }} size="middle">
         {assessments.map(a => (
           <Card key={a.type} hoverable onClick={() => setSelectedAssessment(a)}
@@ -127,8 +130,8 @@ export default function Assessment() {
         ))}
       </Space>
 
-      <Title level={5} style={{ marginTop: 24, marginBottom: 12 }}>历史记录</Title>
-      {loading ? <Spin /> : history.length === 0 ? <Empty description="暂无测评记录" /> : (
+      <Title level={5} style={{ marginTop: 24, marginBottom: 12 }}>之前做过的</Title>
+      {loading ? <Spin /> : history.length === 0 ? <Empty description="还没有做过测评。什么时候想了解自己，都可以从第一次开始。" /> : (
         <List dataSource={history} renderItem={(item: any) => (
           <List.Item>
             <List.Item.Meta title={item.title}

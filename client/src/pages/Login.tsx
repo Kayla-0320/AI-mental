@@ -61,7 +61,7 @@ export default function Login() {
             display: 'inline-block',
             animation: 'float 3s ease-in-out infinite',
           }}>🌸</div>
-          <Title level={2} style={{ marginBottom: 4, color: '#ff8fab' }}>心灵花园</Title>
+          <Title level={2} className="gh-brand-text" style={{ marginBottom: 4, color: '#ff8fab' }}>心灵花园</Title>
           <Text style={{ color: '#b0a0c0', fontSize: 14 }}>
             <HeartFilled style={{ color: '#ffb6c1', marginRight: 4 }} />
             温暖陪伴，从心开始

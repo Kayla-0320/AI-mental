@@ -1,0 +1,190 @@
+/* ============================================================================
+ * 首页页面级样式（只放"编排层"自己的东西，板块样式在各组件内部）
+ * ========================================================================== */
+
+/* 打卡顺带解锁徽章后的提示条 */
+.gh-home__badges {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 13px 18px;
+  border-radius: var(--gh-r-md);
+  background: linear-gradient(120deg, #eafaf3 0%, #f4fbff 100%);
+  border: 1px solid rgba(79, 184, 148, 0.28);
+  box-shadow: var(--gh-sh-1);
+  animation: ghRise 0.5s var(--gh-ease) both;
+}
+
+.gh-home__badges-icon {
+  font-size: 20px;
+  line-height: 1;
+  flex: 0 0 auto;
+}
+
+.gh-home__badges-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #2f6b56;
+  line-height: 1.6;
+}
+
+@media (max-width: 767px) {
+  .gh-home__badges {
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 12px 14px;
+  }
+
+  .gh-home__badges-text {
+    font-size: 12.5px;
+  }
+}
+
+/* ============================================================================
+ * 20 题心理状态自查的首页入口条
+ * （HomeQuestionnaire 自带弹窗与计分逻辑，这里只负责它在首页中的外观）
+ * ========================================================================== */
+
+.gh-q20 {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 20px 24px;
+  flex-wrap: wrap;
+}
+
+.gh-q20__main {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex: 1 1 340px;
+  min-width: 0;
+}
+
+.gh-q20__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 54px;
+  height: 54px;
+  flex: 0 0 auto;
+  border-radius: 18px;
+  font-size: 26px;
+  background: linear-gradient(150deg, #fff0dc 0%, #ffe9f1 100%);
+}
+
+.gh-q20__text {
+  min-width: 0;
+}
+
+.gh-q20__title {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--gh-ink-1);
+  letter-spacing: 0.3px;
+}
+
+.gh-q20__sub {
+  margin-top: 5px;
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--gh-ink-2);
+}
+
+.gh-q20__meta {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--gh-ink-3);
+}
+
+.gh-q20__meta--done {
+  color: #2f6b56;
+  font-weight: 600;
+}
+
+.gh-q20__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+
+@media (max-width: 767px) {
+  .gh-q20 {
+    padding: 16px;
+    gap: 14px;
+  }
+
+  .gh-q20__icon {
+    width: 46px;
+    height: 46px;
+    border-radius: 15px;
+    font-size: 22px;
+  }
+
+  .gh-q20__title {
+    font-size: 16px;
+  }
+
+  .gh-q20__actions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .gh-q20__actions .gh-btn {
+    flex: 1 1 auto;
+  }
+}
+
+/* ============================================================================
+ * 两栏里的自查入口条（Home.tsx 的 .gh-sec.gh-cols2）
+ *
+ * 右栏高度由左栏「心理状态」卡决定（.gh-cols2 默认 stretch），自查条内容少
+ * （只有图标 + 两行字 + 两个按钮），直接横排会在下方空出一大块。
+ * 这里改成纵向铺满一栏：文案在上、按钮压底，整体纵向居中。
+ * ⚠️ 只在 .gh-cols2 内部生效 —— .gh-q20 若单独出现（整行宽度）仍走上面的横排。
+ * ========================================================================== */
+
+.gh-cols2 .gh-q20 {
+  height: 100%;
+  min-height: 220px;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 22px;
+  padding: 26px;
+}
+
+.gh-cols2 .gh-q20 .gh-q20__main {
+  flex: 0 0 auto;
+  width: 100%;
+  align-items: flex-start;
+}
+
+.gh-cols2 .gh-q20 .gh-q20__actions {
+  width: 100%;
+}
+
+@media (max-width: 1079px) {
+  /* 单栏时高度交回内容决定，否则会被同行另一栏的身高拽长 */
+  .gh-cols2 .gh-q20 {
+    height: auto;
+    min-height: 0;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+    padding: 20px 24px;
+  }
+
+  .gh-cols2 .gh-q20 .gh-q20__main {
+    flex: 1 1 340px;
+    width: auto;
+    align-items: center;
+  }
+}
+

@@ -81,6 +81,17 @@ def _finals(updates: list) -> list:
     return [u for u in updates if u.event == AsrEventType.FINAL]
 
 
+def _split_gap_s() -> float:
+    """"会被端点切段"的句间停顿时长 —— 必须**长于** rule2，否则端点不触发。
+
+    ⚠️ 这里刻意跟着 `RULE2_MIN_TRAILING_SILENCE` 走，而不是写死 1.2s：
+    该阈值是产品判断（2026-10-11 由 0.8s 放宽到 1.4s，起因是真机反馈
+    "话还没说完就被截断"）。固定值的写法会在阈值一调就失效 —— 而且失效的
+    不是测试的意图，只是它硬编码的那个数。
+    """
+    return RULE2_MIN_TRAILING_SILENCE + 0.6
+
+
 class TestUtteranceModeDoesNotCutOnPause:
     """整段录入模式：句间停顿不得触发定稿。"""
 
@@ -113,14 +124,14 @@ class TestUtteranceModeDoesNotCutOnPause:
     def test_whole_utterance_beats_pause_split(self, recognizer, speech_pair):
         """精度回归：整段识别的结果必须比"停顿切成两段"更准。
 
-        两段拼接后先各喂一次、中间留 1.2s 长停顿：
+        两段拼接后先各喂一次、中间留一条**超过 rule2** 的长停顿：
           · 端点模式会在停顿处各定稿一段（旧行为）
           · 整段录入模式只在最终定稿一次（新行为）
         断言新行为给出的文本与**离线整段识别**一致 —— 那是本机可得的最高精度，
         也就是"修复后应该达到的水平"。
         """
         a, b = speech_pair
-        gap = np.zeros(int(SR * 1.2), dtype=np.float32)
+        gap = np.zeros(int(SR * _split_gap_s()), dtype=np.float32)
         mixed = np.concatenate([a, gap, b])
 
         # 基准：离线大模型对完整音频识别一次
@@ -140,7 +151,7 @@ class TestUtteranceModeDoesNotCutOnPause:
             ep_updates.append(ep_u)
         ep_text = "".join(u.text for u in _finals(ep_updates)).replace(" ", "")
         assert len(_finals(ep_updates)) >= 2, (
-            f"端点模式本该在 1.2s 停顿处切段，实际只定稿 "
+            f"端点模式本该在 {_split_gap_s():.2f}s 停顿处切段，实际只定稿 "
             f"{len(_finals(ep_updates))} 段：{ep_text!r}"
         )
 
@@ -190,6 +201,77 @@ class TestStreamingModeStillCuts:
         """不传参数时必须还是端点模式 —— 旧客户端（不发 hello）不能被改变行为。"""
         sess = recognizer.new_session()
         assert sess._finalize_on_endpoint is True
+
+    def test_pause_until_first_final_is_long_enough(self, recognizer, speech_pair):
+        """放宽 rule1/rule2 的核心诉求：说了话之后，**别那么快定稿**。
+
+        这里测的是**实测间隔**而不是配置值：从最后一个有声的 100ms 块，到第一次
+        端点出现，中间隔了多久。sherpa 的计数以"已解出的 token"为基准、还有量化
+        误差，所以实测总比配置略长（配置 1.6/0.8 → 实测约 1.0 s；
+        配置 1.8/1.5 → 实测约 1.7 s）。老配置必然低于 1.4 s 这条线。
+
+        为什么断言 1.4 s 而不是等于 rule2：把"产品要求"（说话人停顿 1 秒多不该
+        被截断）和"实现细节"（sherpa 怎么量化）分开 —— 前者是这条测试要守的东西。
+        """
+        a, _ = speech_pair
+        step = int(SR * 0.1)
+        audio = np.concatenate([a, np.zeros(int(SR * 3.0), dtype=np.float32)])
+        sess = recognizer.new_session(finalize_on_endpoint=True)
+
+        first_final_at: float | None = None
+        for i in range(0, len(audio), step):
+            ups = sess.accept(audio[i : i + step])
+            if any(u.event == AsrEventType.FINAL for u in ups):
+                first_final_at = (i + step) / SR
+                break
+
+        assert first_final_at is not None, "说了话 + 3s 静音，端点本该定稿（通话页靠它收轮）"
+
+        blocks = audio[: len(audio) // step * step].reshape(-1, step)
+        rms = np.sqrt((blocks.astype(np.float32) ** 2).mean(axis=1))
+        loud = np.nonzero(rms >= 0.02)[0]  # 与 streaming.py 的 SPEECH_BLOCK_RMS 同口径
+        assert loud.size > 0, "测试素材里没有有声块"
+        last_speech_s = (int(loud[-1]) + 1) * 0.1
+        tail_s = first_final_at - last_speech_s
+
+        assert tail_s >= 1.4, (
+            f"最后一个字之后只有 {tail_s:.2f}s 静音就定稿了 —— "
+            f"这正是「话还没说完就被截断」的症状（rule2 现在是 "
+            f"{RULE2_MIN_TRAILING_SILENCE:.2f}s）"
+        )
+
+
+class TestManualFinalize:
+    """手动定稿 —— 通话页「打断并发送」依赖的服务端语义。
+
+    客户端按下按钮时发 `{"type":"finalize"}`（不拆连接、不关麦克风）。
+    所以服务端必须保证两件事：
+      1. 立刻定稿当前这一段的**全部**已收音频（不等端点静音窗口）；
+      2. 定稿之后同一条连接还能继续识别下一段 —— 这是它与 `stop()` 的根本区别。
+    """
+
+    def test_finalize_mid_session_then_continue(self, recognizer, speech_pair):
+        a, b = speech_pair
+        sess = recognizer.new_session(finalize_on_endpoint=True)
+
+        # 第一段：不等端点，手动定稿（模拟用户按「打断并发送」）
+        _feed_in_blocks(sess, a)
+        first = sess.finalize()
+        assert first is not None, "手动定稿必须回一段文本（用户确实说了话）"
+        assert first.reason == "finalize"
+        assert first.text.strip(), "手动定稿不该是空的"
+
+        # 第二段：同一会话接着说，仍然能识别 —— 会话没有被 finalize 报废
+        _feed_in_blocks(sess, b)
+        second = sess.finalize()
+        assert second is not None and second.text.strip(), (
+            "手动定稿之后同一会话不能再识别了 —— 用户按一次发送就得重开通话"
+        )
+
+    def test_finalize_without_audio_returns_none(self, recognizer):
+        """刚接通就按按钮（一个字都没说）：必须返回 None，不许编出假文本。"""
+        sess = recognizer.new_session(finalize_on_endpoint=True)
+        assert sess.finalize() is None
 
 
 class TestUtterancePartials:

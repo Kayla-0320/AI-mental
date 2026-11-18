@@ -1,5 +1,6 @@
 import { Router, Response, NextFunction } from 'express';
 import { AchievementService } from '../services/achievement.service';
+import growthService from '../services/growth.service';
 import { SleepService, PaymentService, HealthReportService, FeedbackService } from '../services/extra.service';
 import { authenticate, AuthRequest } from '../middlewares/auth';
 import prisma from '../config/database';
@@ -16,6 +17,17 @@ router.get('/achievements', authenticate, async (req: AuthRequest, res: Response
   try {
     const progress = await achievementService.getAchievementProgress(req.userId!);
     res.json({ code: 0, data: progress });
+  } catch (e) { next(e); }
+});
+
+// ===== 成长指标板块 =====
+// 「我的成长」页面唯一数据源：一次请求拿到指数 / 指标卡 / 趋势 / 热力图 / 徽章 / 下一步动作。
+// 旧实现要靠 4 个接口在前端拼装，任一失败就整块显示 0（见 docs/growth_metrics_spec.md G7）。
+router.get('/growth', authenticate, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const days = parseInt(req.query.days as string) || 14;
+    const overview = await growthService.getOverview(req.userId!, days);
+    res.json({ code: 0, data: overview });
   } catch (e) { next(e); }
 });
 

@@ -1,0 +1,28 @@
+import assert from 'node:assert/strict';
+import { VoiceDraft } from '../client/src/services/voiceDraft';
+
+const draft = new VoiceDraft();
+draft.edit('我想说：');
+draft.receive({ type: 'partial', text: '今天累' });
+assert.equal(draft.text, '我想说：今天累');
+draft.receive({ type: 'partial', text: '今天很累' });
+assert.equal(draft.text, '我想说：今天很累');
+draft.edit('我想说：今天有点累');
+draft.receive({ type: 'partial', text: '今天很累，想休息' });
+assert.equal(draft.text, '我想说：今天有点累，想休息');
+const first = draft.beginSend();
+assert.equal(draft.text, '');
+draft.receive({ type: 'final', text: '今天很累，想休息。' });
+draft.receive({ type: 'partial', text: '还有一件事' });
+assert.equal(first.text(), '我想说：今天有点累，想休息。');
+first.finish();
+assert.equal(draft.text, '还有一件事');
+const second = draft.beginSend();
+draft.receive({ type: 'final', text: '还有另一件事。' });
+second.finish();
+assert.equal(second.text(), '还有另一件事。');
+assert.equal(draft.text, '');
+draft.receive({ type: 'final', text: '你好' });
+draft.receive({ type: 'final', text: '你好' });
+assert.equal(draft.text, '你好你好', '不同音频段说同样的话不能被误去重');
+console.log('PASS: partial replacement, user edits, send boundaries, late final refinement, next draft, repeated utterances');

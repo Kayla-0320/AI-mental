@@ -11,6 +11,227 @@ from enum import Enum
 from typing import Optional
 
 
+@dataclass
+class InnovationObservation:
+    """业务图文专家参考；原始媒体不进入结果或档案。"""
+
+    available: bool = False
+    model_id: str = ""
+    probabilities: list[float] = field(default_factory=list)
+    labels: list[str] = field(default_factory=lambda: ["negative", "neutral", "positive"])
+    expert_names: list[str] = field(default_factory=list)
+    expert_weights: list[float] = field(default_factory=list)
+    observed_modalities: list[str] = field(default_factory=list)
+    quality: dict[str, dict] = field(default_factory=dict)
+    knowledge_matches: list[dict] = field(default_factory=list)
+    calibration_status: str = "uncalibrated"
+    reason: str = ""
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass
+class RawSignalQuality:
+    """原始信号质量证据；指标不代表情绪或临床判断。"""
+
+    modality: str
+    usable: bool
+    quality_score: float
+    metrics: dict[str, float]
+    reason_codes: list[str]
+    limitations: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ModelObservation:
+    """版本化的模型参考；本人证据和模型概率分别保存。"""
+
+    available: bool
+    task_id: str
+    label_schema: list[str]
+    model_version: str
+    artifact_sha256: str
+    calibration: dict[str, str]
+    evidence_source: dict[str, str]
+    probabilities: list[float]
+    observed_at: str
+    limitations: list[str]
+    reason: str = ""
+
+
+@dataclass
+class SupportStrategyPrediction:
+    """支持策略描述任务的研究输出，不代表策略有效性或最优动作。"""
+
+    available: bool
+    strategy: str
+    probabilities: list[float]
+    labels: list[str]
+    model_id: str
+    language: str
+    limitations: list[str]
+    reason: str = ""
+
+
+@dataclass
+class ModalityObservation:
+    """带来源时间和质量信息的单模态特征。"""
+
+    modality: str
+    features: list[float]
+    available: bool = True
+    quality_score: float = 1.0
+    observed_at: Optional[float] = None
+    segment_start: Optional[float] = None
+    segment_end: Optional[float] = None
+
+
+@dataclass
+class ModalityQualityReport:
+    """信号可用性审计结果；不把模态表达差异解释为掩饰。"""
+
+    modality: str
+    usable: bool
+    reliability: float
+    reason_codes: list[str]
+    sanitized_features: list[float]
+
+
+@dataclass
+class DatasetSampleRecord:
+    """训练样本的来源、划分和标签域。"""
+
+    dataset_id: str
+    sample_id: str
+    source_group: str
+    split: str
+    label_domain: str
+    label: int
+    content_hashes: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class DatasetAuditReport:
+    """跨划分来源和内容重复检查的可复核报告。"""
+
+    valid: bool
+    sample_count: int
+    split_counts: dict[str, int]
+    issues: list[str]
+    cross_split_source_groups: list[str]
+    cross_split_content_hashes: list[str]
+
+
+@dataclass
+class MultimodalFeatureBatch:
+    """同任务、同编码版本的配对特征；缺失观测不能冒充中性证据。"""
+
+    sample_ids: list[str]
+    modalities: dict[str, list[list[float]]]
+    observed: dict[str, list[bool]]
+    quality: dict[str, list[float]]
+    task: str
+    class_names: list[str]
+    encoder_fingerprints: dict[str, str]
+    raw_text: list[str] = field(default_factory=list)
+
+
+@dataclass
+class MultimodalPrediction:
+    """研究模型预测及路由；仅在对应任务域内解释概率。"""
+
+    task: str
+    class_names: list[str]
+    probabilities: list[list[float]]
+    expert_weights: list[list[float]]
+    expert_names: list[str]
+    sample_ids: list[str]
+    calibration_status: str
+    model_id: str
+    abstained: list[bool] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass
+class EmotionObservation:
+    """独立采样顺序上的本人正负情绪自评，值域为原量表 0 至 100。"""
+
+    step: int
+    positive: float
+    negative: float
+    source: str = "self_report"
+
+
+@dataclass
+class EmotionForecast:
+    """短期情绪自评研究预测；不输出诊断或危机概率。"""
+
+    positive: float
+    negative: float
+    origin_step: int
+    target_step: int
+    method: str
+    history_count: int
+    scope: str = "next_sampling_observation_research"
+    model_id: str = ""
+    interval: dict[str, list[float]] = field(default_factory=dict)
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass
+class SupportEvidence:
+    """用户原话证据；状态表示本人反馈，不表示临床判断正确率。"""
+
+    id: str
+    slot: str
+    quote: str
+    source_id: str
+    source_sha256: str
+    start: int
+    end: int
+    status: str = "proposed"
+    origin: str = "user_message"
+
+
+@dataclass
+class SupportPlan:
+    """非诊断性支持计划；第一轮采用可解释规则，不宣称最优策略。"""
+
+    action: str
+    goal: str
+    reason: str
+    question_budget: int = 0
+    method: str = "explicit_goal_rules_v1"
+
+
+@dataclass
+class SupportState:
+    """会话内可纠正的理解状态；由已鉴权的业务层随消息保存。"""
+
+    session_id: str
+    revision: int = 0
+    goal: str = "unspecified"
+    goal_source: str = "unset"
+    items: list[SupportEvidence] = field(default_factory=list)
+    feedback_log: list[dict] = field(default_factory=list)
+    declined: bool = False
+    last_source_id: str = ""
+    plan: Optional[SupportPlan] = None
+    schema_version: str = "support.v1"
+    method: str = "source_quotes_v1"
+
+
+@dataclass
+class SupportFeedback:
+    """本人显式确认/纠正；反馈 ID 用于幂等，revision 用于拒绝过期写入。"""
+
+    feedback_id: str
+    expected_revision: int
+    action: str
+    item_id: str = ""
+    text: str = ""
+    goal: str = ""
+
+
 class RiskLevel(str, Enum):
     """风险等级枚举"""
     LOW = "low"

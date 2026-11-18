@@ -21,7 +21,13 @@ import { useTextAnalysis } from '../hooks/useTextAnalysis';
 import { useVoiceAnalysis } from '../hooks/useVoiceAnalysis';
 import { useFacialAnalysis, type FacialFrameSignal } from '../hooks/useFacialAnalysis';
 import { useEyeStateModel, isBlendshapeClosed, type EyeStateModelReport } from '../hooks/useEyeStateModel';
+import { useFaceEmotion } from '../hooks/useFaceEmotion';
+import { buildFacialLiveState, buildFacialTurnInput, type FacialTurnInput } from '../services/facialLiveState';
+import { VisualFrameBuffer, type VisualFrame } from '../services/visualFrameBuffer';
+import type { VoiceDraftEvent } from '../services/voiceDraft';
+import { mediaStreamManager } from '../services/mediaStreamManager';
 import type { EyePatchPixels } from '../hooks/eyePatchCanvas';
+import type { LandmarkPoint } from '../hooks/eyePatch';
 import { useCircadianRhythm } from '../hooks/useCircadianRhythm';
 import { useCognitiveDistortion } from '../hooks/useCognitiveDistortion';
 import { useRPPG } from '../hooks/useRPPG';
@@ -30,6 +36,7 @@ import {
   RPPG_AVAILABLE,
   BREATHING_AVAILABLE,
   EYE_STATE_MODEL_AVAILABLE,
+  FACE_EMOTION_MODEL_AVAILABLE,
 } from '../hooks/perceptionCapabilities';
 import { useBehavioralActivation } from '../hooks/useBehavioralActivation';
 import { useEyeTracking } from '../hooks/useEyeTracking';
@@ -293,6 +300,9 @@ function generateNarrativeAnalysis(state: ComprehensiveEmotionState): string {
 }
 
 interface AnxietyContextType {
+  getVisualFrames: () => VisualFrame[];
+  getVisualFrameCount: () => number;
+  getFacialTurnInput: () => FacialTurnInput | undefined;
   comprehensiveState: ComprehensiveEmotionState;
   cameraEnabled: boolean;
   /**
@@ -338,6 +348,10 @@ interface AnxietyContextType {
    * 调用方必须 await 才能拿到"点结束前刚说的那句"，不能只靠订阅 state。
    */
   stopVoiceInput: () => Promise<string>;
+  /** 本轮语音定稿，不停止麦克风；超时返回 null，由页面保留点击时可见的草稿。 */
+  commitVoiceInput: () => Promise<string | null>;
+  /** 按到达顺序接收识别修订与定稿，不重放历史结果。 */
+  subscribeVoiceInput: (listener: (event: VoiceDraftEvent) => void) => () => void;
   /** 语音定稿序号：每次有新的一段定稿就自增，供页面区分"新的一段" */
   voiceFinalSeq: number;
   /** 最近一段定稿的文本（与 `voiceFinalSeq` 配套使用） */
@@ -390,6 +404,51 @@ const defaultComprehensive: ComprehensiveEmotionState = {
 
 const AnxietyContext = createContext<AnxietyContextType | null>(null);
 
+/**
+ * 单路「启动」的等待上限（ms）。
+ *
+ * 为什么必须有上限：`toggleCamera` 原先直接
+ * `await Promise.all([voice.start(), facial.start()])`。只要其中一路的 promise
+ * **永不 settle**，这个 await 就永远不返回 —— 用户看到的是
+ * 「点了开关没反应 / 摄像头打不开」，而实际上摄像头那一路早已在跑
+ * （CDP 探针里 MediaPipe 已经在按 15~30fps 分析帧，开关却一直是"已关闭"）。
+ *
+ * 已见过的真实形态：`AudioContext.resume()` 在**瞬时用户激活**窗口过期后会一直挂着
+ * （它不 reject，只是不 resolve）；麦克风被系统/其他程序占用时 acquire 也可能悬着。
+ * 注意这**不是**摄像头的问题：摄像头那一路是好的，是被最慢/挂死的一路绑架了 UI。
+ *
+ * 超时不杀任何东西（后台该起还会起），只让界面**如实**反映现在到底起了哪几路。
+ */
+const MEDIA_START_TIMEOUT_MS = 8000;
+
+/**
+ * 单路「启动」的等待结果。
+ *
+ * `timeout` 与 `failed` **必须分开**：前者是"还没起完"，后者是"起不来"。
+ * 把两者混成一个布尔值，就会把"冷启动慢"报成"摄像头坏了" —— 那正是
+ * 用户会看到「摄像头打不开」这句话的地方之一。
+ */
+type StartOutcome = 'ok' | 'failed' | 'timeout';
+
+/** 启动一路模态并给出结果；失败/超时都记日志，绝不抛出。 */
+function startWithTimeout(p: Promise<unknown>, label: string): Promise<StartOutcome> {
+  return Promise.race<StartOutcome>([
+    p.then(
+      () => 'ok' as const,
+      (err: unknown) => { console.error(`[多模态] ${label}启动失败:`, err); return 'failed' as const; },
+    ),
+    new Promise<StartOutcome>((resolve) => {
+      setTimeout(() => {
+        console.warn(
+          `[多模态] ${label} 启动较慢（超过 ${MEDIA_START_TIMEOUT_MS}ms）——`
+          + '后台会继续起，采集真正开始时开关会自动打开',
+        );
+        resolve('timeout');
+      }, MEDIA_START_TIMEOUT_MS);
+    }),
+  ]);
+}
+
 export function AnxietyProvider({ children }: { children: ReactNode }) {
   // 年龄分组：从用户信息推断
   const user = useAuthStore(s => s.user);
@@ -419,6 +478,17 @@ export function AnxietyProvider({ children }: { children: ReactNode }) {
   }, []);
   const onEyeStateReportRef = useRef<((r: EyeStateModelReport) => void) | null>(null);
 
+  // 硬件信号回调：人脸帧 → 浏览器内三分类表情模型（**只上报，不进风险**）
+  // 同样用 ref 转发，避免 useFacialAnalysis 与 useFaceEmotion 的创建顺序互相牵制
+  const onFaceFrameRef = useRef<
+    ((video: HTMLVideoElement, landmarks: readonly LandmarkPoint[]) => void) | null
+  >(null);
+  const visualFramesRef = useRef(new VisualFrameBuffer());
+  const onFaceFrame = useCallback((video: HTMLVideoElement, landmarks: readonly LandmarkPoint[]) => {
+    visualFramesRef.current.capture(video);
+    onFaceFrameRef.current?.(video, landmarks);
+  }, []);
+
   // 硬件信号回调：音频能量 → 呼吸
   const onAudioEnergyRef = useRef<(rms: number) => void>();
   onAudioEnergyRef.current = (rms) => {
@@ -432,8 +502,17 @@ export function AnxietyProvider({ children }: { children: ReactNode }) {
   // 只靠订阅 voiceMetrics 会漏 —— 点"结束"之后 isRecording 先变 false，
   // 而最后一段定稿还要等撤销端点检测 + 离线复识别（约 600ms）才到。
   const [voiceFinalSeq, setVoiceFinalSeq] = useState(0);
+  const voiceInputListenersRef = useRef(new Set<(event: VoiceDraftEvent) => void>());
+  const subscribeVoiceInput = useCallback((listener: (event: VoiceDraftEvent) => void): (() => void) => {
+    voiceInputListenersRef.current.add(listener);
+    return () => { voiceInputListenersRef.current.delete(listener); };
+  }, []);
+  const handleVoicePartial = useCallback((text: string): void => {
+    voiceInputListenersRef.current.forEach(listener => listener({ type: 'partial', text }));
+  }, []);
   const voiceFinalRef = useRef<{ text: string; seq: number }>({ text: '', seq: 0 });
   const handleVoiceFinal = useCallback((text: string, seq: number) => {
+    voiceInputListenersRef.current.forEach(listener => listener({ type: 'final', text }));
     voiceFinalRef.current = { text, seq };
     setVoiceFinalSeq(seq);
   }, []);
@@ -444,10 +523,10 @@ export function AnxietyProvider({ children }: { children: ReactNode }) {
   // 聊天页的语音录入走**整段录入**模式：说话停顿不定稿，用户点"结束"才把整段
   // 音频交给离线大模型识别。原先的"停顿几秒自动截断定稿"会让每一段都缺上下文
   // （实测 12s、句间停顿 1.2s 的音频：端点切段后"重点呢"→"重点来"、"动荡"→"动量"，
-  // 整段识别则全对），所以那次截断既不准、也不是用户想要的交互。
+  // 整段识别则全对）。现在用「发送」划分段落：识别结果直接进入草稿，定稿不停止设备。
   // 通话页用的是另一个 hook 实例（`useVoiceCall`），仍保持"停顿即定稿"。
-  const voice = useVoiceAnalysis(ageGroup, onAudioEnergy, handleVoiceFinal, null, 'utterance');
-  const facial = useFacialAnalysis(ageGroup, onFrameSignal, onEyePatchFrame);
+  const voice = useVoiceAnalysis(ageGroup, onAudioEnergy, handleVoiceFinal, handleVoicePartial, 'utterance');
+  const facial = useFacialAnalysis(ageGroup, onFrameSignal, onEyePatchFrame, onFaceFrame);
   // 新增 7 模态 Hook（均传入 ageGroup 做年龄差异化校准）
   const circadian = useCircadianRhythm(ageGroup);
   const cognitiveDistortion = useCognitiveDistortion(ageGroup);
@@ -531,8 +610,33 @@ export function AnxietyProvider({ children }: { children: ReactNode }) {
 
   const [comprehensiveState, setComprehensiveState] = useState<ComprehensiveEmotionState>({ ...defaultComprehensive });
   const [cameraEnabled, setCameraEnabled] = useState(false);
+  // 发送会等待语音定稿，getter 必须读 ref，不能沿用点击时的 React 闭包快照。
+  const currentVisualRef = useRef({ enabled: cameraEnabled, facial: facial.metrics });
+  currentVisualRef.current = { enabled: cameraEnabled, facial: facial.metrics };
+  const getFacialTurnInput = useCallback((): FacialTurnInput | undefined => {
+    const current = currentVisualRef.current;
+    if (!current.enabled || document.hidden || !mediaStreamManager.has('camera')) return undefined;
+    return buildFacialTurnInput(current.facial, visualFramesRef.current.snapshot());
+  }, []);
+  useEffect(() => {
+    if (!cameraEnabled || !facialMetrics.facePresent) visualFramesRef.current.clear();
+    const clear = (): void => visualFramesRef.current.clear();
+    document.addEventListener('visibilitychange', clear);
+    return () => { clear(); document.removeEventListener('visibilitychange', clear); };
+  }, [cameraEnabled, facialMetrics.facePresent]);
   /** 最近一次媒体启动失败的原因（中文，可上屏）。空串 = 没有错误。 */
   const [mediaNotice, setMediaNotice] = useState('');
+
+  // ── 浏览器内三分类表情模型（ResNet50，happy/neutral/sad）────────────────────
+  // 位置说明：必须放在 `cameraEnabled` 声明之后（它决定模型何时加载），
+  // 又必须在 `useFacialAnalysis` 之后（结果要写进 `facial.overlayRef`）。
+  // 语义：**开多模态 = 眨眼检测与表情识别一起开始工作**；
+  //   关闭多模态时 `enabled` 变 false → 会话被释放（约 90 MB wasm 堆），
+  //   同时 `toggleCamera`/`reset` 会调用 `faceEmotion.reset()` 清掉读数。
+  // 结果只展示与上报，**不参与 riskScore**（见 perceptionCapabilities 的说明）。
+  const faceEmotion = useFaceEmotion(cameraEnabled && FACE_EMOTION_MODEL_AVAILABLE, facial.overlayRef);
+  onFaceFrameRef.current = faceEmotion.onFaceFrame;
+
   const [realityTask, setRealityTask] = useState<any>(null);
   const [showTaskModal, setShowTaskModal] = useState(false);
   const [modalityStatus, setModalityStatus] = useState({
@@ -553,6 +657,32 @@ export function AnxietyProvider({ children }: { children: ReactNode }) {
    * 而那一次会真的再开一路设备 —— 这是改造前 4 次点击泄漏出 5 路麦克风的直接原因。
    */
   const startingMediaRef = useRef(false);
+
+  /**
+   * 「用户希望采集开着吗」。
+   *
+   * 存在的理由：开关状态不能只由 `toggleCamera()` 里那一次 `await` 决定。
+   * 冷启动时 MediaPipe/音频图初始化可能超过等待上限，若只在 await 之后置 `cameraEnabled`，
+   * 就会出现**摄像头已经在按 15~30fps 分析帧、开关却显示"已关闭"**（用户看到的就是
+   * "摄像头打不开"）。所以开关改为**由采集是否真的在跑驱动**，这个 ref 只负责
+   * "关掉之后不要被自动打开"，避免与主动关闭打架。
+   */
+  const wantMediaRef = useRef(false);
+
+  // 采集状态 → 开关状态（**真源是"帧/音频有没有在流"，不是某个 await 的时序**）。
+  //
+  // 这条 effect 修的就是用户看到的「摄像头打不开」：那一类现象里摄像头其实已经在跑，
+  // 只是 `toggleCamera()` 那次 await 因为另一路（麦克风/AudioContext.resume）悬住，
+  // 永远没有走到 `setCameraEnabled(true)`。
+  useEffect(() => {
+    if (!wantMediaRef.current) return;
+    const running = facial.metrics.isDetecting || voice.metrics.isRecording;
+    if (running && !cameraEnabled) {
+      console.log('[多模态] 检测到采集已在运行 → 把开关同步为已开启');
+      setCameraEnabled(true);
+      setMediaNotice('');
+    }
+  }, [facial.metrics.isDetecting, voice.metrics.isRecording, cameraEnabled]);
 
   // 自动启动键盘分析（组件完全挂载后）
   useEffect(() => {
@@ -1049,6 +1179,7 @@ export function AnxietyProvider({ children }: { children: ReactNode }) {
   }, [cameraEnabled, facial.metrics.isDetecting, facial.metrics.frameCount, facial.start]);
 
   // 统一摄像头开关（键盘已自动启动，只需控制 voice 和 facial）
+  //（启动超时上限 `MEDIA_START_TIMEOUT_MS` / `startWithTimeout` 在模块作用域，见文件上方）
   const toggleCamera = useCallback(async (): Promise<boolean> => {
     // 重入锁：`cameraEnabled` 要等 await 之后才更新，挡不住"await 期间又点一次"。
     // 改造前正是这个窗口让 4 次点击开出 5 路麦克风。
@@ -1057,6 +1188,7 @@ export function AnxietyProvider({ children }: { children: ReactNode }) {
     try {
       if (cameraEnabled) {
         console.log('[多模态] 关闭摄像头/麦克风...');
+        wantMediaRef.current = false;   // 主动关闭：不要再被"采集在跑"自动打开
         // 等语音会话把最后一段冲刷完；否则残余音频的定稿会在拆图之后才回来，
         // 既可能丢字，也会与重新开启的下一段混在一起。
         await voice.stop();
@@ -1066,6 +1198,7 @@ export function AnxietyProvider({ children }: { children: ReactNode }) {
         // 停止采集后不会再有任何更新把它置回 false，于是会以「冻结的最后一帧读数」
         // 继续留在活跃模态里参与多模态融合（表现为关掉摄像头后仍显示「N 个模态采集中」）。
         eyeTracking.reset();    // 眨眼 / 眼动（帧驱动）
+        faceEmotion.reset();    // 表情模型读数（帧驱动 + 浏览器内 ONNX）
         rppg.reset();           // 心率 / HRV（帧驱动）
         breathingHook.reset();  // 呼吸（音频驱动）
         setCameraEnabled(false);
@@ -1075,37 +1208,50 @@ export function AnxietyProvider({ children }: { children: ReactNode }) {
 
       console.log('[多模态] 开启摄像头/麦克风...');
       // 分别记录结果：只给麦克风权限是常见情况，不该因为摄像头失败就丢掉麦克风。
-      const [voiceOk, facialOk] = await Promise.all([
-        voice.start().then(
-          () => true,
-          (err: unknown) => { console.error('[多模态] 麦克风启动失败:', err); return false; },
-        ),
-        facial.start().then(
-          () => true,
-          (err: unknown) => { console.error('[多模态] 摄像头启动失败:', err); return false; },
-        ),
+      // ⚠️ 两路都**必须有时间上限**：无限等待会让整个开关卡在"已关闭"，
+      //    即使摄像头其实已经跑起来了（见 MEDIA_START_TIMEOUT_MS 的说明）。
+      // 但"超时"**不等于"失败"**：MediaPipe/音频图首次初始化在冷启动上可能十几秒，
+      // 所以超时只用来把 UI 从"卡住"里救出来，真正的开关状态由下面的
+      // `采集是否真的在跑` 那个 effect 决定。
+      wantMediaRef.current = true;
+      const [voiceOutcome, facialOutcome] = await Promise.all([
+        startWithTimeout(voice.start(), '麦克风/语音'),
+        startWithTimeout(facial.start(), '摄像头/面部'),
       ]);
+      const voiceOk = voiceOutcome === 'ok';
+      const facialOk = facialOutcome === 'ok';
+      const slow = voiceOutcome === 'timeout' || facialOutcome === 'timeout';
 
       if (voiceOk || facialOk) {
         setCameraEnabled(true);
       }
       // 失败原因直接上屏。摄像头单独失败时给出明确提示，而不是让界面
       // 停在"看起来一切正常"的状态（改造前 start() 把异常吞了，界面显示已开启）。
+      // 但**"启动慢"不能说成"启动失败"** —— 那会把一个正常工作的摄像头报成坏的。
       if (!voiceOk && !facialOk) {
-        setMediaNotice('麦克风和摄像头都无法启动，请检查浏览器权限设置');
+        setMediaNotice(slow
+          ? '摄像头/麦克风正在启动（比平时慢），采集一旦开始界面会自动打开'
+          : '麦克风和摄像头都无法启动，请检查浏览器权限设置');
       } else if (!facialOk) {
-        setMediaNotice('摄像头不可用（可能没有授权或被其他程序占用）· 已仅启用麦克风');
+        setMediaNotice(facialOutcome === 'timeout'
+          ? '摄像头仍在启动中，稍等片刻；麦克风已启用'
+          : '摄像头不可用（可能没有授权或被其他程序占用）· 已仅启用麦克风');
       } else if (!voiceOk) {
-        setMediaNotice('麦克风不可用（可能没有授权）· 已仅启用摄像头');
+        setMediaNotice(voiceOutcome === 'timeout'
+          ? '麦克风仍在启动中，稍等片刻；摄像头已启用'
+          : '麦克风不可用（可能没有授权）· 已仅启用摄像头');
       } else {
         setMediaNotice('');
       }
-      console.log(`[多模态] 启动结果 voice=${voiceOk} facial=${facialOk}`);
+      console.log(
+        `[多模态] 启动结果 voice=${voiceOutcome} facial=${facialOutcome}`
+        + `（timeout 不等于失败：后台仍在起，采集一开界面会自动打开）`,
+      );
       return voiceOk || facialOk;
     } finally {
       startingMediaRef.current = false;
     }
-  }, [cameraEnabled, voice, facial, eyeTracking, rppg, breathingHook]);
+  }, [cameraEnabled, voice, facial, eyeTracking, rppg, breathingHook, faceEmotion.reset]);
 
   // 纯语音输入：只启动麦克风（不含摄像头），用于聊天页的"语音录入"。
   // 如果多模态开关已经启动了录音，这里直接复用，避免同时开两路麦克风。
@@ -1192,6 +1338,11 @@ export function AnxietyProvider({ children }: { children: ReactNode }) {
           text: textAnalysis.metrics,
           voice: voice.metrics,
           facial: facial.metrics,
+          // 面部**实时状态层**：与随对话/通话上行给算法层的那一份**逐字段相同**
+          // （同一个 `buildFacialLiveState`）。没有新鲜读数时为 null —— 不留痕，
+          // 也不给服务端任何可以"补一个中性值"的机会。
+          // ⚠️ 服务端只把它写进 moodRecord.tags 留痕，不参与 anxietyIndex/riskLevel。
+          facialLiveState: buildFacialLiveState(facial.metrics),
           circadian: circadian.metrics,
           cognitiveDistortion: cognitiveDistortion.metrics,
           hrv: rppg.metrics,
@@ -1222,6 +1373,7 @@ export function AnxietyProvider({ children }: { children: ReactNode }) {
     breathingHook.reset();
     behavioralActivation.reset();
     eyeTracking.reset();
+    faceEmotion.reset();
     voiceSemantics.reset();
     interventionFeedback.reset();
     personalBaseline.reset();
@@ -1231,9 +1383,12 @@ export function AnxietyProvider({ children }: { children: ReactNode }) {
     setComprehensiveState({ ...defaultComprehensive });
     hasTriggeredRef.current = false;
     setRealityTask(null);
-  }, [keyboard, textAnalysis, voice, facial, circadian, cognitiveDistortion, rppg, breathingHook, behavioralActivation, eyeTracking, voiceSemantics]);
+  }, [keyboard, textAnalysis, voice, facial, circadian, cognitiveDistortion, rppg, breathingHook, behavioralActivation, eyeTracking, voiceSemantics, faceEmotion.reset]);
 
   const value: AnxietyContextType = {
+    getFacialTurnInput,
+    getVisualFrames: () => cameraEnabled && facialMetrics.facePresent ? visualFramesRef.current.snapshot() : [],
+    getVisualFrameCount: () => cameraEnabled && facialMetrics.facePresent && Date.now() - facialMetrics.timestamp < 1000 ? visualFramesRef.current.count() : 0,
     comprehensiveState,
     cameraEnabled,
     modalityStatus,
@@ -1253,6 +1408,8 @@ export function AnxietyProvider({ children }: { children: ReactNode }) {
     toggleCamera,
     analyzeText: analyzeTextGlobal,
     voiceInputActive: voiceMetrics.isRecording,
+    subscribeVoiceInput,
+    commitVoiceInput: voice.commitSegment,
     startVoiceInput,
     stopVoiceInput,
     voiceFinalSeq,

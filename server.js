@@ -196,8 +196,11 @@ function run(cmd, args, options = {}) {
 function resolvePython() {
   const candidates = [
     process.env.AIC_PYTHON,
-    path.join(VENV_HOME, '_verify_venv', 'Scripts', 'python.exe'),
+    // 注意顺序：.venv 是装了全量运行时依赖（transformers / librosa 等）的环境，
+    // _verify_venv 只是验证用最小环境。二者都能 import fastapi+uvicorn，若把 _verify_venv
+    // 排在前面会被它抢先命中，导致文本情绪识别、认知扭曲检测等能力静默降级。
     path.join(VENV_HOME, '.venv', 'Scripts', 'python.exe'),
+    path.join(VENV_HOME, '_verify_venv', 'Scripts', 'python.exe'),
     path.join(ROOT, '.venv', 'Scripts', 'python.exe'),
     'python',
   ].filter(Boolean);

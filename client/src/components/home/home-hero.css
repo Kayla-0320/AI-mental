@@ -1,0 +1,666 @@
+/* ============================================================================
+ * 首页主视觉（Hero）
+ * 背景插画是独立资源：client/public/assets/hero-lake-sunset.jpg（2200x715，约 3.08:1）
+ * ========================================================================== */
+
+/* ============================================================================
+ * 页顶图条（.gh-top-image）—— 各内容页顶部那张纯插画，见 components/home/PageTopImage.tsx
+ *
+ * 形态：只有图片本身，图上不放标题 / 按钮 / 卡片（与"疗愈空间无文字"的观感一致）。
+ * 定位方式：`position: absolute; inset: 0` —— 相对 `.gh-app__topstrip` 那一层定位
+ * （它是 `<main>` 外面的全宽块），所以图**整屏铺满**，与首页 Hero 同样宽。
+ * 占位由 `.gh-app__main.gh-app__main--top-strip` 的 `padding-top` 负责。
+ *
+ * ⚠️ 不要把图条放回 `<main>` 里面：main 是 `max-width: 1240px; margin: 0 auto` 的定宽盒子，
+ * 放进去最多只能和内容同宽、两侧留白（这正是"图太小、不像首页"的原因）。
+ * ========================================================================== */
+
+.gh-top-image {
+  position: absolute;
+  inset: 0;
+  /*
+   * ⚠️ 高度不在这里定义，也不在这里改：`--gh-strip-h` 由 `.gh-app__topstrip` 统一定义
+   * （含窄屏与窄条变体），图条原样继承。一份值同时喂给"图有多高"和"页面给图留多少位"。
+   */
+}
+
+.gh-top-image__bg {
+  height: var(--gh-strip-h, 500px);
+  background-size: cover;
+  /*
+   * 大图态（500px）下容器比例约 2.5:1，而图本身约 3:1，`cover` 会裁掉上下各一小截，
+   * 所以取景略偏下（60%）——保证湖面与前景的猫/花不被裁掉，只让掉一部分天空。
+   * 超宽的图 1（4.82:1）横向会裁两侧，居中即可。
+   */
+  background-position: center 60%;
+  background-repeat: no-repeat;
+  /*
+   * ★ 无缝过渡的关键：让**图片自己**在下缘渐隐成透明，露出它下面真正的页面底色。
+   *
+   * 为什么必须是掩膜，而不是"在图上面盖一层渐变色"：
+   *   页面底色不是一个固定色值 —— 它是 healing-theme 的 `--bg-gradient`
+   *   （135deg 斜向渐变，同一个 y 上左右颜色都不同），而且用户可能把它换成
+   *   garden-shell 里那套"奶油白→天蓝"（180deg）。任何写死颜色的覆盖层都只能对着
+   *   **其中一个**底色配平，换一个就重新出现一条色带 —— 这正是之前"还能看到分界"的原因
+   *   （旧写法在最后一档写的是 `rgba(253,250,245,1)` 的奶油白，而实际底色是偏紫的
+   *   `#ececfb`，于是图底先收敛到奶油白、再硬切回紫，成了一条看得见的横线）。
+   *   掩膜把"不透明度"渐隐到 0，底下是什么颜色就接什么颜色，任何底色都成立。
+   *
+   * 渐变刻意拉长（从 58% 起、到 100% 归零，约 210px）：短了会被眼睛读成"图被切了一刀"。
+   */
+  -webkit-mask-image: linear-gradient(
+    180deg,
+    #000 0%,
+    #000 58%,
+    rgba(0, 0, 0, 0.88) 68%,
+    rgba(0, 0, 0, 0.62) 78%,
+    rgba(0, 0, 0, 0.34) 88%,
+    rgba(0, 0, 0, 0.12) 95%,
+    rgba(0, 0, 0, 0) 100%
+  );
+  mask-image: linear-gradient(
+    180deg,
+    #000 0%,
+    #000 58%,
+    rgba(0, 0, 0, 0.88) 68%,
+    rgba(0, 0, 0, 0.62) 78%,
+    rgba(0, 0, 0, 0.34) 88%,
+    rgba(0, 0, 0, 0.12) 95%,
+    rgba(0, 0, 0, 0) 100%
+  );
+}
+
+/*
+ * 窄条态（备用，当前没有页面使用）：容器比例约 8:1 时 `cover` 只能取画面中间一条横带，
+ * 取景再往下压一点（64%）才能落在主体（猫与靠垫）上，而不是切在天空里。
+ * 触发条件是 `.gh-top-image--compact`（见 PageTopImage.tsx 的 COMPACT_ROUTES）。
+ */
+.gh-top-image--compact .gh-top-image__bg {
+  background-position: center 64%;
+}
+
+/*
+ * 图条顶部的轻白纱（只服务顶栏那一档）。
+ *
+ * ⚠️ 这里**只保留顶部**。之前这里是"底部渐隐到奶油白 + 一圈 1px 白色内描边"，
+ * 两个都是看得见的分界线来源：
+ *   · 渐变最后一档是不透明的 `rgba(253,250,245,1)`，等于在图底贴了一块奶油白板，
+ *     与真实底色（偏紫的页面渐变）对不上，形成一条色带；
+ *   · `inset 0 0 0 1px rgba(255,255,255,0.28)` 是一整圈 1px 白线，正好横在图的下缘，
+ *     那就是一条字面意义上的"分界线"。
+ * 底部渐隐现在交给 `.gh-top-image__bg` 的 mask（见上），这是唯一不需要猜底色的做法。
+ */
+.gh-top-image__blend {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.22) 0%, rgba(255, 255, 255, 0) 22%);
+}
+
+/* ============================================================================
+ * 图条上的文案层（小标签 + 主标题 + 副标题）
+ *
+ * 字号 / 字重 / 行高 / 颜色**不在这里写**：直接复用首页的 `.gh-eyebrow`、
+ * `.gh-hero__title`、`.gh-hero__sub`（见 PageTopImage.tsx）。
+ * 这里只负责两件事：① 横向对齐线，② 左侧提亮。
+ * ========================================================================== */
+
+/*
+ * 左侧提亮：深色标题压在插画上时的对比度保障。
+ * 取形与首页 `.gh-hero__veil` 一致（同一方向、同一收尾），但**强度略高**：
+ * 首页那张图是明亮的日落天空，这里的五张图里有湖面反光、栏杆、花丛等更暗更杂的区域，
+ * 实测同一套数值下副标题只有 3.9:1（低于 AA 的 4.5:1），所以左侧多压一点白纱。
+ *
+ * ⚠️ 必须带 mask。这一层是 `inset: 0` 铺满整块图条的，如果一直铺到下缘，
+ * 图已经渐隐消失了它还在，就又在底边留下一道白纱 —— 和之前那条"分界线"是同一类问题。
+ * mask 让它只在文案所在的上半段生效，下缘和图一起归零。
+ */
+.gh-top-image__veil {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    100deg,
+    rgba(255, 255, 255, 0.88) 0%,
+    rgba(255, 255, 255, 0.76) 34%,
+    rgba(255, 255, 255, 0.36) 57%,
+    rgba(255, 255, 255, 0) 74%
+  );
+  -webkit-mask-image: linear-gradient(
+    180deg,
+    #000 0%,
+    #000 55%,
+    rgba(0, 0, 0, 0.5) 68%,
+    rgba(0, 0, 0, 0.16) 78%,
+    rgba(0, 0, 0, 0) 88%
+  );
+  mask-image: linear-gradient(
+    180deg,
+    #000 0%,
+    #000 55%,
+    rgba(0, 0, 0, 0.5) 68%,
+    rgba(0, 0, 0, 0.16) 78%,
+    rgba(0, 0, 0, 0) 88%
+  );
+}
+
+/*
+ * 文案容器：横向尺寸/内边距与页面内容一致（`--gh-sec-w` 1240px + `--gh-sec-pad` 28px），
+ * 所以标题左边缘和下方卡片左边缘在同一条竖线上 —— 这是"像首页"的一半。
+ * 另一半是竖直位置：`align-items: center` + 底部 56px 内边距 = 视觉重心略偏上，
+ * 文字落在插画的天空/湖面一带，而不是压住下半部分的主体（猫、桌面、花丛）。
+ * `pointer-events: none`：图上没有可交互元素，不要让这层挡住任何点击。
+ */
+.gh-top-image__inner {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  max-width: var(--gh-sec-w);
+  margin: 0 auto;
+  padding: 0 var(--gh-sec-pad) 56px;
+  pointer-events: none;
+}
+
+/* 与首页 `.gh-hero__copy` 同一个宽度上限，保证两页标题的折行宽度一致 */
+.gh-top-image__copy {
+  max-width: 620px;
+}
+
+.gh-hero {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  /* 顶栏是 fixed 的（--gh-nav-h），这里让出它的高度 */
+  padding: calc(var(--gh-nav-h, 74px) + 34px) 0 0;
+  min-height: 560px;
+  display: flex;
+  align-items: center;
+}
+
+/*
+ * 首页 Hero 的下缘同样用掩膜渐隐（与图条同一套做法，理由见 .gh-top-image__bg）。
+ * ⚠️ 掩膜必须和 `.gh-hero__veil` 用**同一串数值**：两层都铺满整个 Hero，
+ * 只要有一层还留着，图消失了它还在，就又在 Hero 底边留下一条白边。
+ */
+.gh-hero__bg {
+  position: absolute;
+  inset: 0;
+  z-index: -3;
+  background-image: url('/assets/hero-lake-sunset.jpg');
+  background-size: cover;
+  /* 女孩在画面横向约 62% 处；center 48% 让她的完整身形留在容器 60%~70% 的位置，
+     右侧的陪伴卡片从 74% 起，因此不会压到人物 */
+  background-position: center 48%;
+  background-repeat: no-repeat;
+  -webkit-mask-image: linear-gradient(
+    180deg,
+    #000 0%,
+    #000 64%,
+    rgba(0, 0, 0, 0.86) 72%,
+    rgba(0, 0, 0, 0.6) 80%,
+    rgba(0, 0, 0, 0.34) 88%,
+    rgba(0, 0, 0, 0.13) 95%,
+    rgba(0, 0, 0, 0) 100%
+  );
+  mask-image: linear-gradient(
+    180deg,
+    #000 0%,
+    #000 64%,
+    rgba(0, 0, 0, 0.86) 72%,
+    rgba(0, 0, 0, 0.6) 80%,
+    rgba(0, 0, 0, 0.34) 88%,
+    rgba(0, 0, 0, 0.13) 95%,
+    rgba(0, 0, 0, 0) 100%
+  );
+}
+
+/* 左侧提亮：深色标题压在天空上时的对比度保障（约 4.8:1） */
+.gh-hero__veil {
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  background:
+    linear-gradient(
+      100deg,
+      rgba(255, 255, 255, 0.82) 0%,
+      rgba(255, 255, 255, 0.58) 30%,
+      rgba(255, 255, 255, 0.12) 54%,
+      rgba(255, 255, 255, 0) 70%
+    ),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.28) 0%, rgba(255, 255, 255, 0) 34%);
+  /* 与 .gh-hero__bg 完全同值：两层一起渐隐，Hero 底边才不会留下白纱 */
+  -webkit-mask-image: linear-gradient(
+    180deg,
+    #000 0%,
+    #000 64%,
+    rgba(0, 0, 0, 0.86) 72%,
+    rgba(0, 0, 0, 0.6) 80%,
+    rgba(0, 0, 0, 0.34) 88%,
+    rgba(0, 0, 0, 0.13) 95%,
+    rgba(0, 0, 0, 0) 100%
+  );
+  mask-image: linear-gradient(
+    180deg,
+    #000 0%,
+    #000 64%,
+    rgba(0, 0, 0, 0.86) 72%,
+    rgba(0, 0, 0, 0.6) 80%,
+    rgba(0, 0, 0, 0.34) 88%,
+    rgba(0, 0, 0, 0.13) 95%,
+    rgba(0, 0, 0, 0) 100%
+  );
+}
+
+.gh-hero__inner {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: var(--gh-sec-w);
+  margin: 0 auto;
+  padding: 34px var(--gh-sec-pad) 86px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 316px;
+  align-items: center;
+  gap: 40px;
+}
+
+/* ---------- 左侧文案 ---------- */
+
+.gh-hero__copy {
+  max-width: 620px;
+}
+
+/*
+ * 没有 AI 陪伴卡片的 Hero（疗愈空间）：`.gh-hero__inner` 是「文案 1fr + 卡片 316px」
+ * 的两列网格，卡片不渲染时右列会空着、文案也不会变宽。
+ * 这里改成单列，让文案按自己的 max-width 正常排；
+ * 右侧留白正好把背景插画（猫与书架）让出来。
+ */
+.gh-hero--no-buddy .gh-hero__inner {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.gh-hero__eyebrow {
+  background: rgba(255, 255, 255, 0.78);
+  border-color: rgba(255, 255, 255, 0.9);
+  color: #46586f;
+}
+
+.gh-hero__eyebrow-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #8fd9bb, #4fb894);
+  box-shadow: 0 0 0 3px rgba(79, 184, 148, 0.18);
+}
+
+.gh-hero__title {
+  margin-top: 18px;
+  font-size: clamp(34px, 4.2vw, 56px);
+  font-weight: 800;
+  line-height: 1.22;
+  letter-spacing: 0.5px;
+  /* 深靛蓝：与"治愈"不冲突，同时保证在白雾蒙版上远高于 4.5:1 */
+  color: #26364f;
+  text-shadow: 0 2px 18px rgba(255, 255, 255, 0.75);
+}
+
+.gh-hero__title-accent {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: #1f5f8b;
+}
+
+.gh-hero__heart {
+  width: clamp(26px, 2.6vw, 38px);
+  height: clamp(26px, 2.6vw, 38px);
+  flex: 0 0 auto;
+  transition: transform 0.4s var(--gh-ease);
+}
+
+.gh-hero__title:hover .gh-hero__heart {
+  transform: scale(1.14) rotate(-6deg);
+}
+
+.gh-hero__sub {
+  margin-top: 18px;
+  font-size: clamp(14px, 1.15vw, 17px);
+  line-height: 1.7;
+  color: #3f5069;
+  font-weight: 500;
+  text-shadow: 0 1px 12px rgba(255, 255, 255, 0.8);
+}
+
+.gh-hero__actions {
+  margin-top: 30px;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+
+.gh-hero__cta {
+  padding: 16px 34px;
+  font-size: 16px;
+}
+
+.gh-hero__secondary {
+  position: relative;
+  font-size: 14px;
+  color: #3f5069;
+  font-weight: 600;
+  padding-bottom: 6px;
+}
+
+/* 手写感的短下划线，呼应插画里的手绘标注 */
+.gh-hero__secondary::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 6px;
+  bottom: 0;
+  height: 6px;
+  border-radius: 50%;
+  border-bottom: 2px solid rgba(239, 111, 159, 0.7);
+  transform: rotate(-1.2deg);
+}
+
+/* ---------- 右侧 AI 陪伴卡片 ---------- */
+
+.gh-hero__buddy {
+  position: relative;
+  padding: 18px 20px 20px;
+  border-radius: var(--gh-r-xl);
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  background: rgba(255, 255, 255, 0.6);
+  backdrop-filter: blur(22px) saturate(1.15);
+  -webkit-backdrop-filter: blur(22px) saturate(1.15);
+  box-shadow: 0 14px 40px rgba(64, 100, 140, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.85);
+  text-align: center;
+  overflow: hidden;
+}
+
+.gh-hero__buddy-glow {
+  position: absolute;
+  top: -58px;
+  right: -46px;
+  width: 168px;
+  height: 168px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255, 214, 160, 0.72) 0%, rgba(255, 214, 160, 0) 70%);
+  pointer-events: none;
+}
+
+.gh-hero__buddy-top {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 4px;
+}
+
+.gh-hero__online {
+  background: rgba(255, 255, 255, 0.82);
+  color: #2f6b56;
+  font-weight: 600;
+}
+
+.gh-hero__online-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #4fb894;
+  box-shadow: 0 0 0 3px rgba(79, 184, 148, 0.22);
+  animation: ghPulseRing 2.4s ease-in-out infinite;
+}
+
+.gh-hero__buddy-art {
+  display: flex;
+  justify-content: center;
+  margin: -2px 0 2px;
+  filter: drop-shadow(0 10px 18px rgba(80, 120, 160, 0.14));
+}
+
+.gh-hero__buddy-body {
+  margin-bottom: 16px;
+}
+
+.gh-hero__buddy-hi {
+  font-size: 12px;
+  font-weight: 600;
+  color: #7d8ca3;
+  letter-spacing: 0.3px;
+}
+
+.gh-hero__buddy-title {
+  margin-top: 5px;
+  font-size: 15px;
+  font-weight: 700;
+  color: #26364f;
+  line-height: 1.5;
+}
+
+.gh-hero__buddy-desc {
+  margin-top: 7px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: #55647d;
+}
+
+.gh-hero__buddy-alt {
+  margin-top: 10px;
+  width: 100%;
+  border: none;
+  background: none;
+  padding: 4px 0;
+  font-size: 12px;
+  color: #6b7d96;
+  text-decoration: underline;
+  text-decoration-color: rgba(107, 125, 150, 0.45);
+  text-underline-offset: 3px;
+  cursor: pointer;
+  border-radius: 8px;
+  transition: color 0.22s var(--gh-ease);
+}
+
+.gh-hero__buddy-alt:hover {
+  color: #3f5069;
+}
+
+/* ---------- 与内容区衔接 ---------- */
+
+/*
+ * Hero 与内容区之间的柔光（纯白，两端都是 0 不透明度）。
+ *
+ * ⚠️ 两端必须都归零，否则它在底边就变成一块板：
+ * 旧写法最后一档是 `rgba(253,250,245,0.96)`，等于在 Hero 底边铺一层近乎不透明的奶油白，
+ * 而页面真实底色是偏紫的渐变 —— 那条"奶油白 → 紫"的接缝就是这么来的。
+ * 现在渐隐交给掩膜，这一层只负责在中段轻轻提亮。
+ */
+.gh-hero__fade {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 168px;
+  z-index: -1;
+  pointer-events: none;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 253, 250, 0) 0%,
+    rgba(255, 253, 250, 0.5) 52%,
+    rgba(255, 253, 250, 0) 100%
+  );
+}
+
+/* ============================================================================
+ * 主视觉的第二个变体：疗愈空间（与首页共用本文其余规则）
+ *
+ * 背景：client/public/assets/healing-cat-lake.jpg（2172x724，约 3:1）
+ * 取景与首页**方向相反**，两处都别照抄首页的数值：
+ *   · 主体（睡觉的猫 + 书架 + 窗帘）在画面**右侧 73%~100%**，桌面必须用
+ *     `right 48%` 才能让右侧内容尽量留在画面里（用 center 会把猫裁掉）；
+ *   · 桌面右侧的 AI 陪伴卡片会落在画面右端，所以蒙版由左下起色、
+ *     70% 之后渐强收白，把猫与书架轻轻推淡，保证卡片上的深色文字始终可读；
+ *   · 移动端插画收成顶部横幅（与首页同款 300px），主体取 76% 处，
+ *     即横幅里靠右的位置。
+ * ========================================================================== */
+
+.gh-hero--healing .gh-hero__bg {
+  background-image: url('/assets/healing-cat-lake.jpg');
+  background-position: right 48%;
+}
+
+.gh-hero--healing .gh-hero__veil {
+  background:
+    linear-gradient(
+      100deg,
+      rgba(255, 255, 255, 0.38) 0%,
+      rgba(255, 255, 255, 0.14) 32%,
+      rgba(255, 255, 255, 0.22) 58%,
+      rgba(255, 255, 255, 0.72) 100%
+    ),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.26) 0%, rgba(255, 255, 255, 0) 40%);
+}
+
+@media (max-width: 899px) {
+  .gh-hero--healing .gh-hero__bg {
+    background-position: 74% 46%;
+  }
+}
+
+/* ============================================================================
+ * 响应式
+ * ========================================================================== */
+
+@media (max-width: 1079px) {
+  .gh-hero {
+    min-height: 520px;
+  }
+
+  .gh-hero__inner {
+    grid-template-columns: minmax(0, 1fr) 288px;
+    gap: 26px;
+    padding-bottom: 70px;
+  }
+
+  .gh-hero__buddy {
+    padding: 14px 16px 16px;
+  }
+}
+
+@media (max-width: 899px) {
+  /* 平板竖屏起改为上下堆叠：卡片落到文案下方，不再和人物抢右侧空间 */
+  .gh-hero__inner {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 28px;
+  }
+
+  .gh-hero__buddy {
+    max-width: 340px;
+  }
+
+  .gh-hero__bg {
+    background-position: 58% 42%;
+  }
+}
+
+@media (max-width: 767px) {
+  /*
+   * 竖屏把插画收成"顶部横幅"，而不是铺满整个 Hero。
+   *
+   * 原因：这张 3.08:1 的全景图放进 390px 宽后，`cover` 只能按高度缩放，
+   * 横向要裁掉 80% 以上；若照片继续铺满整个 Hero，AI 陪伴卡片必然压在女孩身上
+   * （实测卡片正好盖住她的头到腰）。收成 300px 高的横幅后，人物完整落在横幅内，
+   * 标题 / 按钮 / 卡片全部落在下方的奶油底上，谁都不遮谁。
+   */
+  .gh-hero {
+    min-height: 0;
+    padding-top: 0;
+    display: block;
+  }
+
+  .gh-hero__bg {
+    height: 300px;
+    bottom: auto;
+    /* 女孩在原图横向约 62% 处；62% 的定位让她稳定落在横幅 62% 的位置 */
+    background-position: 62% 44%;
+  }
+
+  /* 疗愈空间那张的主体（猫/书架/窗帘）在画面右侧：横幅里同样要靠右取景 */
+  .gh-hero--healing .gh-hero__bg {
+    background-position: 78% 46%;
+  }
+
+  .gh-hero__veil {
+    height: 300px;
+    bottom: auto;
+    /*
+     * 顶部稍作提亮压住天空高光；底部**不再**写死不透明的奶油白：
+     * 那是"横幅下缘一条白线"的来源（横幅下缘在 300px 处，这一档正好铺在切口上）。
+     * 现在由 mask 把横幅本身渐隐进页面真实底色，文案早已落在 318px 之下，不受影响。
+     */
+    background: linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.34) 0%,
+      rgba(255, 255, 255, 0.06) 44%,
+      rgba(255, 255, 255, 0) 84%,
+      rgba(255, 255, 255, 0) 100%
+    );
+  }
+
+  .gh-hero__inner {
+    /* 318px = 横幅 300px + 18px 呼吸；文案因此完全落在横幅之下 */
+    padding: 318px var(--gh-sec-pad) 46px;
+    gap: 20px;
+  }
+
+  .gh-hero__fade {
+    display: none;
+  }
+
+  .gh-hero__title {
+    margin-top: 14px;
+    text-shadow: none;
+  }
+
+  .gh-hero__sub {
+    margin-top: 13px;
+    text-shadow: none;
+  }
+
+  .gh-hero__actions {
+    margin-top: 22px;
+    gap: 12px;
+  }
+
+  .gh-hero__cta {
+    width: 100%;
+    padding: 15px 24px;
+  }
+
+  .gh-hero__secondary {
+    font-size: 13px;
+  }
+
+  .gh-hero__buddy {
+    max-width: none;
+  }
+
+  /*
+   * 图条在竖屏收成 300px 横幅，文案仍压在图上，但要：
+   *   · 从 60px 起排，让开移动端 64px 的固定顶栏（否则小标签会被顶栏压住）；
+   *   · 用 flex-start 而不是居中 —— 300px 里居中会让文字下半段落进图的渐隐区。
+   */
+  .gh-top-image__inner {
+    align-items: flex-start;
+    padding: 60px var(--gh-sec-pad) 0;
+  }
+
+  .gh-top-image__copy {
+    max-width: none;
+  }
+}

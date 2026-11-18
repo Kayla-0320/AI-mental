@@ -1,0 +1,39 @@
+.chat-companion-aside { width:340px; flex:0 0 340px; min-height:0; height:100%; display:flex; flex-direction:column; background:#ffffffdf; border:1px solid #eee8f3; border-radius:16px; overflow:hidden; }
+.chat-companion-aside[hidden] { display:none; }
+.chat-companion-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:14px 16px 10px; border-bottom:1px solid #eee8f3; }
+.chat-companion-heading strong { color:#625276; font-size:14px; }
+.chat-companion-scroll { min-height:0; flex:1; overflow:auto; padding:14px; }
+/* 情绪块固定在外壳里（不跟着 Tab 内容滚）——原来的左下角浮层就是"始终可见"，
+   换到右栏后不能变成"翻两屏就看不见了"。 */
+.chat-companion-emotion { flex:0 0 auto; padding:12px 14px 0; }
+.chat-companion-emotion--drawer { padding:0 0 12px; }
+.chat-companion-panel { min-width:0; }
+.chat-companion-intro { font-size:12px; line-height:1.75; margin-bottom:8px !important; }
+.chat-companion-source { font-size:12px; line-height:1.7; }
+.chat-companion-panel .ant-tabs-nav { margin-bottom:14px; }
+.chat-companion-panel .ant-tabs-tab { font-size:13px; }
+.chat-companion-panel .ant-tabs-tab+.ant-tabs-tab { margin-left:18px; }
+.chat-companion-panel .ant-typography h5,.chat-companion-panel h5.ant-typography { font-size:14px; }
+.chat-companion-panel .ant-card-body { padding:0; }
+.chat-companion-panel .ant-card-head { min-height:36px; padding:0; border:0; }
+.chat-companion-panel .ant-card-head-title { font-size:13px; }
+.chat-companion-panel .ie-expert { grid-template-columns:105px minmax(0,1fr); gap:6px; }
+.chat-companion-toolbar { padding:8px 12px; border-bottom:1px solid #eee8f3; display:flex; align-items:center; flex-wrap:wrap; justify-content:space-between; gap:4px; }
+.chat-companion-toolbar-label { color:#8b729c; font-size:12px; }
+/* 右栏顶部的「情绪识别」块：三种表情读数（开心/中性/悲伤）常显，切 Tab 也不消失。 */
+.chat-emotion { background:linear-gradient(135deg,#faf7fd,#f6f2fb); border:1px solid #efe7f8; border-radius:12px; padding:10px 12px; margin-bottom:12px; }
+.chat-emotion-head { display:flex; align-items:center; gap:6px; margin-bottom:8px; }
+.chat-emotion-icon { font-size:13px; line-height:1; }
+.chat-emotion-title { color:#625276; font-size:13px; font-weight:600; }
+.chat-emotion-state { font-size:12px; font-weight:600; }
+.chat-emotion-toggle { border:none; background:transparent; color:#9a8fae; font:inherit; font-size:11px; cursor:pointer; padding:0 2px; }
+.chat-emotion-toggle:hover { color:#7b63a8; }
+.chat-emotion-extra { color:#a096b2; font-size:10px; line-height:1.5; }
+.chat-emotion-hint { color:#a8a0b8; font-size:10px; line-height:1.5; }
+.chat-emotion-detail { margin-top:10px; padding-top:10px; border-top:1px dashed #ece4f5; color:#333; font-size:12px; }
+/* 窄屏（右栏是抽屉）时摆在聊天卡片工具栏里的紧凑版，避免这三个数彻底消失 */
+.chat-emotion-chips { display:inline-flex; align-items:center; gap:6px; }
+.chat-emotion-chips-bar { display:inline-block; width:44px; }
+@media(max-width:767px) { .chat-emotion { padding:8px 10px; } }
+.chat-layout--companion>.chat-history { width:230px !important; flex:0 0 230px; }
+@media(max-width:767px) { .chat-layout--companion>.chat-history { width:100% !important; flex:initial; } .chat-companion-toolbar { padding:8px; } }

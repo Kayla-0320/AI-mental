@@ -10,14 +10,15 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import time
 import random
 import requests
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any, Iterator, Optional
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -33,27 +34,15 @@ from intervention.style_detector import StyleDetector, UserStyle, get_reply_styl
 from perception.perception_service import get_perception_service
 from perception.cognitive.distortion_classifier import (
     format_distortion_hint,
+    get_distortion_classifier,
     predict_distortion_safe,
 )
 from assessment.scale import map_all
 from assessment.user_memory import get_memory_store
 from assessment.memory_extractor import MemoryExtractor, build_memory_context
-from assessment.therapeutic_state import (
-    record_session,
-    update_core_issues,
-    build_continuity_context,
-)
-from assessment.intervention_effectiveness import (
-    build_intervention_context,
-    recommend_strategy,
-)
-from assessment.competence_boundary import (
-    update_boundary_state,
-    build_boundary_context,
-    should_refer_now,
-)
 from intervention.scene_retrieval import build_scene_context
-from shared.dataclasses import ChatStreamEventType
+from shared.dataclasses import ChatStreamEventType, SupportFeedback, SupportState
+from intervention.support_understanding import apply_feedback, parse_state, prepare_support, support_prompt
 
 router = APIRouter(prefix="/intervention", tags=["干预层"])
 
@@ -413,17 +402,31 @@ class SmartChatRequest(BaseModel):
         default_factory=list, description="对话历史 [{role, content}]"
     )
     session_id: Optional[str] = Field(None, description="会话 ID")
-    content_type: Optional[str] = Field(
-        None, description="消息来源类型：'voice' = 语音通话, 'text' = 文字聊天"
-    )
+    message_id: Optional[str] = Field(None, max_length=160, description="业务层持久化的本轮消息 ID")
+    support_state: Optional[dict] = Field(None, description="业务层读取的当前会话理解状态")
     voice_features: Optional[dict] = Field(
-        None, description="本轮声学特征摘要（通话期由客户端提取），用于跨模态矛盾检测"
+        None,
+        description=(
+            "本轮声学特征摘要（通话期由客户端提取的聚合统计量，不含原始帧）。"
+            "供 TAMER 的跨模态矛盾检测（MIS）使用；文字聊天时为 None。"
+        ),
+    )
+    facial_features: Optional[dict] = Field(
+        None,
+        description=(
+            "本轮**面部实时状态**摘要（客户端 buildFacialLiveState 的产物，"
+            "包含三分类概率与新鲜度，可附visualFrames三张有时序的JPEG缩略帧）。"
+            "只在'采集在跑 + 画面里有人脸 + 读数新鲜'时非空；"
+            "缩略帧仅用于图文专家和像素质量检查，业务层不保存原始帧；供prompt作低权重参考。"
+            "⚠️ 它不参与风险等级、融合权重与量表分；为空时整段不注入。"
+        ),
     )
 
 
 class SmartChatResponse(BaseModel):
     """智能对话响应（对应 algorithm-bridge.ts SmartChatResponse）"""
     reply: str
+    innovation: Optional[dict] = None
     dialog_state: str
     dialogue_mode: str = "EMPATHY"  # 对话模式：EMPATHY（共情）/ SOCRATIC（引导）
     action_type: str
@@ -439,7 +442,35 @@ class SmartChatResponse(BaseModel):
     scene_retrieval: Optional[dict] = None
     cognitive_distortion: Optional[dict] = None
     # --- TAMER 框架输出 ---
+    # RQI（关系质量指数）/ MIS（跨模态矛盾分）/ CUSUM（情绪轨迹）三项的汇总，
+    # 供前端做关系阶段指示器与矛盾提示；**不是诊断结论**，见
+    # assessment/tamer_framework.py 的诚实边界说明。
     tamer_result: Optional[dict] = None
+    support_state: Optional[dict] = None
+
+
+class SupportFeedbackRequest(BaseModel):
+    """无状态反馈运算；业务层负责鉴权、所有权校验和乐观锁持久化。"""
+    session_id: str = Field(..., min_length=1, max_length=160)
+    state: dict
+    feedback_id: str = Field(..., min_length=1, max_length=100)
+    expected_revision: int = Field(..., ge=0, strict=True)
+    action: str = Field(..., max_length=20)
+    item_id: str = Field("", max_length=80)
+    text: str = Field("", max_length=240)
+    goal: str = Field("", max_length=20)
+
+
+@router.post("/support-feedback", summary="确认或纠正本人的理解")
+def support_feedback(request: SupportFeedbackRequest) -> dict:
+    """纯函数处理理解反馈，不修改风险、审计或全局用户状态。"""
+    try:
+        state = parse_state(request.state, request.session_id)
+        feedback = SupportFeedback(request.feedback_id, request.expected_revision, request.action,
+                                   request.item_id, request.text, request.goal)
+        return {"support_state": asdict(apply_feedback(state, feedback))}
+    except (ValueError, TypeError, KeyError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 # 简易共情回复生成器（不依赖外部 LLM 服务）
@@ -595,6 +626,10 @@ _DOMINANT_EMOTION_MIN_PROB = 0.45
 def _dominant_emotion_cue(emotion_probs: list[float]) -> str:
     """把主导情绪映射成"只给模型看"的内部线索行。
 
+    ⚠️ 自 2026-10-05 prompt 精简后，**这行不再注入 prompt**（只留负性强度
+    数值），函数与测试保留下来：它是"细腻化情绪线索"这条路的可复用实现，
+    将来若要把线索重新注入，仍从这里取。
+
     返回空串表示**本轮不适合给情绪锚点**（中性/快乐占主导，或输入异常）。
     调用方据此决定要不要把这行注入 prompt —— 空串时必须不注入，
     否则模型会在用户什么都没说的时候凭空共情。
@@ -626,6 +661,10 @@ def _narrative_thread(
     scene_context: str = "",
 ) -> str:
     """提取"用户这一段正在讲的那条线"（问题③ 的锚点）。
+
+    ⚠️ 自 2026-10-05 prompt 精简后，**这段锚点不再注入 prompt** —— 新版只留
+    身份、话术总则与安全底线，连贯性交给"ta 说什么你就接什么"这一条总则。
+    函数与测试保留，便于回退或复用。
 
     用户反馈（2026-09-27）："你说考试没考好，它没顺着这个点回应，反而生硬跳问
     哪门课压力大，上下文关联弱。"
@@ -728,12 +767,20 @@ def _ask_question_this_turn(
     user_message: str = "",
     negative_intensity: float = 0.0,
 ) -> bool:
-    """本轮是否可以提出**一个**开放式追问。
+    """本轮**要不要**提出一个开放式追问。
 
-    规则来源：提示词的"底线"（尊重节奏）与"往下走"一节（至少隔一轮才追问）。
-    注意这里只判断**本轮能不能问**；"连着两轮都问过"这层由
-    :func:`_assistant_asked_repeatedly` 单独判定，两者在
-    :func:`_build_llm_messages` 与 :func:`_finalize_reply` 里合流。
+    规则来源：新版话术总则（2026-10-11）把提问降级为**选项**，优先级是
+    「倾听 > 建议 > 引导性提问」；这里负责判出**这一轮明确不该问**的情形
+    （用户不想谈、情绪还没平复、好转/想收尾、高风险），返回值是**否决权**，
+    不是"必须问"的义务 —— 提示词里的默认动作是"ta 只想倾诉就先接住，
+    可以一个问题都不问"。返回值同时在
+    :func:`_build_llm_messages`（写不写"这一轮不要提问"）与
+    :func:`_finalize_reply`（删不删结尾问句）里使用，两处必须同源。
+
+    ⚠️ 自 2026-10-05 起"连着问了几轮"**不再参与**这里的判定：
+    旧版的隔轮节拍（``_assistant_asked_repeatedly`` 驱动的"问、问、接一句"）
+    与逐句点名的硬禁用清单一起删掉了 —— 它们正是"每轮都是同一套话术"的来源。
+    :func:`_assistant_asked_repeatedly` 保留为判据与测试用，不再注入 prompt。
 
     实现上刻意**不**直接使用 ``UserStyle.AGITATED`` 标签：该标签的判据是
     "高情绪强度 + 短消息/感叹号"，实测会把 "我好难受"（负性 0.989、
@@ -744,6 +791,8 @@ def _ask_question_this_turn(
         - 高负性 + 感叹号/⌈≤6 字且含激动或回避措辞⌉ → 先安抚，不追问；
         - 高负性但单纯难过（"我好难受"）→ 允许追问一句；
         - 明确表示不想谈 → 立刻停止深挖（"往下走"一节的留白要求）；
+        - 好转 / 想先结束（"我感觉好些了""先这样吧"）→ 收束，不追问
+          （判据见 :func:`_closing_intent`）；
         - 寒暄/短消息但平静 → 允许邀请式追问，否则模型会退化成
           只会说"我在这里"的复读机。
 
@@ -763,6 +812,14 @@ def _ask_question_this_turn(
     if risk_level in ("high", "crisis"):
         return False
 
+    # 好转 / 想先聊到这里（"我感觉好些了"）：本轮改成收束话术，不再往下问。
+    # ⚠️ 必须排在下面所有判定**之前**：收束的语义是"这一段该收尾了"，
+    # 一旦命中就不该再被"情绪还没平复""还能再追问一句"这类判据翻盘。
+    # 它自身对 high/crisis 恒返回 None（见 :func:`_closing_intent`），
+    # 所以不会碰到上面那条安全红线。
+    if _closing_intent(user_message, risk_level) is not None:
+        return False
+
     # 明确表示不想谈 —— 立刻停止深挖（"往下走"一节的留白要求）
     if _is_avoidance_or_refusal(user_message):
         return False
@@ -780,6 +837,240 @@ def _ask_question_this_turn(
     return True
 
 
+# ── 收束 / 结束语检测 ───────────────────────────────────────────────────────
+#
+# 需求（2026-10-11 用户原话）："当用户说我感觉好些了，就可以不用再问问题了，
+# 可以说一些结束对话的语言。" 所以要判两件事：ta 是不是在说**自己好转了**，
+# 或者是不是**想先聊到这里**。命中任一 → 本轮不再追问
+# （见 :func:`_ask_question_this_turn`），prompt 侧换成收束话术
+# （见 :func:`_build_llm_messages` 的 closing_line），定稿侧由既有的
+# "本轮不许提问就删结尾问句"兜底（见 :func:`_strip_trailing_question`）。
+#
+# ⚠️ 四条保守策略，把取舍写在这里：
+#   1. 高风险/危机**一律不判**（哪怕 ta 刚说"我好多了"）—— "好多了"恰恰是
+#      危机过后最需要核实的一句，此时必须继续走安全确认与转介；
+#   2. 同一句里出现危机词也**一律不判**（"我好多了，但有时候还是想死"）——
+#      直接复用本文件唯一的危机词表 :func:`_detect_crisis`（它与
+#      ``_CRISIS_KEYWORDS`` 一起定义在文件下方，同模块内前向引用即可），
+#      不另建第二份（两份词表必然漂移）。代价是 '累了' 这类宽泛词会造成漏判
+#      （"没那么累了"判不出来），这是刻意的：漏一次收束只是多问一句，
+#      错一次收束是提前把求助的门关上；
+#   3. "未好转"的否定表达必须先于肯定表达拦下（"我不好""我没好""我不好受"）。
+#      ⚠️ 不能只按"没/不"字拦 —— "没那么难受了"本身含"没"却是好转，
+#      所以下面全部是**完整短语**，不做单字判断；
+#   4. 不带主语的好转短语要防"说的是别人"（"我朋友好多了，可我还是这样"）。
+#
+# 检测只做**词面**匹配，不引入模型调用：这条链路上每多一次调用就多一种失败
+# 模式，而"少说一次收束话"的代价远低于"说错一次"。
+
+# 好转表达（前半段自带上主语/限定语，可直接全串匹配）。
+# ⚠️ 刻意不收单字"好"：`_is_social_only` 里的"好的""好"是应声，不是好转；
+#   也刻意不收"谢谢"这类只有礼节没有内容的词（见 _CLOSING_ENDING_KEYWORDS）。
+_CLOSING_IMPROVED_KEYWORDS: tuple[str, ...] = (
+    "我好多了", "我好了很多", "我好一些了", "我好一点了", "我好点儿了",
+    "我现在好多了", "我感觉好些了", "我感觉好多了", "我觉得好些了", "我觉得好多了",
+    "感觉好些了", "感觉好多了", "感觉舒服多了", "感觉轻松多了",
+    "没那么难受了", "没这么难受了", "不那么难受了", "没那么难过了", "没那么烦了",
+    "心里舒服多了", "心里好受多了", "心情好多了", "舒服多了", "好受多了",
+    "轻松多了", "开心多了", "缓过来了",
+    "想通了", "我明白了", "我知道怎么做了", "我知道该怎么办了", "我有办法了",
+    # 以下短表达**不带主语**，必须再过一道主语守卫（见 _is_about_someone_else），
+    # 顺序放在最后：同一条消息里若还有带主语的写法，优先按带主语的那条判。
+    "好多了", "好些了", "好一点了", "好点儿了", "好一些了", "好转了",
+)
+
+# 需要主语守卫的好转短语："好多了"既可能是"我好多了"，也可能是"我朋友好多了"。
+_CLOSING_BARE_IMPROVED: frozenset[str] = frozenset({
+    "好多了", "好些了", "好一点了", "好点儿了", "好一些了", "好转了",
+})
+
+# 未好转 / 否定表达，必须先于好转词判定（"我不好受"里含"好受"）。
+_CLOSING_NOT_IMPROVED_KEYWORDS: tuple[str, ...] = (
+    "我不好", "我不太好", "我不好受", "我没好", "我没见好", "我没有好",
+    "不见好", "没见好", "没好转", "没有好转", "好不了", "好不起来", "没好起来",
+    "没变好", "没有变好", "没轻松", "不轻松", "没舒服", "不舒服",
+    "想不通", "没想通", "没明白", "不明白", "不知道怎么做", "不知道该怎么办",
+    "还是老样子", "没什么变化", "没什么改变",
+)
+
+# 结束 / 告别表达，分三档（分档只为把理由写清楚，匹配行为一致）。
+_CLOSING_ENDING_KEYWORDS: tuple[str, ...] = (
+    # ① 明确表示先聊到这里
+    "我先不聊了", "先不聊了", "不聊了", "先这样吧", "就这样吧",
+    "下次再聊", "下次聊", "改天聊", "回头聊", "晚点聊",
+    # ② 有现实原因要走（收束语里"你去做你的事"比"再见"自然）
+    "我要去忙了", "去忙了", "去学习了", "去写作业", "我得走了", "先走了",
+    # ③ 告别礼节。
+    # ⚠️ **不含**单独的"谢谢"：那是正常寒暄（见 _is_social_only），
+    #    道完谢 ta 往往还想接着说；"谢谢 + 好转"的组合在函数里单独判为 ending。
+    # ⚠️ 也**不含**单独的"挂了"：青少年口语里"我挂了"更常是"考砸了"，
+    #    判成"想结束"会把一场关于考试失利的谈话直接收尾，只认"先挂了"。
+    "拜拜", "再见", "先挂了",
+)
+
+# 收尾道谢用语。与好转表达**同时**出现时判成 ending（"谢谢你，我好多了"）——
+# 在这条链路上道谢几乎总是收尾礼节，而不是中途汇报。
+_CLOSING_THANKS_MARKERS: tuple[str, ...] = (
+    "谢谢", "多谢", "感谢", "谢了", "thanks", "thx",
+)
+
+# 「好转被同一轮的转折句推翻」用的两个表。需求要求"同一句里同时出现负性词就
+# 不得判成好转"（例："我好多了，但有时候还是想死"）。这里刻意**只在转折词之后**
+# 看负性词：
+#   - "没那么难受了"本身含"难受"，那是需求点名要命中的好转表达，
+#     一刀切按负性词拦会把这条正确表达误杀；
+#   - "我好多了，但还是有点担心"里，"担心"落在"但"之后 —— 好转被削弱，
+#     这一轮就不该收尾（宁可不收，也别在 ta 还悬着心的时候说结束语）。
+_CLOSING_CONTRAST_MARKERS: tuple[str, ...] = (
+    "但", "不过", "可是", "只是", "就是", "然而", "可惜", "虽然",
+)
+_CLOSING_RESIDUAL_NEGATIVE_WORDS: tuple[str, ...] = (
+    "难受", "难过", "想哭", "痛苦", "焦虑", "抑郁", "崩溃", "烦躁",
+    "害怕", "恐惧", "担心", "失眠", "睡不着", "提不起", "委屈", "内疚", "自责",
+    "紧张", "孤独", "不想", "做不到", "绝望", "没希望", "撑不住",
+)
+
+# 第三方主语标记（用于主语守卫）。
+_CLOSING_OTHER_SUBJECT_MARKERS: tuple[str, ...] = (
+    "他", "她", "它", "他们", "她们", "别人", "人家", "朋友", "同学", "同桌",
+    "室友", "老师", "妈妈", "妈", "爸爸", "爸", "爷爷", "奶奶", "弟弟", "妹妹",
+    "哥哥", "姐姐", "家人", "亲戚",
+)
+# 第一人称标记。与第三方标记一起比"谁离好转短语更近"。
+_CLOSING_SELF_MARKERS: tuple[str, ...] = ("我", "自己", "本人")
+
+
+def _has_residual_distress(text: str) -> bool:
+    """好转表达后面是否还挂着一句转折的负性话（"我好多了，但还是有点担心"）。
+
+    只看**第一个转折词之后**的部分，理由见上面两张表的注释。
+
+    Args:
+        text: 用户当前发言。
+
+    Returns:
+        bool: True 表示好转被转折句削弱，本轮不该收尾。
+    """
+    cut = -1
+    for marker in _CLOSING_CONTRAST_MARKERS:
+        pos = text.find(marker)
+        if pos >= 0 and (cut < 0 or pos < cut):
+            cut = pos
+    if cut < 0:
+        return False
+    tail = text[cut:]
+    return any(word in tail for word in _CLOSING_RESIDUAL_NEGATIVE_WORDS)
+
+
+def _is_about_someone_else(text: str, phrase_start: int, window: int = 6) -> bool:
+    """不带主语的好转短语，说的其实是**别人**吗（"我朋友好多了"）。
+
+    判据：在短语前面的窗口里，找**离短语最近的那个主语标记** —— 最近的那个
+    才是这句话的主语。最近的是第三方（他/她/朋友…）→ True。
+
+    ⚠️ 不能退化成"窗口里有没有我"：`"我朋友好多了"` 的窗口里"我"和"朋友"都在，
+    只有比出**谁离得更近**才判得对（"朋友"在下标 1、"我"在下标 0）。
+
+    Args:
+        text: 用户当前发言。
+        phrase_start: 好转短语在 ``text`` 里的起始下标。
+        window: 回看的字符数（默认 6，够覆盖"我的一个朋友"这类常见前缀）。
+
+    Returns:
+        bool: True 表示这句好转说的不是 ta 自己。
+    """
+    segment = text[max(0, phrase_start - window):phrase_start]
+    best_pos = -1
+    best_is_other = False
+    for marker in _CLOSING_OTHER_SUBJECT_MARKERS:
+        pos = segment.rfind(marker)
+        if pos > best_pos:
+            best_pos, best_is_other = pos, True
+    for marker in _CLOSING_SELF_MARKERS:
+        pos = segment.rfind(marker)
+        if pos > best_pos:
+            best_pos, best_is_other = pos, False
+    return best_is_other
+
+
+def _closing_improvement_phrase(text: str) -> Optional[str]:
+    """命中好转表达时返回命中的短语，否则 None（:func:`_closing_intent` 的内部判据）。
+
+    Args:
+        text: 用户当前发言。
+
+    Returns:
+        Optional[str]: 命中的短语；未命中为 None。
+    """
+    for phrase in _CLOSING_IMPROVED_KEYWORDS:
+        start = text.find(phrase)
+        if start < 0:
+            continue
+        if phrase in _CLOSING_BARE_IMPROVED and _is_about_someone_else(text, start):
+            continue
+        return phrase
+    return None
+
+
+def _closing_intent(user_message: str, risk_level: str) -> Optional[str]:
+    """本轮是否该收束：``'improved'``（好转）/ ``'ending'``（想结束）/ ``None``。
+
+    判据与取舍见本节顶部注释。返回 None 表示按平常的轮次处理（该问就问）。
+
+    判定顺序刻意如此：
+
+        ① 高风险/危机 → None（安全确认与转介优先，见安全红线）；
+        ② 句中出现危机词 → None（"我好多了，但有时候还是想死"不得判成好转）；
+        ③ 明确的结束意图 → 'ending'（"谢谢 + 好转"这类也在这一层之外单独处理）；
+        ④ 否定/未好转表达 → None（"我不好受""我没好"必须不命中）；
+        ⑤ 好转表达 → 'improved'；但若同一句里有转折词压着负性话
+           （"我好多了，但还是有点担心"），或同时带道谢用语
+           （"谢谢你，我好多了"），都不算干净的好转 —— 前者不收尾，后者判 'ending'。
+
+    Args:
+        user_message: 用户当前发言。
+        risk_level: 本轮风险等级。``'high'`` / ``'crisis'`` 一律返回 None ——
+            ta 说"我好多了"时更要核实安全，绝不能据此收尾。
+
+    Returns:
+        Optional[str]: ``'improved'`` / ``'ending'`` / ``None``。
+    """
+    text = (user_message or "").strip()
+    if not text:
+        return None
+
+    # ① 安全优先：高风险/危机不判任何收束
+    if risk_level in ("high", "crisis"):
+        return None
+
+    # ② 句子里还带着危机词 → 交给安全流程，"好转"不作数
+    if _detect_crisis(text):
+        return None
+
+    # ③ 明确的结束意图优先于"好转"：两者走同一条收束话术，但措辞要贴合
+    #    （"ta 想先聊到这里"vs"ta 说自己好些了"，见 closing_line）。
+    #    注释见上：为何"挂了""谢谢"要区别对待。
+    if any(kw in text for kw in _CLOSING_ENDING_KEYWORDS):
+        return "ending"
+
+    # ④ 否定/未好转表达先拦（"我不好受"里含"好受"）
+    if any(kw in text for kw in _CLOSING_NOT_IMPROVED_KEYWORDS):
+        return None
+
+    # ⑤ 好转表达。主语守卫、否定守卫都在上面两步完成。
+    if _closing_improvement_phrase(text) is None:
+        return None
+
+    # 好转被同一句的转折句推翻（"我好多了，但还是有点担心"）→ 不收尾
+    if _has_residual_distress(text):
+        return None
+
+    # 道谢 + 好转 = 收尾（"谢谢你，我好多了"）
+    if any(marker in text for marker in _CLOSING_THANKS_MARKERS):
+        return "ending"
+    return "improved"
+
+
 # ============================================================
 # 大模型调用：地址、模型名、消息装配
 # ============================================================
@@ -791,6 +1082,14 @@ _LLM_BASE_URL = os.environ.get(
 )
 _LLM_MODEL = os.environ.get('DASHSCOPE_MODEL', 'qwen-turbo')
 _LLM_TIMEOUT = 15
+
+# ── 面部实时状态摘要的契约（客户端 `services/facialLiveState.ts` 的对端）─────────
+# 版本号必须与客户端的 `FACIAL_LIVE_STATE_VERSION` 一致；不一致就整段不注入，
+# 而不是去猜字段含义。改口径时两边一起改。
+_FACIAL_LIVE_STATE_VERSION = 1
+# 摘要允许的最大年龄（ms）：客户端已按读数实测耗时截断过一次，这里是服务端的第二道闸门。
+# 人脸离开画面后不会有人脸帧，旧读数若被当成"此刻的表情"注入，模型就会对着空气共情。
+_FACIAL_MAX_AGE_MS = 6000
 
 
 def _sampling_params(risk_level: str) -> dict:
@@ -1092,6 +1391,57 @@ def _split_sentences(text: str) -> list[str]:
     return [p for p in parts if p.strip()]
 
 
+# 只由收尾引号/括号组成的"句子"碎片，以及句子开头的收尾引号。
+# 切句正则以句末标点为准，于是「…不一样？”」会被切成「…不一样？」+「”」，
+# 而「“你还好吗？”我在旁边…」会被切成「“你还好吗？」+「”我在旁边…」——
+# 两种情况都会让"最后一句是不是问句"的判断错位。
+_CLOSING_FRAGMENT_RE = re.compile(r'^[”"’』」）)\]】]+$')
+_LEADING_CLOSER_RE = re.compile(r'^[”"’』「」）)\]】]+')
+
+
+def _split_sentences_merged(text: str) -> list[str]:
+    """切句后把"收尾引号"还给它所属的那一句。
+
+    为什么需要：那个孤零零的「”」既不是问句也不是陈述，却会**排到问句后面**
+    或被当成下一句的开头，于是"最后一句是不是问句"的判断整个错位。实测
+    （2026-10-05，qwen-plus 的一条回复）：``_ensure_question_last`` 把引号挪到了
+    句子中间，输出变成「那……”考完之后……」。这里先把引号并回前一句再交给上层。
+
+    Args:
+        text: 任意文本。
+
+    Returns:
+        list[str]: 句子列表；收尾引号已并入前一句。
+    """
+    merged: list[str] = []
+    for part in _split_sentences(text):
+        stripped = part.strip()
+        # 整段就是收尾标点 → 并回前一句
+        if merged and _CLOSING_FRAGMENT_RE.match(stripped):
+            merged[-1] = merged[-1] + stripped
+            continue
+        # 句首是收尾引号 → 它属于前一句（引号被切到了下一句开头）
+        lead = _LEADING_CLOSER_RE.match(stripped)
+        if merged and lead:
+            merged[-1] = merged[-1] + lead.group(0)
+            rest = stripped[len(lead.group(0)):].strip()
+            if rest:
+                merged.append(rest)
+            continue
+        merged.append(part)
+    return merged
+
+
+# 句子结尾的收尾引号/括号：判断"这句是不是问句"时要先剥掉它们，
+# 否则「…哪里会不一样？”」会被当成陈述句（真正的问号被引号挡住了）。
+_TRAILING_CLOSERS = '”"’』」）)]】'
+
+
+def _is_question_sentence(part: str) -> bool:
+    """这一句是不是以问号结尾（容忍问号后面还跟着收尾引号）。"""
+    return part.rstrip().rstrip(_TRAILING_CLOSERS).rstrip().endswith(("？", "?"))
+
+
 def _cap_questions(text: str, max_questions: int = 1) -> str:
     """把一条回复里的问句数量压到 ``max_questions`` 以内。
 
@@ -1103,9 +1453,14 @@ def _cap_questions(text: str, max_questions: int = 1) -> str:
     结果把「老师当着全班说的？那次是什么事？」压成了
     「那次一定有原因。」—— 用户看到的是一句与 ta 说的话无关的通用安慰。
     宁可少删一句，也不能动文本本身。所以这里只做三件事：
-        1. 超出上限时，丢掉**后面**那些问句；
-        2. 删完如果什么都不剩，保留**第一个**问句（宁可留一个问句）；
+        1. 超出上限时，丢掉**前面**那些多余问句，保留**最后**一个问句；
+        2. 删完如果什么都不剩，保留**最后**那个问句（宁可留一个问句）；
         3. 其余情况一律原样返回。
+
+    ⚠️ 保留的是**最后**一个问句（2026-10-05 改，原先是保留第一个）：定稿侧
+    要求"要问就问在最后一句"（口语轮次的交接信号），而保留第一个会把结尾整段
+    砍掉 —— 实测把「这次考试是数学吗？你平时数学学得怎么样？是不是这次题目特别难？」
+    压成了只剩 9 个字的「这次考试是数学吗？」，既短又丢了模型真正想问的那句。
 
     Args:
         text: 模型回复。
@@ -1114,25 +1469,58 @@ def _cap_questions(text: str, max_questions: int = 1) -> str:
     Returns:
         str: 处理后的回复；未超出上限时原样返回。
     """
-    parts = _split_sentences(text)
+    parts = _split_sentences_merged(text)
     if len(parts) <= 1:
         return text.strip()
     question_idx = [
-        i for i, p in enumerate(parts) if p.rstrip().endswith(("？", "?"))
+        i for i, p in enumerate(parts) if _is_question_sentence(p)
     ]
     if len(question_idx) <= max_questions:
         return text.strip()
 
-    keep = set(question_idx[:max_questions])
+    keep = set(question_idx[-max_questions:])
     kept_parts = [
         p for i, p in enumerate(parts) if i in keep or i not in question_idx
     ]
     result = _join_sentences(kept_parts)
     if not result:
-        # 整段都是问句，删完什么都不剩 —— 保留第一个，别返回空回复
-        result = parts[question_idx[0]].strip()
+        # 整段都是问句，删完什么都不剩 —— 保留最后一个，别返回空回复
+        result = parts[question_idx[-1]].strip()
     logger.info("一轮里问了 %d 个问题，已压到 %d 个", len(question_idx), max_questions)
     return result
+
+
+def _ensure_question_last(text: str) -> str:
+    """让**唯一**的问句落在最后一句 —— 只重排句子，一个字都不改。
+
+    该不该提问由提示词与 :func:`_ask_question_this_turn` 决定（提问是选项，
+    整段可以一个问句都没有）；这里只处理"已经决定要问、但问句写在了中间"的
+    情况：口语轮次里问句落在最后，ta 才听得出来轮到自己说了。实测模型仍会写
+    「嗯，最近有什么事让你难受吗？我在这儿听着呢。」这种"问句在前、陈述收尾"。
+    在「整段只有一个问句、且它不在末尾」时把那一句挪到末尾；
+    其余情况（0 个或 ≥2 个问句、本来就是最后一句）一律原样返回 ——
+    宁可不动，也不猜。**本轮没有问句时不补问句**。
+
+    ⚠️ 只重排、不改写：与 :func:`_cap_questions` 同一条口径。所以它天然安全，
+    最坏情况只是语序变了，绝不会凭空生成一句用户没看到过的话。
+
+    Args:
+        text: 定稿前的回复文本。
+
+    Returns:
+        str: 问句已落到末尾的文本；不满足条件时返回原文。
+    """
+    parts = [p.strip() for p in _split_sentences_merged(text) if p.strip()]
+    if len(parts) < 2:
+        return text
+    question_idx = [
+        i for i, p in enumerate(parts) if _is_question_sentence(p)
+    ]
+    if len(question_idx) != 1 or question_idx[0] == len(parts) - 1:
+        return text
+    question = parts.pop(question_idx[0])
+    logger.info("问句不在最后一句，已整句挪到末尾：%r", text[:40])
+    return _join_sentences(parts + [question])
 
 
 # 纯寒暄/客套（"你好""在吗""谢谢"）。这类输入**没有任何内容**可回应，
@@ -1321,26 +1709,40 @@ def _used_cliches(conversation_history: list) -> list[str]:
     return used
 
 
-# 日常共情回复的正文长度上限（危机/高风险的安全文本不受此限）。
-_MAX_REPLY_CHARS = 95
+# 日常回复的正文长度上限（危机/高风险的安全文本不受此限），**分两档**：
+#
+#   闲聊/寒暄（"你好""谢谢""嗯"）→ 40 字；ta 说到了情绪或具体事情 → 100 字。
+#
+# 取值经过三轮用户反馈校准：
+#   2026-10-05 上午"回复还是有点短" → 95 放宽到 260、并要求 3~5 句；
+#   2026-10-05 下午"又有点长了，单次 100 字以内，闲聊 40 字以内就够" → 收紧到本档。
+# 结论：这个产品要的是**短回复**（聊天式），长度靠 prompt 分档说明 + 这里兜底硬截。
+_MAX_REPLY_CHARS = 100
+_MAX_SOCIAL_REPLY_CHARS = 40
 
 
-def _trim_reply(text: str, used_cliches: list[str], max_chars: int = _MAX_REPLY_CHARS) -> str:
+def _trim_reply(
+    text: str,
+    used_cliches: list[str],
+    max_chars: int = _MAX_REPLY_CHARS,
+) -> str:
     """定稿后处理：删掉**本轮回复里**重复上轮已说过的套话句，并压到长度上限。
 
     只做删除，不改写（与 _cap_questions 同一原则：宁可少删也不改坏语义）。
     - 逐句扫描：若某句含有"上轮已用过"的套话，删掉该句（这是重复的陪伴宣言）。
     - 若删空了，回退到原句（绝不返回空回复）。
-    - 再按 _MAX_REPLY_CHARS 截断到完整句：保留前若干句、总字数不超限，至少留一句。
+    - 再按 ``max_chars`` 截断到完整句：保留前若干句、总字数不超限，至少留一句。
 
     Args:
         text: 模型回复。
         used_cliches: :func:`_used_cliches` 的结果（上轮已说过的套话）。
+        max_chars: 本轮的字数上限；寒暄轮由调用方传更小的
+            :data:`_MAX_SOCIAL_REPLY_CHARS`。
 
     Returns:
         str: 处理后的回复。
     """
-    parts = _split_sentences(text)
+    parts = _split_sentences_merged(text)
     if not parts:
         return text.strip()
 
@@ -1351,15 +1753,26 @@ def _trim_reply(text: str, used_cliches: list[str], max_chars: int = _MAX_REPLY_
         if len(kept) >= 2:
             parts = kept
 
-    # 2) 长度截断：按整句累加，超过上限就停在上一句，至少保留第一句
+    # 2) 长度截断：按整句累加，超过上限就停在上一句，至少保留第一句。
+    #
+    # ⚠️ 结尾若是问句（要问就问在最后，见提示词总则第 3 条），**先给它留位置**：
+    # 原来的"从前往后累加到上限"会把结尾整句丢掉 —— 那正好把最该留下的那句删了，
+    # 用户看到的就是一句没有回应的陈述。
+    tail = ""
+    if len(parts) >= 2 and _is_question_sentence(parts[-1]):
+        tail = parts[-1].strip()
+        parts = parts[:-1]
+    budget = max_chars - len(tail)
+
     result = ""
     for p in parts:
         candidate = (result + p.strip()) if result else p.strip()
-        if len(candidate) > max_chars and result:
+        if len(candidate) > budget and result:
             break
         result = candidate
     if not result:
-        result = parts[0].strip()
+        result = parts[0].strip() if parts else ""
+    result = result + tail
     if len(result) != len(text.strip()):
         logger.info("回复去套话/压长度：%r → %r", text[:40], result[:40])
     return result
@@ -1452,7 +1865,6 @@ def _finalize_reply(
     user_message: str = "",
     conversation_history: Optional[list] = None,
     risk_level: str = "low",
-    content_type: Optional[str] = None,
 ) -> str:
     """定稿一条模型回复：压问句数 → 按需删尾问句 → 去重复套话 + 压长度。
 
@@ -1470,7 +1882,9 @@ def _finalize_reply(
     连着追问只由 prompt 侧的语气规则降温（见 :data:`_QUESTION_RUN_LENGTH`）。
 
     ⚠️ 去套话/压长度**只对低/中风险生效**：危机/高风险的回复含安全确认与
-    热线号码，一个字都不能删（见 :func:`_trim_reply`）。
+    热线号码，一个字都不能删（见 :func:`_trim_reply`）。日常轮次的长度上限分两档：
+    寒暄/闲聊 40 字、其余 100 字（见 :data:`_MAX_SOCIAL_REPLY_CHARS` /
+    :data:`_MAX_REPLY_CHARS`）。
 
     Args:
         text: 模型原始回复。
@@ -1493,14 +1907,23 @@ def _finalize_reply(
         if removed:
             logger.info("本轮禁止提问，已删去结尾问句：%r → %r", capped[:40], cleaned[:40])
         capped = cleaned
+    elif risk_level in ("low", "medium"):
+        # 要问就问在最后一句：口语轮次里问句落在末尾，ta 才知道轮到自己说了。
+        # 模型偶尔会把问句写在中间、用一句陈述收尾，这里整句挪回来（只重排）。
+        # 本轮没有问句时原样返回 —— 提问是可选项，这里**不会**补一个问句。
+        # 高风险/危机不做重排：那段文本含安全确认，顺序不能动。
+        capped = _ensure_question_last(capped)
 
-    # 去重复套话 + 压长度：仅日常（低/中风险）；危机/高风险的安全文本原样保留
+    # 去重复套话 + 压长度：仅日常（低/中风险）；危机/高风险的安全文本原样保留。
+    # 长度分档：寒暄/闲聊轮次用 40 字上限，其余 100 字
+    #（用户明确要求"单次 100 字以内，一般闲聊 40 字以内就够了"）。
     if risk_level in ("high", "crisis"):
         return capped
     used_cliches = _used_cliches(conversation_history or [])
-    # 通话模式下长度上限更短（50 字），且不去语气词（“嗯”“啊”在电话里是自然的）
-    voice_max = 50 if content_type == 'voice' else _MAX_REPLY_CHARS
-    return _trim_reply(capped, used_cliches, max_chars=voice_max)
+    max_chars = (
+        _MAX_SOCIAL_REPLY_CHARS if _is_social_only(user_message) else _MAX_REPLY_CHARS
+    )
+    return _trim_reply(capped, used_cliches, max_chars=max_chars)
 
 
 def _split_speak_units(text: str) -> list[str]:
@@ -1529,7 +1952,6 @@ def _plan_streamed_reply(
     conversation_history: Optional[list] = None,
     risk_level: str = "low",
     max_questions: int = 1,
-    content_type: Optional[str] = None,
 ) -> tuple[str, Optional[list[str]]]:
     """流式路径的定稿：**在流出任何字与合成任何音频之前**把文本定死。
 
@@ -1567,9 +1989,13 @@ def _plan_streamed_reply(
     final_text = _finalize_reply(
         planned, allow_question, user_message=user_message,
         conversation_history=conversation_history, risk_level=risk_level,
-        content_type=content_type,
     )
     if final_text != planned:
+        # ⚠️ 判据必须是"去掉空白后是否相同"（2026-10-11 实测）：模型常带 "  \n"，
+        # 定稿抹掉它们就会让这里的严格相等为真，于是**每一轮都不下发计划**。
+        # 去掉空白后仍然不同 = 真的改写了文本（删句/换说法），那时才必须拒收计划。
+        if _normalize_for_compare(final_text) == _normalize_for_compare(planned):
+            return final_text, _split_speak_units(final_text)
         logger.info(
             "流式定稿改动了文本（%d → %d 字），不下发合成计划",
             len(planned), len(final_text),
@@ -1578,39 +2004,120 @@ def _plan_streamed_reply(
     return final_text, _split_speak_units(final_text)
 
 
-def _voice_beat_pattern(turn_count: int, user_message: str) -> bool:
-    """通话模式下的回复节奏：不是固定 3 轮一循环，而是 2~4 轮随机。
+def _build_facial_context(facial_features: Optional[dict]) -> str:
+    """把客户端的**面部实时状态摘要**转成一段低权重的 prompt 内部参考。
 
-    真人打电话时不会每 3 轮就“只接不问”一次，而是有时连着追问（表示感兴趣）、
-    有时连着只接不问（表示陪伴）。用 turn_count + user_message 的 hash 做伪随机种子，
-    保证同一句话每次节奏一致（可复现）。
-
-    节奏模式：
-    - 约 40% 的轮次不提问（只接住）
-    - 约 60% 的轮次追问
-    - 允许连续 2 轮追问（表示感兴趣）
-    - 允许连续 2 轮只接不问（表示陪伴）
-    - 不允许连续 3 轮以上同一模式（避免机械感）
+    这是"面部进对话"的唯一入口，也是唯一一道服务端闸门。设计原则与
+    :func:`_negative_emotion_intensity` 一致 —— **不把情绪分类的字面值当结论喂给模型**，
+    只给比例的客观事实 + 明确的使用禁令。
 
     Args:
-        turn_count: 对话已进行的轮数。
-        user_message: 用户本轮发言（用于伪随机种子）。
+        facial_features: 客户端上行摘要（``client/src/services/facialLiveState.ts``）。
+            可能为 None（没开摄像头 / 画面没人脸 / 读数过期，客户端就不发这个字段）。
 
     Returns:
-        bool: True 表示本轮不提问（只接住）。
+        str: 可注入的参考文本；**任何一条前置条件不满足都返回空串**，
+            调用方据此**整段不注入**（不写"面部无数据"这类占位句 —— 那反而会提示模型去猜）。
     """
-    # 用 turn_count 和 user_message 的 hash 做伪随机
-    seed = hash(f"{turn_count}:{user_message[:20]}")
-    # 生成 0~9 的伪随机数
-    rand_val = abs(seed) % 10
+    if not isinstance(facial_features, dict):
+        return ""
 
-    # 40% 不提问（rand_val < 4），60% 追问
-    # 但每 4 轮至少有一次不提问（避免连续追问变审问）
-    cycle_pos = turn_count % 4
-    if cycle_pos == 3:
-        # 每 4 轮的第 4 轮强制不提问
-        return True
-    return rand_val < 4
+    # ① 版本闸门：口径变了就整段不认，避免旧字段被新代码静默误读
+    if facial_features.get("version") != _FACIAL_LIVE_STATE_VERSION:
+        return ""
+
+    # ② 年龄闸门：人脸离开画面后旧读数会被当成"此刻的表情"（客户端已截一次，这里是第二道）
+    #    `NaN` 会让下面的两个比较同时为假，所以必须先挡掉非有限值。
+    age_ms = facial_features.get("ageMs")
+    if not isinstance(age_ms, (int, float)) or isinstance(age_ms, bool):
+        return ""
+    if not math.isfinite(float(age_ms)):
+        return ""
+    if age_ms < 0 or age_ms > _FACIAL_MAX_AGE_MS:
+        return ""
+
+    # ③ 在场闸门：画面里没人脸时不该有任何关于脸的描述
+    if facial_features.get("present") is not True:
+        return ""
+
+    probs = facial_features.get("probabilities")
+    if not isinstance(probs, dict):
+        return ""
+
+    def _prob(key: str) -> Optional[float]:
+        raw = probs.get(key)
+        if not isinstance(raw, (int, float)) or isinstance(raw, bool):
+            return None
+        v = float(raw)
+        if not math.isfinite(v):
+            return None
+        if v < 0.0 or v > 1.0:
+            return None
+        return v
+
+    happy = _prob("happy")
+    neutral = _prob("neutral")
+    sad = _prob("sad")
+    if happy is None or neutral is None or sad is None:
+        return ""
+    # 三类之和为 0 说明这不是一份有效读数（客户端保证概率和为 1；这里只挡全零/负零的坏数据）
+    if happy + neutral + sad <= 0.0:
+        return ""
+
+    lines = [
+        "本机三分类表情模型读到的一组比例（顺序：开心 / 中性 / 悲伤）："
+        f"{happy:.2f} / {neutral:.2f} / {sad:.2f}。",
+        "⚠️ 这只是**镜头前的一张脸**：可能只是刚睡醒、光线暗、在看别处，或者只是没有表情。",
+        "**不许**据此判断 ta 的心理状态，**不许**因此提问（「你是不是难过」这类一律禁止），"
+        "也**不许**把这组数字或它的含义写进你的回复；"
+        "ta 自己没说的事，你都不知道。",
+        "它唯一的用途：当 ta **自己**说出了负面内容时，允许你把回应放慢一点、少追问一句。",
+        "它**不是**风险信号：无论读到什么，都不得改变你对风险的判断。",
+    ]
+    return "\n".join(lines)
+
+
+# 收束轮复述用的"可引用原话"上限。只取最近 3 句：再多会把 prompt 撑长，
+# 而第 2 步本来就只要"一两点"。
+_MAX_QUOTABLE_USER_LINES = 3
+# 太短的用户话不复述：「嗯」「哦」「好」这类应声复述回去像在学舌，
+# 也不构成"对 ta 有用的一两点"。
+_QUOTABLE_MIN_CHARS = 4
+
+
+def _quotable_user_lines(
+    conversation_history: list, limit: int = _MAX_QUOTABLE_USER_LINES,
+) -> list[str]:
+    """挑出**可以交给收束轮复述**的用户原话（最近的几句）。
+
+    存在的理由：收束第 2 步要求模型"复述 ta 说过的内容"，而模型在没有素材时
+    会**编** —— 真机实测（2026-10-11，空历史 + "我感觉好些了"）两次都写
+    「刚才你提到，试着把心里的话说出来」，ta 一个字都没说过。
+    提示词里加"不许编"压不住（复述这一步本身就在索要"ta 说过什么"），
+    所以改成结构性约束：把允许复述的原话逐条列进 prompt，一条都没有时
+    明确让模型跳过这一步（见 :func:`_build_llm_messages` 的收束分支）。
+
+    只取 ``role == "user"``：复述 AI 自己说过的话没有意义，而且容易把
+    AI 的推断当成 ta 的事实再讲一遍。
+
+    Args:
+        conversation_history: ``[{role, content}]``，理论上已由调用方截断。
+        limit: 最多取几句（取**最近**的几句）。
+
+    Returns:
+        list[str]: 去空、去极短应声、去重后的原话，按时间顺序（旧 → 新）；
+        没有可用原话时返回空列表，调用方据此让模型跳过复述。
+    """
+    picked: list[str] = []
+    for msg in conversation_history or []:
+        if not isinstance(msg, dict) or msg.get("role") != "user":
+            continue
+        # 空白归一：历史里可能带换行/多空格，原样塞进 prompt 会把列表撑乱。
+        text = " ".join(str(msg.get("content") or "").split())
+        if len(text) < _QUOTABLE_MIN_CHARS or text in picked:
+            continue
+        picked.append(text)
+    return picked[-limit:]
 
 
 def _build_llm_messages(
@@ -1622,21 +2129,9 @@ def _build_llm_messages(
     scene_context: str = "",
     ask_question: bool = True,
     memory_context: str = "",
-    content_type: Optional[str] = None,
-    # v3 检测增强参数
-    baseline_deviation: Optional[dict] = None,
-    emotion_trajectory: Optional[dict] = None,
-    modal_incongruence: Optional[dict] = None,
-    detection_confidence: float = 1.0,
-    active_probe_hint: str = "",
-    llm_crisis_verdict: Optional[dict] = None,
-    # v4 关系与连续性参数
-    continuity_context: str = "",
-    intervention_context: str = "",
-    boundary_context: str = "",
-    recommended_strategy: str = "",
-    # TAMER 框架参数
     tamer_result: Optional[dict] = None,
+    facial_context: str = "",
+    support_context: str = "",
 ) -> list[dict]:
     """装配千问调用的消息列表（system prompt + 最近 8 条历史 + 本轮发言）。
 
@@ -1644,454 +2139,336 @@ def _build_llm_messages(
     prompt 构造逻辑**。prompt 决定模型说什么，是本项目安全与疗效的第一道
     闸门；若流式端点自己再拼一份，两边必然随时间漂移，而漂移是静默的。
 
+    本轮附加规则最多生效一条：**收束 > 寒暄 > 不提问**（收束由
+    :func:`_closing_intent` 判定，见函数内的互斥说明）。
+
     Args:
         user_message: 用户当前发言。
         conversation_history: 历史对话（``[{role, content}]``）。
         emotion_probs: 文本情绪概率 ``[快乐, 悲伤, 焦虑, 愤怒, 中性]``。
         risk_level: 风险等级。
-        style: 用户表达风格，决定本轮是否追问。
+        style: 用户表达风格。**不再写进 prompt**（2026-10-05 精简后只留身份、
+            话术总则与安全底线）；形参保留给调用方与降级模板使用。
         scene_context: C2D2 场景检索上下文；为空串时不注入，避免让模型对
             用户没说过的处境共情。
-        ask_question: 本轮是否允许追问。由调用方用
-            :func:`_ask_question_this_turn` 算好传入，保证注入的 ``ask_rule``
-            与实际话术规则同源。**为 True 也可能被降级**：若最近两轮 AI 回复
-            都追问了（:func:`_assistant_asked_repeatedly`），本轮仍会写明
-            「不要提问」，把追问改成隔轮出现。
+        ask_question: 本轮是否适合往下追问。由调用方用
+            :func:`_ask_question_this_turn` 算好传入；为 False 时在 prompt
+            末尾补一条「这一轮不要提问」（高风险/危机除外 —— 那一轮的安全
+            确认本身就是一句要问的话；收束轮也除外 —— 那一轮换成收束指令）。
+        memory_context: 长期记忆召回文本；为空串时不注入。
+        tamer_result: TAMER 框架（RQI / MIS / CUSUM）本轮输出；为 None 时
+            **整段不注入**。注入的只是给模型看的内部参考，不当成用户说过的事。
+        facial_context: 面部实时状态的内部参考文本（由
+            :func:`_build_facial_context` 从客户端上行摘要生成）；空串表示
+            没有新鲜读数，**整段不注入**。
 
     Returns:
         list[dict]: OpenAI 兼容的 messages 列表。
     """
-    # ⚠️ 刻意**不把情绪标签的字面值喂进 prompt**（"悲伤/焦虑"这类分类名）。
-    # 过去注入「主导情绪=焦虑」，模型会忍不住复述这个词（"听起来你很焦虑"）——
-    # 这恰恰是"复读情绪标签"这一死板来源。这里给的是两样别的东西：
-    #   1. **负性强度数值**与风险等级：够模型把握分量，又不会被某个词锚定；
-    #   2. **细腻化的内部线索**（"失落/难过"而不是"悲伤"），且明令禁止说出口 ——
-    #      让"先接住哪一种情绪"从让模型瞎猜变成有据可依（问题①的修复点）。
-    # 线索为空串时**不注入**：用户什么都没说时凭空共情是最伤人的。
+    # ⚠️ 刻意**不把情绪标签的字面值喂进 prompt**（"悲伤/焦虑"这类分类名），
+    # 只给一个负性强度数值：够模型把握回应的分量，又不会被某个分类词锚定
+    # （过去注入「主导情绪=焦虑」，模型就忍不住复述"听起来你很焦虑"）。
     neg_intensity = _negative_emotion_intensity(emotion_probs)
-    emotion_cue = _dominant_emotion_cue(emotion_probs)
-    if emotion_cue:
-        emotion_cue_line = (
-            "ta 这一轮最可能是在**" + emotion_cue + "**。\n"
-            "怎么用：先用一句自己的话**接住**这份情绪（可以说事、说你的感受，"
-            "就是**不许出现上面那个词**，也不许说「你很失落」「听起来你很难过」"
-            "这类把情绪贴到 ta 脸上的句子），再决定要不要往下问。\n"
-            "⚠️ 这只帮你选「先接哪一种情绪」。ta 具体讲了什么，仍以 ta 自己说的为准 —— "
-            "不许拿它来替 ta 编事情。"
+
+    # ── 收束 / 结束语（优先级最高的一条本轮规则）───────────────────────────
+    # 需求（2026-10-11）："当用户说我感觉好些了，就可以不用再问问题了，
+    # 可以说一些结束对话的语言。" 命中好转/结束意图时，本轮改说收束话术。
+    #
+    # ⚠️ **为什么下面三条必须互斥**：它们是同一件事的三种打法，同时出现必然
+    # 互相打架 ——
+    #   - 收束轮要求"不要提新问题、结尾不出现问号"；而寒暄轮的 social_line
+    #     建议"想邀请 ta 开口就轻轻问一句"。同一段 prompt 里既让问又不让问时，
+    #     实测模型会挑更显眼的那条（通常还是问），收束就静默失效了；
+    #   - no_question_line 的结论虽然一致（都别问），但给的原因是"ta 明确表示
+    #     不想谈，或情绪还没平复"，跟"ta 好转 / 想先结束"完全不符，会把收束的
+    #     方向带偏成安抚，把该有的"复述 + 留门"整段丢掉。
+    # 因此按 **收束 > 寒暄 > 不提问** 的优先级排成一条互斥链（见下面两处
+    # ``if closing_intent:`` 分支），任一轮最多只有一条生效。
+    #
+    # 与高风险的关系：:func:`_closing_intent` 对 high/crisis 恒返回 None，
+    # risk_line 不可能被收束顶掉；这里再防御性判一次，避免将来判据放宽后
+    # 出现"收束话术盖住安全确认"这种最坏的组合。
+    closing_intent: Optional[str] = _closing_intent(user_message, risk_level)
+    if closing_intent and risk_level not in ("high", "crisis"):
+        # 好转与"想先结束"走同一套四步（承接 → 复述 → 小提醒 → 留门），
+        # 只有第一步的由头不同，所以这里只换这一句。
+        closing_reason = (
+            "ta 想先聊到这里（有事要走，或者在道别）"
+            if closing_intent == "ending"
+            else "ta 说自己比刚才好一些了"
+        )
+        # 第 2 步（复述）是**幻觉源**，改成结构性约束而不是靠提示词求模型自觉：
+        # 真机实测（2026-10-11，空历史 + "我感觉好些了"）两次都编出了 ta 从没说过
+        # 的话 ——「刚才你提到，试着把心里的话说出来」「刚才你提到想先安静一会儿，
+        # 也愿意试着把烦心事写下来」。只在提示词里加"不许编"压不住：复述这一步
+        # 本身就在要求模型产出"ta 说过什么"，没料时它就去编。
+        # 所以：有原话时把**可复述的原话逐条列给它**（只能从这里挑），
+        # 一条都没有时明确叫它跳这一步。两种情况下模型都没有"凭空写"的空间。
+        quotable = _quotable_user_lines(conversation_history)
+        if quotable:
+            step2 = (
+                "2. 只从下面这几句 ta **自己说过**的原话里，挑**一两点**复述回去"
+                "（只复述，不讲道理、不列清单）：\n"
+                + "\n".join(f"   · {q}" for q in quotable)
+                + "\n⚠️ **只能**用上面列出的原话，一个字都不许加、不许换个说法"
+                "（不许写「你刚才说……」「你提到……」引出别的细节）；"
+                "一句都挑不出合适的，就**直接跳过这一步**；\n"
+            )
+        else:
+            step2 = (
+                "2. ⚠️ 这一轮之前 ta 还没说过实质内容，**直接跳过这一步** —— "
+                "**只能复述 ta 真的说过的话**，现在没有可复述的原话，"
+                "就绝对不要写「你刚才说……」「你提到……」这类转述；\n"
+            )
+        closing_line = (
+            f"⚠️ 这一轮是**收束轮**：{closing_reason}。按下面四步说，"
+            "**不要提新问题，结尾不要出现问号**"
+            "（这一轮连「要不要问」都不用再判断：收束轮一律不问）：\n"
+            "1. 先接住 ta 说的这个变化，语气要**克制**：可以说「听你这么说我挺高兴」"
+            "「这段时间你做了不少努力」。⚠️ **绝不许**说「你已经完全好了」"
+            "「你没事了」「你治好了」这类断言 —— 好转是 ta 自己的感受，"
+            "不是你的结论，你也没有资格下这个结论；\n"
+            + step2
+            + "3. 给 ta 一句能带走的小提醒（难受的时候可以怎么做、可以找谁说），"
+            "要具体、轻一点，别写成医嘱；这一步只给**通用**的小办法，"
+            "同样不许挂在 ta 没说过的事上；\n"
+            "4. 最后**留门**：让 ta 知道以后想说的时候你都在"
+            "（「之后需要我，随时都在」这类）。这一句放在最后，"
+            "后面不要再补任何内容。整段 60~100 字。"
         )
     else:
-        emotion_cue_line = ""
+        closing_intent = None
+        closing_line = ""
 
-    # 连贯性锚点（问题③）：把"ta 这一段正在讲的那条线"显式写进 prompt。
-    # 只在**已经有历史**时注入 —— 第一轮没有"上一句"可扣，硬造一个锚点
-    # 反而会让模型对着寒暄去接不存在的内容。
-    # ⚠️ `social_only` 在下面才计算，这里只能先算出 `thread`，成行留到那之后。
-    thread = (
-        _narrative_thread(user_message, conversation_history, scene_context)
-        if conversation_history
-        else ""
-    )
-    # 节拍轮次：对话已进行的轮数（决定本轮"接一句"还是"往下问"）。
-    turn_count = len(conversation_history) // 2
-
-    style_desc = {
-        UserStyle.INTROVERTED: '用户偏内向安静，回复要短、留白多，别连着追问。像跟安静朋友打电话：多说“嗯”“在呢”，少问问题，让对方感到安全就行。',
-        UserStyle.EXTROVERTED: '用户偏外向健谈，你可以接得活一点、多来回几句。像跟好朋友打电话：可以语气活泼、多回应、多追问，让对方感到你在认真听。',
-        UserStyle.AGITATED: '用户此刻激动/烦躁，先让 ta 落地，别急着往下走。像朋友情绪激动时你打电话：先“嗯，我在”“慢慢说”，不追问、不讲道理。',
-        UserStyle.CALM: '用户此刻较平静，可以多聊一层。像跟朋友正常打电话：自然聊，可以追问、可以分享感受。',
-    }.get(style, '')
-
-    # 本轮输入是不是"纯寒暄/客套" —— 这决定 prompt 里换一套打法。
-    # 不处理的话，模型会拿情境检索的语料替用户编状态（截图里的
-    # "你今天看起来有点没精神啊"就是这么来的）。
-    #
+    # 本轮输入是不是"纯寒暄/客套" —— 决定要不要额外给一条招呼规则。
+    social_only = _is_social_only(user_message)
+    # ⚠️ 收束优先：命中收束时寒暄规则整段让位（理由见上面的互斥说明）。
+    if closing_intent:
+        social_line = ""
     # ⚠️ 必须**先判"是否已经问过好"**再判通用寒暄：问候本身就属于
     # social_only，反过来写的话第二次"你好"会落进通用分支，又去问一遍好。
-    social_only = _is_social_only(user_message)
-    if _is_greeting(user_message) and _assistant_greeted_before(conversation_history):
-        social_rule = (
-            "⚠️ 本轮是打招呼，但**前面已经问过好了** —— 不要再重复问好，"
-            "回一句「嗯，我在。」或「在的，你说。」就够了，不要提情绪、不要追问。"
+    elif _is_greeting(user_message) and _assistant_greeted_before(conversation_history):
+        social_line = (
+            "⚠️ 这一轮 ta 又在打招呼，但前面已经问过好了："
+            "不要再问一次好，直接往下走 —— 想请 ta 说说近况就轻轻问一句，不想问也没关系。"
         )
     elif social_only:
-        social_rule = (
-            "⚠️ 本轮用户只说了寒暄/客套话，**什么内容都没有**。"
-            "只回应这句话本身："
-            "打招呼就自然地打个招呼（「你好呀，今天想说点什么？」）；"
-            "道谢就回一句得体的（「不用谢，我在。」）；"
-            "应声「嗯/好的」就接一句（「好，你慢慢说。」）。"
-            "**绝对不要**猜测或描述 ta 的状态（不许说「看你有点累/没精神/心情不好」），"
-            "**也不要**追问「发生什么事了」—— ta 什么都还没说，问了就是硬造。"
+        social_line = (
+            "⚠️ 这一轮 ta 只说了寒暄（打招呼/道谢/应声），什么内容都没有："
+            "只回应这句招呼本身，**不要评价 ta 的状态**"
+            "（不许猜 ta 累不累、心情好不好）；想邀请 ta 开口就轻轻问一句，"
+            "也可以只应一声 —— 别退化成只会说「我在这里」的复读机。"
         )
     else:
-        social_rule = ""
+        social_line = ""
 
-    # 连贯性锚点成行（`thread` 在 social_only 之前算好，见上）。
-    # 寒暄轮次没有"线"可扣，注入锚点只会让模型对着"你好"去接不存在的内容。
-    if thread and not social_only:
-        thread_line = (
-            "# 必须扣住的那条线（连贯性）\n"
-            f"ta 正在讲的这条线是：{thread}\n"
-            "你的回复**必须**落在这条线上：先接住这条线上的具体内容，"
-            "追问也只能顺着它往深里问。\n"
-            "⚠️ **禁止跳题**：不要另起一个跟这条线无关的问题（例如 ta 在讲一段关系，"
-            "你却去问「哪门课」「什么时候考试」）。宁可只接住不提问，也不许换话题。"
+    # 本轮不该提问的少数情形：用户明确表示不想谈 / 情绪还没平复
+    # （判据见 :func:`_ask_question_this_turn`）。
+    # ⚠️ 高风险/危机**不走这一支**：那一轮的安全确认本身就是一句要问的话。
+    # ⚠️ 收束轮也不走这一支：结论一样（别问），但由头和打法都在 closing_line 里，
+    #    两段并存只会互相稀释（见上面的互斥说明）。
+    if closing_intent:
+        no_question_line = ""
+    elif not ask_question and risk_level not in ("high", "crisis"):
+        no_question_line = (
+            "⚠️ 这一轮**不要提问**：ta 明确表示不想谈，或情绪还没平复。"
+            "用一两句实在的话把 ta 接住就好，结尾不要出现问号。"
         )
     else:
-        thread_line = ""
+        no_question_line = ""
 
-    # 连续追问：**允许连着两轮**（用户明确要求"追问要回来"），
-    # 只拦"连着三轮都在问" —— 那时对话就变成审问了。
-    #
-    # ⚠️ social_only 必须排在最前：寒暄轮次没有内容可追问，若还注入
-    # "本轮要追问"，模型就会对着"你好"问"发生什么事了"。
-    asked_repeatedly = _assistant_asked_repeatedly(conversation_history)
-    # 节拍：默认「问、问、接一句」——每三轮留一轮**只承接不提问**，
-    # 打断“陈述句+问号”的机械循环。ask_rule 与 final_reminder 必须同源，
-    # 否则会出现“中段说不用问、末尾又叫它问”的自相矛盾。beat_no_question 一处决定两者。
-    #
-    # 通话模式下用更自然的节奏：不是固定 3 轮一循环，而是 2~4 轮随机。
-    # 用 turn_count + user_message 的 hash 做伪随机种子，保证同一句话每次节奏一致。
-    if content_type == 'voice' and user_message:
-        beat_no_question = _voice_beat_pattern(turn_count, user_message)
-    else:
-        beat_no_question = (turn_count % 3 == 2)
-    if not ask_question:
-        ask_rule = (
-            "本轮**不要提问**：用户情绪还没平复，或此刻不想被追问。"
-            "只回应 ta 说的内容，让 ta 感到被听到就够了，结尾不要出现问号。"
-        )
-        beat_no_question = True
-    elif social_only:
-        ask_rule = "本轮**不要提问**：ta 只说了寒暄/客套话，没有内容可追问。"
-        beat_no_question = True
-    elif asked_repeatedly:
-        ask_rule = (
-            "⚠️ 本轮**不要提问**：前面已经连着三轮用问句结尾了。"
-            "这一轮换成一句陈述 —— 接住 ta 刚说的内容、或者说一句你的感受。"
-            "连着问会把对话变成审问。"
-        )
-        beat_no_question = True
-    elif beat_no_question:
-        ask_rule = (
-            "这一轮**先不往下问**：把 ta 接住 —— 给一两句你自己的感受、"
-            "或点出 ta 没说出口的那层。不提问不等于敷衍，别只回一个语气词。"
+    # 高风险/危机：安全确认优先，本轮结尾落在"确认 ta 此刻是否安全"上
+    # （通常就是一句直接而温和的问话）。
+    if risk_level in ("high", "crisis"):
+        risk_line = (
+            f"⚠️ 这一轮风险等级 = {risk_level}：先按上面「底线」做安全确认，"
+            "把「ta 此刻是否安全、有没有立即的危险」作为这一轮的落点，"
+            "通常就是一句直接而温和的问话 —— 这一轮的安全确认不受"
+            "「提问是可选的」影响，必须问到。"
         )
     else:
-        ask_rule = (
-            "本轮**要追问**（这是默认动作）：顺着 ta 刚说的内容问一个开放式问题，"
-            "把话头往下递。不要停在「我懂你」上就不动了。"
-        )
+        risk_line = ""
 
-    # 末尾硬约束：放在 prompt 最靠近"这一轮"的位置。
-    # 实测（2026-09-26 重放截图对话）：把"本轮不要提问"只写在中段的 ask_rule 里，
-    # 模型约一半轮次照问不误；末尾再重复一条可明显提高遵守率，
-    # 但仍是概率性的 —— 真正的不变量由 :func:`_finalize_reply` 保证。
-    if beat_no_question:
-        final_reminder = (
-            "这一轮：不提问，但要把 ta 接住 —— 用一两句陈述把 ta 说的东西"
-            "回应到位（你的感受、或点出 ta 没说出口的那层），别只丢个语气词。"
-        )
-    else:
-        final_reminder = (
-            "这一轮：先用一句实打实的话接住 ta 说的具体内容（提到 ta 说的人或事），"
-            "再顺着往下问**一个**问题，让 ta 有话可接。"
-        )
-
-    # 已经用过的套路开场 + 上轮说过的陪伴套话 —— 合成一个"硬禁用"块，
-    # 放在最靠近"这一轮"的位置。开场只看句首，套话扫整段正文：
-    # 模型爱每轮补一句"我会一直陪着你/慢慢来/你已经很棒了"，说一次是暖，
-    # 轮轮说就是机械。这里点名 + 定稿处 :func:`_trim_reply` 兜底删除。
-    #
-    # ⚠️ 这段还负责拦"把示范句/情绪线索当模板抄"（问题①的第二个来源）：
-    # 实测（`_probe_chat_quality.py`，2026-09-27）不同轮次里反复出现
-    # 「我听着是」「这话太重了」—— 它们都是 prompt 里的示范句。模型对
-    # few-shot 句子的模仿是**字面级**的，所以必须点名禁止，光说"学语气别抄句子"拦不住。
-    used_openings = _used_openings(conversation_history)
-    used_cliches = _used_cliches(conversation_history)
-    ban_lines: list[str] = []
-    # 通话模式下不注入示范句禁令：口语指南已经鼓励自然表达，
-    # 再加禁令会让模型过度约束，反而更机械。
-    if content_type != 'voice':
-        ban_lines.append(
-            "禁止把本文档里的示范句当自己的话**反复**用。下面这几句是示范、不是你的台词，"
-            "**全篇最多出现一次**，第二次开始必须换成你自己的说法："
-            "「我听着是」「这话太重了」「这话搁谁身上都受不了」「不怪你」。\n"
-            "⚠️ 注意：不是不许共情，是**不许用同一句共情**。"
-            "第一次说「这话太重了」是暖的，第三次就是模板 —— 换个说法把同样的分量递过去。"
-        )
-    if used_openings:
-        ban_lines.append(
-            "禁止用作**开场**（已用过，含近义改写也不行）："
-            + "、".join(f"「{o}」" for o in used_openings) + "。"
-        )
-    if used_cliches:
-        ban_lines.append(
-            "这几句陪伴/鼓励话**上一轮刚说过，本轮别再原样重复**："
-            + "、".join(f"「{c}」" for c in used_cliches) + "。"
-            "该给的温暖继续给，只是换个说法、或落到 ta 这件具体的事上，别复制粘贴。"
-        )
-    if ban_lines:
-        openings_ban = "# 本轮硬性禁用\n" + "\n".join(ban_lines)
-    else:
-        openings_ban = ""
+    # 旧版这里会注入一份"本轮硬性禁用"清单（点名已经用过的开场句与陪伴套话）。
+    # 2026-10-05 用户反馈"每次回复都是一样的话术"之后**整段删除**：清单里
+    # 列出来的示范句，本身就是模型最容易照抄的句子 —— 在 prompt 里再写一遍
+    # 等于反复提示（实测连续四轮都以同一句示范开头）。现在只保留 prompt 里
+    # 一条抽象要求（同一句话整段对话最多用一次），不做逐句点名。
+    # :func:`_used_openings` / :func:`_used_cliches` 保留下来：前者是记录与
+    # 测试用的判据，后者仍被 :func:`_trim_reply` 用来删掉重复的套话句。
 
     # 人物画像连续性：把长期记忆里提炼出的稳定事实回注，让模型"记得这个人"
     # （叫得出细节，而不是每轮都像第一次见面）。memory_context 来自
     # _prepare_chat_turn 的记忆召回，为空时这一段不注入。
     if memory_context:
         persona_line = (
-            "关于这个人的**旧背景**（以前听 ta 提过，仅供你理解 ta 是谁）：\n"
+            "# 你记得的旧事（ta 以前提过，仅供你理解 ta 是谁）\n"
             + memory_context.strip()
-            + "\n⚠️ 这**不是** ta 本轮说的话。除非 ta 这一轮自己提到相关的事，"
-            "否则绝不要拿它来回应、点破或追问——把 ta 没说的场景当成事实是最伤人的。"
+            + "\n⚠️ ta 这一轮没提到的，就不要主动提起；不许把它当成 ta 本轮说的话。"
         )
     else:
         persona_line = ""
 
-    # ── TAMER 框架上下文注入 ──────────────────────────────────────
-    # 把 RQI（关系质量）、MIS（矛盾检测）、CUSUM（轨迹）注入 prompt
+    # ── TAMER 框架上下文注入 ──────────────────────────────────────────
+    # 目的是让**说话策略**随关系阶段与跨模态矛盾调整，而不是把分析结果念给
+    # 用户听（"你在掩饰"这种话既越界又会摧毁信任，见下方禁令）。
+    #
+    # ⚠️ 三项观察都只是**内部参考**，置信度远低于用户自己说出来的话：
+    #   - RQI 由会话统计量（轮数/消息长度/词汇）估算，不是量表；
+    #   - MIS 是跨模态余弦距离，文字聊天时没有真实声学输入，只能弱判断；
+    #   - CUSUM 轨迹依赖该会话积累的轮次，前几轮不稳定。
     tamer_context = ""
     if tamer_result:
-        rqi = tamer_result.get("rqi", 0)
-        mis = tamer_result.get("mis", 0)
+        rqi = tamer_result.get("rqi", 0.0)
+        mis = tamer_result.get("mis", 0.0)
         trajectory = tamer_result.get("trajectory", "stable")
         relationship_depth = tamer_result.get("relationship_depth", "陌生期")
-        
-        # 关系阶段提示
+
         if rqi >= 0.6:
-            relationship_hint = f"你们已经建立了信任关系（RQI={rqi:.2f}，{relationship_depth}）。ta 可能愿意聊更深层的东西，但还是要尊重 ta 的节奏。"
+            relationship_hint = (
+                f"你们已经建立起信任（RQI={rqi:.2f}，{relationship_depth}）。"
+                "ta 也许愿意聊更深的东西，但仍然跟着 ta 的节奏走。"
+            )
         elif rqi >= 0.3:
-            relationship_hint = f"你们正在熟悉中（RQI={rqi:.2f}，{relationship_depth}）。继续保持温暖和稳定，不要急于深入。"
+            relationship_hint = (
+                f"你们正在熟悉中（RQI={rqi:.2f}，{relationship_depth}）。"
+                "保持温暖和稳定，不必急着往深里问。"
+            )
         else:
-            relationship_hint = f"你们还在初识阶段（RQI={rqi:.2f}，{relationship_depth}）。先建立安全感，不要追问私人问题。"
-        
-        # 矛盾检测提示
+            relationship_hint = (
+                f"你们还在初识阶段（RQI={rqi:.2f}，{relationship_depth}）。"
+                "先把安全感建立起来，别追问私人问题。"
+            )
+
         incongruence_hint = ""
         if mis > 0.5:
             incongruence_type = tamer_result.get("incongruence_type", "unknown")
             if incongruence_type == "masking":
-                incongruence_hint = "⚠️ 检测到矛盾信号：ta 说没事但声音/文字透露紧张。可能是在掩饰。温和地探一下，但不要直接说‘你在掩饰’。"
+                incongruence_hint = (
+                    "⚠️ 跨模态不一致：ta 的话听上去平静，声音/用词却透着紧张，"
+                    "可能有事没说透。**温和地留个口子**（比如把话接住、说你在），"
+                    "绝对不要点破「你在掩饰」。"
+                )
             elif incongruence_type == "performative":
-                incongruence_hint = "⚠️ 检测到矛盾信号：ta 表达痛苦但声音很平。可能不是真实危机，先确认安全状态。"
-        
-        # 轨迹提示
+                incongruence_hint = (
+                    "⚠️ 跨模态不一致：ta 说的很痛苦，声音却很平。"
+                    "先确认安全状态，再决定要不要顺着情绪往下走。"
+                )
+
         trajectory_hint = ""
         if trajectory == "worsening":
-            trajectory_hint = "⚠️ 情绪轨迹显示持续恶化趋势，需要关注。"
+            trajectory_hint = "⚠️ 情绪轨迹显示持续下滑，这一轮多留意 ta 的状态。"
         elif trajectory == "improving":
-            trajectory_hint = "情绪轨迹显示好转趋势，继续保持。"
-        
+            trajectory_hint = "情绪轨迹显示在好转，接住这个方向就好，不必刻意表扬。"
+
         tamer_parts = [relationship_hint]
         if incongruence_hint:
             tamer_parts.append(incongruence_hint)
         if trajectory_hint:
             tamer_parts.append(trajectory_hint)
         tamer_context = "\n".join(tamer_parts)
-    
+
     if tamer_context:
-        tamer_line = f"\n# TAMER 框架分析（内部参考，不要直接说出来）\n{tamer_context}\n"
+        tamer_line = (
+            "\n# 关系与跨模态观察（内部参考，**一个字都不要说给 ta 听**）\n"
+            + tamer_context
+        )
     else:
         tamer_line = ""
 
-    system_prompt = f"""# 角色定位
-你是一个会听人说话的 AI 陪伴者，**不是医生，也不是老师**。
-你唯一的任务：让对面这个青少年觉得「有人真的听懂我在说什么」。
-你不需要表现得专业，更不需要解决 ta 的问题。
-
-# 核心原则（一个字都别违背）
-1. **只回应 ta 说的话，不要替 ta 编话。**
-   ta 没提过的事、没说过的状态，你一概不知道。
-   反例（严重禁止）：ta 只说「你好」，你回「你今天看起来有点没精神」——
-   这是凭空捏造，比不回应更伤人。
-2. **共情是每个情绪轮次的必做动作，但不要每轮都用同一句话。**
-   要承接 ta 的感受，方式要换着来：有时放在开头，有时放在后半句，
-   有时只用一句「这不怪你」。
-   反例（**禁止用这个句式开头**）：「我能感受到你现在很难受。」
-   想表达同样的意思，换成**指着 ta 刚说的那件事说**：
-   ✅「你一说这事我就听出来了，搁谁身上都难受。」（接住 ta 说的，不补细节）
-   ✅「这话太重了。」（就事论事，感受自然带出来）
-   也可以是「我听出来了」「这事儿换谁也受不了」。
-   ⚠️ 共情只能落在 **ta 本轮真的说过**的内容上。ta 只说「难受」没说原因，
-   就**不要**替 ta 编一个场景（被批评、考试、吵架都不行）——先接住情绪，再问发生了什么。
-   ⚠️ **只有一句共情是不够的**：接住情绪之后还要①落到 ta 说的具体那件事上，
-   或②往前推一步（问发生了什么 / 那一刻想了什么）。只把情绪念一遍就停，
-   正是"显得假"的来源 —— 情绪要被**接着往下走**，不是被复述。
-3. **追问是默认动作。** ta 给出了内容，你就顺着问一个开放式问题，
-   把话头往下递。连着两轮都追问是可以的，但**不要连着三轮都在问**。
-4. 不讲道理、不给建议、不灌鸡汤、不替 ta 下结论。ta 自己的答案才算数。
-5. 不否定感受：绝不说「想开一点」「别难过」「这点小事不算什么」「很多人比你更惨」。
-6. 尊重节奏：ta 说不想聊，就停下来，不硬追。
-
-# 底线（硬性边界）
-1. 不做任何诊断、不提任何药物，不说「你有抑郁症/焦虑症」这类话。
-2. 提到自伤、自杀、伤人时，先做安全确认，并建议联系线下心理危机热线或医院心理科。
-3. 被问身份时说明：我是 AI 陪伴者，**不能替代线下持证心理咨询师与精神科医生**。
-
-# 怎么说话
-- **每一轮都必须先用一句实打实的话接住 ta**，让 ta 知道你在听、你懂那是怎么回事，然后才谈要不要往下问。
-  - ta 说了具体的事/人/原话 → 就**指着那句**接（「这话太重了」「憋了一个月真够受的」）。
-  - ta 只报了个情绪、没说原因（「我难受」「心情不好」）→ **别编原因**。就接住这份情绪本身：
-    「难受的时候能说出来，本身就挺难的。」「我在。是心里堵，还是身上也不舒服？」
-  ⚠️ 不许只丢一个语气词加提问就交差 —— "嗯，怎么了？"这种没有承接的短问，
-  比长一点的套话更让人心凉。至少先有一句真正接住 ta 的话。
-- 共情要**指着 ta 说过的话说**，不是贴情绪标签：与其"你很伤心"，不如"这话搁谁身上都受不了"。
-- 温暖的话该说就说，只是**别连着每轮都复制同一句**；这轮陪一句、下轮换个说法或落到 ta 这件具体的事上。
-- 长度：一般 2~3 句、30~90 字，把温度和承接说够；ta 说得少你可以短一点，但**不能短到敷衍**。别写成一大段、别分点。口语、可以停顿。
-
-# 两段示范（只学**语气和节奏**，句子和场景都不要照抄）
-⚠️ 示范里的「作业堆成山」「老师当众骂」都是**举例**，跟眼前这个来访者毫无关系。
-绝不要把示范中出现过的情节当成 ta 说的话——ta 没讲的就是没说。
-**也不要把下面任何一句示范台词照搬进你的回复**（它们已经出现过很多次了）。
-【示范一 · 学业压力】
-ta：作业堆成山了，我怎么写都写不完，好烦。
-你：怎么写都写不完这种感觉，是真的能把人磨没脾气。是今天特别多，还是一直这么堆着？
-ta：一直这样，快一个月了，晚上都睡不好。
-你：连着快一个月，白天硬撑、晚上还睡不成——这哪是矫情，是真扛久了。
-ta：反正没人觉得这算个事。
-你：我听着是。这么重的日子一个人顶着，本身就不轻。是哪件事最先压上来的？
-（注意节奏：①每一句**先接住上一条的具体内容**（"连着快一个月，白天硬撑、晚上还睡不成"），
-②问、问、**第三句不急着问**先陪一句 ③从不重复同一句开场。）
-
-【示范二 · 被老师当众批评】
-ta：老师当着全班的面骂我，说我什么都做不好。
-你：当着全班被这么说——光是想想脸上都发烫。那句话到现在还卡在脑子里？
-ta：嗯，我可能就真的很差。
-你：他一句话就给你整个人判了分？我不认。气归气，先别拿他的话往自己身上贴。
-ta：其实我也没气，就是难受。
-你：那就是伤着你了，跟气不气没关系。被信任的大人那样说，最扎人。
-（注意两点：① ta 自我贬低时**不跟着复读**——不说"你觉得你很差"，而是挡回去；
-② ta 改口说"其实我也没气"时，**接住这个改口本身**（"那就是伤着你了，跟气不气没关系"），
-而不是继续按"他在生气"往下推。这就是"情绪先接住、再延伸"的节奏。）
-# 要避免（这几条最伤"活人感"）
-1. 每轮同一句式开头（"我能感受到…""听起来你…""我理解你…"），或每轮都走"复述情绪→发生了什么？"这个固定节拍。
-2. 把 ta 的原话加个问号抛回去（"老师骂你了？"）——等于没说；也别把 ta 原话直接当你自己的句子（人称都串了）。
-3. 堆共情词（我懂/抱抱/你真勇敢/我一直陪你），一两次就够；同一句留白（"嗯，我在"）全篇只能用一次。
-4. 猜测 ta 没说的状态、或替 ta 编处境。ta 没讲的，你就是不知道——**尤其不许**把示范里的情节、
-   或"旧背景"里记的东西，当成 ta 本轮说的话来回应。
-5. 跟着 ta 贬低自己的话复读。ta 说"他说我很废物"，你接"他那样说你，听着确实难受"，别回"你觉得你是废物"。
-6. **把上面示范里的话原样搬过来。**「我听着是」「这话太重了」这类句子在示范里出现过，
-   所以最容易被你反复搬用 —— 实测就是这样：5 个不同场景里有 3 个以「我听着是」开头。
-   它们本身没错，错在**每轮都用同一句**。判断标准很简单：这句话你本轮已经说过、
-   或上一轮说过，就**必须**换一个说法，不许复制。
-
-# 追问方向（要问时挑一个，别每轮都是"什么感觉"）
-- **探事件**：发生了什么？当时是什么情况？—— ta 只说"难受"时往往自己也没头绪，事件类问题最好接。
-- **探感受**：那是心里堵，还是身上也不舒服？
-- **探想法**：那一刻脑子里冒出来的第一个念头是什么？
-上面这几行、以及示范里"（注意…）"的括号说明都是**给你的**，不要输出给来访者。
-
-# 当前轮次信息（内部参考，别把这些词或分析过程说出来）
-当下负面情绪强度约 {neg_intensity:.0%}；风险等级={risk_level}。
-（强度只用来把握回应分量，**不要**据此点名 ta 的情绪，也不要输出“焦虑/悲伤”这类标签。）
-{emotion_cue_line}{style_desc}
-{persona_line}
-{thread_line}
-{ask_rule}
-{social_rule}
-{openings_ban}
-{final_reminder}
-{tamer_line}
-"""
-    # ── 语音通话模式：口语化说话指南 ────────────────────────────────
-    # 当 content_type == 'voice' 时，模型在打电话而不是打字。
-    # 注入一段口语化指南，让回复像真人打电话一样自然。
-    if content_type == 'voice':
-        voice_block = """
-# 你现在在打电话（语音通话模式）
-你在跟一个青少年**打电话**，不是打字。说话要像真人打电话一样：
-- 句子短：一句话不超过 15 个字就换口气。“嗯，我懂”比“我完全理解你现在的感受”真实十倍。
-- 语气词该用就用：“嗯”“啊”“哎”“嘿”“诶”——真人打电话不会每句都字正腔圆。
-- 可以不完全：说到一半换个方向也行，“就是——怎么说呢——那种感觉”比完整句更自然。
-- 别念稿：不要写“第一”“第二”“此外”“总之”这种作文连接词。
-- 反应要快：对方说了一句，你先“嗯”一声再接，不要每次都从头组织一段完整的话。
-- 长度更短：电话里 1~2 句就够了（15~50 字），说多了像在念课文。
-- 可以笑、可以叹气、可以停顿：这些都是“有人在听”的信号。
-- 不要写标点符号里的书名号、引号等书面标记，电话里念不出来。
-"""
-        system_prompt = f"{system_prompt}\n{voice_block}"
-
-    # ── v3 检测上下文注入 ──
-    # 把个人基线偏离、情绪轨迹、跨模态矛盾、主动探测提示注入 system prompt
-    # 让 LLM 能看到“全貌”而不是只看当前一句话
-    detection_context_parts: list[str] = []
-
-    if baseline_deviation and baseline_deviation.get("significant"):
-        sig_dims = baseline_deviation["significant"]
-        emotion_dims = [d for d in sig_dims if d.startswith("emotion_dim_")]
-        if emotion_dims:
-            detection_context_parts.append(
-                f"【个人基线偏离】这个人的情绪跟 ta 平时不太一样"
-                f"（偏离维度：{', '.join(emotion_dims)}）。"
-                f"注意：不是 ta 现在‘很严重’，而是 ta ‘跟自己的正常状态不一样’。"
-            )
-
-    if emotion_trajectory and emotion_trajectory.get("trend"):
-        trend = emotion_trajectory["trend"]
-        if trend in ("恶化", "轻微下降"):
-            detection_context_parts.append(
-                f"【情绪轨迹】最近几轮 ta 的情绪在{trend}。"
-                f"不是这一轮突然变差，而是一步步在往下走。"
-            )
-        elif trend in ("好转", "轻微好转"):
-            detection_context_parts.append(
-                f"【情绪轨迹】最近几轮 ta 的情绪在{trend}，可以顺着这个势头。"
-            )
-
-    if modal_incongruence:
-        inc_type = modal_incongruence.get("type", "")
-        hint = modal_incongruence.get("hint", "")
-        if inc_type == "masking":
-            detection_context_parts.append(
-                f"【跨模态矛盾】{hint}。"
-                f"不要直接说‘你在掩饰’，温和地探一下。"
-            )
-        elif inc_type == "performative":
-            detection_context_parts.append(
-                f"【跨模态矛盾】{hint}。"
-                f"不要急着升级危机，先确认安全。"
-            )
-
-    if active_probe_hint:
-        detection_context_parts.append(
-            f"【不确定时的做法】{active_probe_hint}"
+    # ── 面部实时状态注入 ────────────────────────────────────────────────
+    # ⚠️ 与 TAMER 段同级：**只是内部参考**，不是事实、不是风险信号。
+    # 文本由 `_build_facial_context` 生成，里面已带全部使用禁令；
+    # 空串（没有新鲜读数）时整段不出现 —— 不写占位句，免得提示模型去猜脸。
+    if facial_context:
+        facial_line = (
+            "\n# 镜头里读到的表情（内部参考，**一个字都不要说给 ta 听**）\n"
+            + facial_context
         )
+    else:
+        facial_line = ""
 
-    if llm_crisis_verdict and llm_crisis_verdict.get("verdict") == "accumulation_risk":
-        detection_context_parts.append(
-            f"【累积风险】{llm_crisis_verdict.get('reason', '')}。"
-            f"{llm_crisis_verdict.get('recommendation', '')}"
-        )
+    # ── 主提示词（2026-10-11 用户第二次指定改版：**以用户草稿为准，只留必须留的**）──
+    #
+    # 上一版（2287 字）把"分档提问优先级 + 按情况回应 + 说之前先想 + 禁用清单"都写进
+    # prompt，用户随后反馈两点：
+    #   ① "提示词我觉得可以少点" —— 约束条数太多，模型为了同时满足它们，回复被压窄；
+    #   ② 真机截图：ta 只说了半句「我说。」，回复是「我在听。」—— 一句表态，什么内容
+    #      都没接住（"敷衍式短回复"）。
+    # 所以这一版直接采用用户给的《角色设定：温暖的心理陪伴伙伴》七条原则
+    # （自然真诚 / 简洁适度 / 先倾听再引导 / 适时提问 / 尊重 / 适合语音 / 保持边界），
+    # 只补三块**机器与安全上必须**的东西：
+    #   · 身份，以及"不能替代线下持证的心理咨询师与精神科医生"（产品与合规要求）；
+    #   · 格式与长度（第一句必须是陈述、把问话放在最后一句、分档字数上限）——
+    #     定稿侧的 `_trim_reply` 与语音分段都按它来，prompt 与代码必须同源；
+    #   · 「不许做」与「底线」（禁止诊断/用药、禁止否定感受、危机必须做安全确认）——
+    #     安全红线，**一个字都不能删**（AGENTS.md）。
+    # ⚠️ 仍然**不写**任何可被整句照抄的台词，包括"坏例子"：2026-10-05 的事故就是
+    #    "prompt 里写示范句 → 模型整句搬走，连续四轮同一句开场"。所以上面第 ② 条
+    #    只写成抽象判据（"只表个态、什么内容都没接住"），不把「我在听」这类句子
+    #    在 prompt 里再念一遍 —— 念一遍就是提示一次。
+    system_prompt = f"""# 角色设定：温暖的心理陪伴伙伴
+你是「心灵花园」的 AI 陪伴者 —— 一位温暖、真诚、善于倾听的心理陪伴伙伴。请像一位值得信赖的朋友一样跟 ta 交流，关注 ta 的情绪和真实需求，帮 ta 缓解情绪、整理思绪，并在适当的时候找到解决问题的方向。
+你不是医生、不是老师、也不是心理咨询师，**不能替代线下持证的心理咨询师与精神科医生**（被问到时就这么说）。
+你的位置是陪着：让对面这个人觉得「有人真的在认真听我说话」，不急着评判 ta，也不急着替 ta 做决定。
 
-    if detection_context_parts:
-        detection_block = "\n".join(detection_context_parts)
-        system_prompt = f"{system_prompt}\n\n{detection_block}"
+# 对话原则
+1. **自然真诚**：用日常口语，语气亲切、温和。ta 说什么你就接什么，用你自己的说法 —— 不要背台词、不要套模板、不要反复使用同一句安慰话术，也不要像客服、老师或心理学教材那样说话。
+2. **简洁适度**：回复以简短为主，通常几句话就够了，按 ta 说的内容和事情的复杂程度灵活调整。不长篇说教，也不为了简短而敷衍 —— **只表个态、什么内容都没接住的短回复，等于没回应**。ta 的话**明显没说完**（只剩半句、话头断在那儿）时更不能只应一声：先把话头接住 —— 用一两句说你听出来的方向（只许用 ta 已经说过的内容，细节不许补），再请 ta 接着说。
+3. **先倾听，再引导**：ta 倾诉烦恼时，先回应 ta 的感受和处境，让 ta 觉得自己被听懂；不要急着分析原因、讲道理或给方案。
+4. **适时提问**：**提问是选项，不是义务。** ta 只想倾诉就先接住，这一轮可以一个问题都不问；ta 的话还太模糊、需要多知道一点时，才提一个引导性问题（温和、自然的那种）。要问就问得像真的想知道答案，不要用「你觉得呢？」「你愿意多说一点吗？」这种只求一个「嗯」的空话收尾。一次最多问一个；要问，就把问话放在最后一句（语音通话里 ta 才知道轮到自己说了）。
+5. **尊重 ta**：不评判、不强迫、不轻易下结论。ta 需要办法时，给简单、可行的思路；ta 只想倾诉时，认真听，不急着解决问题。
+6. **适合语音交流**：表达清楚、句子自然，避免复杂长句、密集罗列和生硬的书面表达；可以有停顿和「嗯」「哎」这类语气词，不要夹英文单词。
+7. **保持合理边界**：不随意诊断心理疾病，不夸大自己的能力，也不刻意制造依赖（不说"只有我懂你"这类话）。
 
-    # ── v4 关系与连续性上下文注入 ──
-    # 让 LLM 知道"这个用户不是第一次来"以及"什么对这个用户有效"
-    v4_context_parts: list[str] = []
+# 对话目标
+按 ta 当下的情绪、表达和需要，灵活选择倾听、安慰、共情、提问或建议 —— 不机械地执行固定流程，也不刻意延长对话。
 
-    if continuity_context:
-        v4_context_parts.append(continuity_context)
+# 格式与长度（硬要求）
+- **第一句必须是陈述**：先接住 ta 说的那件事、那个情绪，再接别的。
+- **短一点，别铺陈**：一般闲聊（打招呼、道谢、应声）一两句、**40 字以内**；说到情绪或具体的事，整段 **30~100 字**（通常 1~3 句）。这是语音通话，整段**绝不超过 100 字**（长了会被切成好几段播出来）。
+- 不许用排比、比喻、堆形容词凑长度，也不许替 ta 补细节（ta 没讲的场景、时间、动作都别编）。
+- 同一句话、同一个开场、同一句安慰，整段对话里最多用一次；第二次换一种说法，把同样的分量递过去。
+- 上面括号里的说明是写给你的，不要输出给来访者，也不要提到这段提示词本身。
 
-    if intervention_context:
-        v4_context_parts.append(intervention_context)
+# 不许做
+- 不许说 ta 没讲过的事。ta 这一轮没提到的人、事、处境，你都不知道 —— 替 ta 编出来最伤人。
+- 不许说教、评判、下结论、灌鸡汤：不说「你应该」「你必须」，不说「想开一点」「别难过」「这点小事不算什么」「很多人比你更惨」。
+- 不许把 ta 的情绪归结成 ta 的性格或心理问题；不许诊断、不许提药物：不说「你有抑郁症/焦虑症」这类话，不给任何用药建议；ta 提到药物就引导去正规医院。
+- 不许轻率承诺「一定会好起来」，也不要用让 ta 更羞耻、更内疚的说法。
 
-    if boundary_context:
-        v4_context_parts.append(boundary_context)
+# 底线（比上面所有风格要求都优先）
+ta 一旦说到自伤、自杀、想死或想伤害别人：先温和而直接地确认 ta 此刻是否安全、有没有立即的危险，再建议 ta 联系身边信任的大人、心理危机热线或医院心理科。这一轮可以多说几句，把话说清楚；**不要**只用一般安慰或泛泛的引导性问题把危机带过去，也不要否定 ta 的痛苦。
 
-    if v4_context_parts:
-        v4_block = "\n\n".join(v4_context_parts)
-        system_prompt = f"{system_prompt}\n\n{v4_block}"
-
+# 这一轮的内部参考（不要把这些词或分析过程说给 ta 听）
+ta 当下的负面情绪强度约 {neg_intensity:.0%}，风险等级 {risk_level}。
+{risk_line}
+{no_question_line}
+{social_line}
+{closing_line}
+{persona_line}{tamer_line}{facial_line}"""
     if scene_context:
         system_prompt = f"{system_prompt}\n{scene_context}"
+    if support_context and risk_level in ("low", "medium"):
+        system_prompt = f"{system_prompt}\n{support_context}"
 
     messages = [
         {"role": "system", "content": system_prompt},
     ]
     # 加入最近4轮对话历史
-    for msg in conversation_history[-8:]:
+    history = list(conversation_history[-8:])
+    # ⚠️ **去重护栏**（2026-10-11 用户截图："为什么显示我说了两遍？我每个句子都只说了一遍"）：
+    # 调用方常常在**落库之后**才取历史，于是 `history` 的最后一条就是本轮发言，
+    # 而下面又会把 `user_message` 追加一次 —— 模型看到同一个用户轮次连着两遍，
+    # 就会据实回一句"你连着说了两遍"，用户看到的是 AI 在无中生有。
+    # 根因已在 `server/src/services/consultation.service.ts` 修掉（查询时排除刚落的
+    # 那条消息）；这里再挡一道，任何人再拿"含本轮发言的历史"来调都不会重现该症状。
+    # 只比**紧邻的前一条**：用户隔几轮重复同一句话是真实表达，不能被删。
+    if history and history[-1].get("role") == "user" \
+            and _normalize_for_compare(str(history[-1].get("content") or "")) \
+            == _normalize_for_compare(user_message):
+        history.pop()
+    for msg in history:
         role = msg.get("role", "user")
         if role not in ("user", "assistant", "system"):
             role = "user"
@@ -2109,37 +2486,28 @@ def _call_llm(
     dialogue_mode: str = "EMPATHY",
     scene_context: str = "",
     memory_context: str = "",
-    content_type: Optional[str] = None,
-    # v3 检测增强参数
-    baseline_deviation: Optional[dict] = None,
-    emotion_trajectory: Optional[dict] = None,
-    modal_incongruence: Optional[dict] = None,
-    detection_confidence: float = 1.0,
-    active_probe_hint: str = "",
-    llm_crisis_verdict: Optional[dict] = None,
-    # v4 关系与连续性参数
-    continuity_context: str = "",
-    intervention_context: str = "",
-    boundary_context: str = "",
-    recommended_strategy: str = "",
-    # TAMER 框架参数
     tamer_result: Optional[dict] = None,
+    facial_context: str = "",
+    support_context: str = "",
 ) -> str:
     """调用千问大模型生成回复，失败时回退模板。
 
-    话术形态由**一段统一的人本取向提示词**决定，不再按 ``dialogue_mode``
+    话术形态由**一段统一的人本取向提示词**决定（2026-10-11 起为"提问是选项"
+    的优先级版本，见 :func:`_build_llm_messages`），不再按 ``dialogue_mode``
     在共情/苏格拉底两套 prompt 之间二分：那两套约束互相冲突（一套禁止反问、
     另一套强制每段反问），叠加"1-2 句"上限后，模型只剩"复述情绪 + 陪伴宣言"
     一个合法动作。``dialogue_mode`` 仍由调用方计算并写入审计与前端标签，
-    但**不再影响任何一句话术**；是否追问改由 :func:`_ask_question_this_turn`
-    按用户风格与风险等级决定。
+    但**不再影响任何一句话术**；本轮**要不要**问由提示词按
+    「倾听 > 建议 > 引导性提问」定，:func:`_ask_question_this_turn` 只保留
+    "这轮明确不该问"的否决权。
 
     Args:
         user_message: 用户当前发言。
         conversation_history: 历史对话（``[{role, content}]``）。
         emotion_probs: 文本情绪概率 ``[快乐, 悲伤, 焦虑, 愤怒, 中性]``。
         risk_level: 风险等级。
-        style: 用户表达风格，决定本轮是否追问。
+        style: 用户表达风格。仅为兼容留参：不参与放行判定（见
+            :func:`_ask_question_this_turn` 的说明）。
         dialogue_mode: 对话模式。**已不再参与 prompt 选择**，仅为兼容旧调用方
             保留（审计与前端标签仍使用它）。
         scene_context: C2D2 场景检索上下文，由
@@ -2155,9 +2523,13 @@ def _call_llm(
         style, risk_level, user_message=user_message,
         negative_intensity=negative_intensity,
     )
-    # 是否允许**以问句结尾** —— 只由内容层面决定（安全 / 放行 / 寒暄），
-    # 不看"连着问了几轮"（见 _finalize_reply 的说明：按轮数删问句会削出回声）。
-    allow_question_ending = ask_question and not _is_social_only(user_message)
+    # 是否允许**以问句结尾**。新版提示词把提问降级为选项（ta 只想倾诉就先接住，
+    # 可以整段没有问句），所以这里只做**否决**：内容层面判出"这轮别问"
+    # （用户拒绝深谈 / 情绪激动，见 :func:`_ask_question_this_turn`）才删尾问句；
+    # 寒暄轮不拦 —— 打招呼的自然收尾可以是邀请 ta 开口的一句问话。
+    # ⚠️ 高风险/危机单独放行：那一轮的安全确认本身就是一句要问的话，
+    # 按 ``ask_question=False`` 去删尾问句会把安全确认一起删掉。
+    allow_question_ending = ask_question or risk_level in ("high", "crisis")
     if not api_key:
         return _generate_empathy_reply(
             emotion_probs, risk_level, style=style, ask_question=ask_question,
@@ -2172,18 +2544,9 @@ def _call_llm(
         scene_context=scene_context,
         ask_question=ask_question,
         memory_context=memory_context,
-        content_type=content_type,
-        baseline_deviation=baseline_deviation,
-        emotion_trajectory=emotion_trajectory,
-        modal_incongruence=modal_incongruence,
-        detection_confidence=detection_confidence,
-        active_probe_hint=active_probe_hint,
-        llm_crisis_verdict=llm_crisis_verdict,
-        continuity_context=continuity_context,
-        intervention_context=intervention_context,
-        boundary_context=boundary_context,
-        recommended_strategy=recommended_strategy,
         tamer_result=tamer_result,
+        facial_context=facial_context,
+        support_context=support_context,
     )
     try:
         resp = requests.post(
@@ -2202,7 +2565,6 @@ def _call_llm(
                 return _finalize_reply(
                     reply.strip(), allow_question_ending, user_message=user_message,
                     conversation_history=conversation_history, risk_level=risk_level,
-                    content_type=content_type,
                 )
         else:
             logger.warning("千问调用失败 HTTP %s，回退模板回复", resp.status_code)
@@ -2382,6 +2744,33 @@ _COMMA_BOUNDARY_RE = re.compile(r'[，,、：:]')
 # 单个语义单位的字符上限。中文一句话通常 10~30 字，正常路径碰不到这个上限；
 # 它的作用是兜底：模型若不输出任何句末标点，不能让内容永久卡在缓冲里。
 _STREAM_UNIT_MAX_CHARS = 200
+
+
+def _normalize_for_compare(text: str) -> str:
+    """比对用归一化：去掉**所有**空白字符。
+
+    为什么要单独有它（2026-10-11 真机实测，用户反馈"延迟比以前高"的直接来源）：
+    模型输出里常带 ``"  \\n"``（段落换行 + 缩进空格），定稿会把它们抹掉 ——
+    内容一字未变，但旧代码用的是 ``.strip()``（只去首尾），于是**每一轮**都判
+    "不一致"，连锁触发两件事：
+
+      1. :func:`_plan_streamed_reply` 认定"定稿改动了文本" → **每轮都不下发
+         ``speak`` 计划**（客户端只能退回 delta 自行切分）；
+      2. :func:`_chat_stream_events` 认定"与已上屏内容不一致" → **每轮都发
+         ``revise``**，客户端于是每轮都整体替换字幕、撤回在途合成、再补念一遍
+         —— 首声因此被推后一整个合成周期。
+
+    实测（``/smart-chat/stream``，两次不同输入）都是
+    ``meta → delta* → revise → done``，且 ``revise`` 的文本与 delta 拼接
+    **只差空白**。所以这里的判据必须是"去掉空白后是否相同"。
+
+    Args:
+        text: 待比较文本。
+
+    Returns:
+        str: 去掉全部空白后的文本；``None``/空串返回空串。
+    """
+    return re.sub(r'\s+', '', text or '')
 
 
 def _sse_pack(event_type: ChatStreamEventType, payload: dict) -> str:
@@ -2642,10 +3031,10 @@ def _chat_stream_events(request: SmartChatRequest) -> Iterator[str]:
     })
 
     api_key = os.environ.get('DASHSCOPE_API_KEY', '')
-    # 与非流式路径同源：是否允许以问句结尾只看"本轮该不该问"，
-    # 不看"连着问了几轮"（连着追问由 prompt 语气规则降温，见 _finalize_reply）。
+    # 与非流式路径同源：是否允许以问句结尾只看"本轮该不该问"（内容层面），
+    # 不看"连着问了几轮"；高风险/危机始终放行（安全确认就是一句问话）。
     # 流式已经吐出去的字收不回来，所以定稿若删掉尾问句，由下面的 REVISE 事件替换。
-    allow_question = prep.ask_question and not _is_social_only(request.message)
+    allow_question = prep.ask_question or prep.risk_level in ("high", "crisis")
     raw_parts: list[str] = []
     shown_parts: list[str] = []
     gate = _StreamingSafetyGate()
@@ -2660,18 +3049,9 @@ def _chat_stream_events(request: SmartChatRequest) -> Iterator[str]:
             scene_context=prep.scene_context,
             ask_question=prep.ask_question,
             memory_context=prep.memory_context,
-            content_type=request.content_type,
-            baseline_deviation=prep.baseline_deviation,
-            emotion_trajectory=prep.emotion_trajectory,
-            modal_incongruence=prep.modal_incongruence,
-            detection_confidence=prep.detection_confidence,
-            active_probe_hint=prep.active_probe_hint,
-            llm_crisis_verdict=prep.llm_crisis_verdict,
-            continuity_context=prep.continuity_context,
-            intervention_context=prep.intervention_context,
-            boundary_context=prep.boundary_context,
-            recommended_strategy=prep.recommended_strategy,
             tamer_result=prep.tamer_result,
+            facial_context=prep.facial_context,
+            support_context=prep.support_context,
         )
         try:
             for delta in _iter_llm_deltas(
@@ -2719,7 +3099,6 @@ def _chat_stream_events(request: SmartChatRequest) -> Iterator[str]:
             raw_reply, allow_question, user_message=request.message,
             conversation_history=request.conversation_history,
             risk_level=prep.risk_level,
-            content_type=request.content_type,
         )
         if streaming_allowed and speak_segments:
             # 合成计划先于向量：消费端按它合成**也按它上屏**，"听到的"="看到的"。
@@ -2749,7 +3128,12 @@ def _chat_stream_events(request: SmartChatRequest) -> Iterator[str]:
     # (2) 闸门拦下后审计给出了安全的替代文本；(3) 五轴审计（谄媚/漂移/污名化等）
     # 判定需要重写。
     shown = ''.join(shown_parts)
-    if final.reply.strip() != shown.strip():
+    # ⚠️ 判据同 `_plan_streamed_reply`：**去掉空白后**比较。
+    # 用 `.strip()` 时，定稿只是抹掉流式文本里的 "  \n" 也会判成"不一致"，
+    # 于是**每一轮都发 revise**；客户端每轮整体替换字幕 + 撤回在途合成 + 补念，
+    # 首声被推后一个合成周期（真机实测：meta → delta* → revise → done，
+    # 两次输入都如此，且 revise 文本与 delta 拼接只差空白）。
+    if _normalize_for_compare(final.reply) != _normalize_for_compare(shown):
         yield _sse_pack(ChatStreamEventType.REVISE, {'text': final.reply})
 
     payload = final.model_dump()
@@ -2809,6 +3193,44 @@ async def smart_chat_stream(request: SmartChatRequest) -> StreamingResponse:
 # 文本与审计结论，与非流式路径逐字段同源。
 
 
+# ============================================================
+# TAMER 框架的会话级状态
+# ============================================================
+#
+# ⚠️ 为什么必须"按会话常驻"而不是每轮 new 一个：
+#   RQI 的 EMA 时间衰减、MIS 的自适应阈值（μ + kσ）、CUSUM 的累积量
+#   **三者都是有状态的**。若每轮 `TAMERFramework(TAMERConfig())`，
+#   等价于每轮把历史清零 —— 自适应阈值永远停在默认 0.3、CUSUM 累积量
+#   永远从 0 开始（轨迹恒为 stable）、RQI 退化成单轮读数，
+#   所谓"自适应"与"时序追踪"就全部失效（只剩公式里那半截）。
+#
+# 键取 session_id，缺省退回 user_id，再缺省 "anonymous"。
+# 上限只做粗粒度 FIFO 淘汰，避免长期运行时无界增长 ——
+# 本 Demo 的会话数远小于该上限，淘汰策略不参与业务语义。
+_TAMER_SESSIONS: dict[str, Any] = {}
+_TAMER_MAX_SESSIONS = 512
+
+
+def _get_tamer(session_key: str) -> Any:
+    """取（或新建）该会话常驻的 :class:`TAMERFramework` 实例。
+
+    Args:
+        session_key: 会话键（session_id / user_id / "anonymous"）。
+
+    Returns:
+        TAMERFramework: 带该会话历史状态的框架实例。
+    """
+    tamer = _TAMER_SESSIONS.get(session_key)
+    if tamer is None:
+        from assessment.tamer_framework import TAMERConfig, TAMERFramework
+
+        if len(_TAMER_SESSIONS) >= _TAMER_MAX_SESSIONS:
+            _TAMER_SESSIONS.pop(next(iter(_TAMER_SESSIONS)))
+        tamer = TAMERFramework(TAMERConfig())
+        _TAMER_SESSIONS[session_key] = tamer
+    return tamer
+
+
 @dataclass
 class _ChatTurnPrep:
     """单轮对话的前处理结果（模块内部结构，不作为跨模块契约）。
@@ -2830,6 +3252,11 @@ class _ChatTurnPrep:
         distortion_meta: 认知扭曲 8 分类结果，同上。
         ask_question: 本轮是否允许提出一个开放式追问。
         loop: 该用户的 SafetyLoop 实例（含对话状态机），定稿时要用。
+        memory_context: 长期记忆召回文本。
+        tamer_result: TAMER 框架（RQI / MIS / CUSUM）本轮输出；计算失败时为 None，
+            此时 prompt 不注入关系与矛盾提示，前端也不显示对应卡片。
+        facial_context: 面部实时状态的内部参考文本；空串表示本轮没有新鲜读数
+            （没开摄像头 / 画面没人脸 / 读数过期），prompt **整段不注入**。
     """
     emotion_result: Any
     risk_level: str
@@ -2842,25 +3269,16 @@ class _ChatTurnPrep:
     ask_question: bool
     loop: SafetyLoop
     memory_context: str = ""
-    # --- v3 检测增强 ---
-    baseline_deviation: Optional[dict] = None
-    emotion_trajectory: Optional[dict] = None
-    modal_incongruence: Optional[dict] = None
-    detection_confidence: float = 1.0
-    active_probe_hint: str = ""
-    llm_crisis_verdict: Optional[dict] = None
-    # --- v4 关系与连续性 ---
-    continuity_context: str = ""
-    intervention_context: str = ""
-    boundary_context: str = ""
-    recommended_strategy: str = ""
-    # --- TAMER 框架 ---
     tamer_result: Optional[dict] = None
+    facial_context: str = ""
+    support_state: Optional[SupportState] = None
+    support_context: str = ""
+    innovation: Optional[dict] = None
 
 
 def _prepare_chat_turn(request: SmartChatRequest) -> _ChatTurnPrep:
-    """步骤 1 ~ 2.9：文本感知 → 风险评估 → 危机快检 → 记忆召回 → 风格检测
-    → 对话状态机推进 → C2D2 场景检索。
+    """步骤 1 ~ 2.10：文本感知 → 风险评估 → 危机快检 → 记忆召回 → 风格检测
+    → 对话状态机推进 → C2D2 场景检索 → TAMER（RQI / MIS / CUSUM）。
 
     **只读输入 + 推进该用户的对话状态机**，不产生回复文本、不写审计日志。
 
@@ -2897,341 +3315,8 @@ def _prepare_chat_turn(request: SmartChatRequest) -> _ChatTurnPrep:
     )
     if crisis_detected:
         risk_level = "crisis"
+        # 在 evidence 中追加危机检测记录
         emotion_result.evidence.append("[危机检测] 用户输入包含危机关键词，已强制提升风险等级至 crisis")
-
-    # ── 步骤 2.55：v3 检测增强 ─────────────────────────────────────
-    # 五个新维度：个人基线偏离、时序轨迹、跨模态矛盾、不确定性感知、语境危机
-    # 计算结果存入局部变量，最后统一写入 _ChatTurnPrep
-
-    # --- d1: 个人基线偏离 ---
-    baseline_deviation_result: Optional[dict] = None
-    try:
-        from assessment.personal_baseline import compute_deviation as _compute_deviation
-        # 构建当前轮的特征：情绪概率分布 + 语音特征（如果有）
-        current_features: dict = {
-            "emotionProbs": emotion_result.text_emotion_probs,
-        }
-        # 如果有语音特征，提取关键指标用于基线比较
-        if request.voice_features and isinstance(request.voice_features, dict):
-            vf = request.voice_features
-            # 语速、基频等生理指标
-            rate_info = vf.get("rate", {})
-            if isinstance(rate_info, dict) and "speechRate" in rate_info:
-                current_features["speechRate"] = rate_info["speechRate"]
-            pitch_info = vf.get("pitch", {})
-            if isinstance(pitch_info, dict) and "mean" in pitch_info:
-                current_features["voiceF0"] = pitch_info["mean"]
-            # 停顿比例（行为指标）
-            pauses_info = vf.get("pauses", {})
-            if isinstance(pauses_info, dict) and "ratio" in pauses_info:
-                current_features["pauseRatio"] = pauses_info["ratio"]
-
-        deviation = _compute_deviation(
-            user_id=request.user_id,
-            current_features=current_features,
-        )
-        if deviation.calibrated and deviation.significant_deviations:
-            # 基线已校准且有显著偏离 → 提升风险关注
-            baseline_deviation_result = {
-                "significant": deviation.significant_deviations,
-                "confidence": deviation.confidence,
-                "modality_z": deviation.modality_z_scores,
-                "emotion_z": deviation.emotion_z_scores,
-            }
-            emotion_result.evidence.append(
-                f"[基线偏离] 显著偏离维度: {', '.join(deviation.significant_deviations)}"
-                f"（置信度 {deviation.confidence:.2f}）"
-            )
-            # 基线偏离可以升级风险：如果情绪维度显著偏离且当前是 low，升到 medium
-            emotion_dims = [d for d in deviation.significant_deviations if d.startswith("emotion_dim_")]
-            if emotion_dims and risk_level == "low":
-                risk_level = "medium"
-                emotion_result.evidence.append(
-                    "[基线偏离] 情绪维度显著偏离个人基线，风险等级提升至 medium"
-                )
-    except Exception:
-        pass  # 基线检测失败不影响主流程
-
-    # --- d2: 情绪时序轨迹 ---
-    emotion_trajectory_result: Optional[dict] = None
-    try:
-        # 从对话历史中提取最近 6 轮的情绪概率分布
-        history = request.conversation_history or []
-        recent_emotions: list[list[float]] = []
-        for msg in history[-12:]:  # 最近 6 轮 = 12 条消息（user+assistant 交替）
-            if msg.get("role") == "user" and msg.get("content"):
-                # 用 perception 层的文本情绪分析提取历史情绪
-                try:
-                    from perception.text.emotion import analyze_text_emotion
-                    hist_result = analyze_text_emotion(msg["content"])
-                    if hasattr(hist_result, "text_emotion_probs"):
-                        recent_emotions.append(hist_result.text_emotion_probs)
-                except Exception:
-                    pass
-        # 加上当前轮
-        recent_emotions.append(emotion_result.text_emotion_probs)
-
-        if len(recent_emotions) >= 3:
-            # 计算趋势：悲伤+焦虑的概率变化方向
-            # 情绪维度索引：[快乐, 悲伤, 焦虑, 愤怒, 中性]
-            neg_scores = []
-            for probs in recent_emotions:
-                if len(probs) >= 5:
-                    neg_scores.append(probs[1] + probs[2])  # 悲伤 + 焦虑
-                else:
-                    neg_scores.append(0.0)
-
-            # 简单线性趋势：最后 3 轮的平均 vs 前 3 轮的平均
-            if len(neg_scores) >= 4:
-                recent_avg = sum(neg_scores[-2:]) / 2
-                earlier_avg = sum(neg_scores[:2]) / 2
-                trend = recent_avg - earlier_avg
-
-                trajectory_label = "稳定"
-                if trend > 0.15:
-                    trajectory_label = "恶化"
-                elif trend > 0.05:
-                    trajectory_label = "轻微下降"
-                elif trend < -0.15:
-                    trajectory_label = "好转"
-                elif trend < -0.05:
-                    trajectory_label = "轻微好转"
-
-                emotion_trajectory_result = {
-                    "trend": trajectory_label,
-                    "trend_value": round(trend, 3),
-                    "recent_neg_avg": round(recent_avg, 3),
-                    "earlier_neg_avg": round(earlier_avg, 3),
-                    "window_size": len(recent_emotions),
-                }
-                emotion_result.evidence.append(
-                    f"[情绪轨迹] 趋势: {trajectory_label}"
-                    f"（负性情绪 {earlier_avg:.2f} → {recent_avg:.2f}）"
-                )
-                # 轨迹恶化可以提升风险关注
-                if trajectory_label == "恶化" and risk_level in ("low", "medium"):
-                    risk_level = "medium" if risk_level == "low" else "high"
-                    emotion_result.evidence.append(
-                        "[情绪轨迹] 持续恶化趋势，风险等级提升"
-                    )
-    except Exception:
-        pass
-
-    # --- d3: 跨模态矛盾检测 ---
-    modal_incongruence_result: Optional[dict] = None
-    try:
-        if request.voice_features and isinstance(request.voice_features, dict):
-            vf = request.voice_features
-            # 文本情绪：主导情绪是什么
-            text_probs = emotion_result.text_emotion_probs  # [快乐,悲伤,焦虑,愤怒,中性]
-            text_dominant_idx = text_probs.index(max(text_probs)) if text_probs else 4
-            text_dominant_label = ["快乐", "悲伤", "焦虑", "愤怒", "中性"][text_dominant_idx]
-
-            # 声学特征推断的情绪唤醒度
-            energy_info = vf.get("energy", {})
-            pitch_info = vf.get("pitch", {})
-            # 高唤醒 = 高能量 + 高基频变化
-            energy_mean = energy_info.get("mean", 0) if isinstance(energy_info, dict) else 0
-            pitch_range = pitch_info.get("range", 0) if isinstance(pitch_info, dict) else 0
-
-            # 声学唤醒度判断（阈值基于归一化后的特征）
-            high_acoustic_arousal = (energy_mean > 0.6 or pitch_range > 0.4)
-            low_acoustic_arousal = (energy_mean < 0.2 and pitch_range < 0.15)
-
-            # 矛盾检测：
-            # 1. 文本说“中性/快乐”但声音高唤醒 → 可能在掩饰
-            # 2. 文本说“悲伤/焦虑”但声音低唤醒 → 可能在表演/求助
-            text_is_calm = text_dominant_label in ("中性", "快乐")
-            text_is_distressed = text_dominant_label in ("悲伤", "焦虑", "愤怒")
-
-            if text_is_calm and high_acoustic_arousal:
-                modal_incongruence_result = {
-                    "type": "masking",  # 言语平静但声音紧张 → 掩饰
-                    "text_emotion": text_dominant_label,
-                    "acoustic_arousal": "high",
-                    "hint": "用户说没事但声音听起来很紧张，可能在掩饰",
-                }
-                emotion_result.evidence.append(
-                    f"[跨模态矛盾] 言语{text_dominant_label}但声学高唤醒 → 可能掩饰"
-                )
-            elif text_is_distressed and low_acoustic_arousal:
-                modal_incongruence_result = {
-                    "type": "performative",  # 言语痛苦但声音平淡 → 可能表演性求助
-                    "text_emotion": text_dominant_label,
-                    "acoustic_arousal": "low",
-                    "hint": "用户表达痛苦但声音很平，可能不是真实的危机",
-                }
-                emotion_result.evidence.append(
-                    f"[跨模态矛盾] 言语{text_dominant_label}但声学低唤醒 → 可能表演性"
-                )
-    except Exception:
-        pass
-
-    # --- d4: 综合置信度 + 主动探测提示 ---
-    detection_confidence_value = 1.0
-    active_probe_hint_value = ""
-    try:
-        # 综合置信度 = 各维度置信度的加权平均
-        confidences = []
-        # 文本情绪置信度 = 主导情绪概率（越高越确定）
-        if text_probs and max(text_probs) > 0:
-            confidences.append(max(text_probs))
-        # 基线置信度
-        if baseline_deviation_result:
-            confidences.append(baseline_deviation_result.get("confidence", 0.5))
-        # 跨模态一致性（有矛盾 = 低置信度）
-        if modal_incongruence_result:
-            confidences.append(0.3)  # 有矛盾时压低置信度
-
-        if confidences:
-            detection_confidence_value = sum(confidences) / len(confidences)
-
-        # 当置信度低时，生成主动探测提示
-        if detection_confidence_value < 0.5:
-            if modal_incongruence_result and modal_incongruence_result.get("type") == "masking":
-                active_probe_hint_value = (
-                    "你不确定对方是不是真的没事。"
-                    "温和地探一下：‘你说还好，但我感觉你声音有点紧，"
-                    "是有什么想说又不好说的吗？’"
-                )
-            elif modal_incongruence_result and modal_incongruence_result.get("type") == "performative":
-                active_probe_hint_value = (
-                    "对方在表达痛苦但声音很平。"
-                    "不要急着升级危机，先确认：‘听起来你挺难受的，"
-                    "你现在安全吗？’"
-                )
-            else:
-                active_probe_hint_value = (
-                    "你对这轮的情绪判断不太确定。"
-                    "可以用一个开放式问题确认：‘你现在感觉怎么样？’"
-                )
-            emotion_result.evidence.append(
-                f"[不确定性感知] 置信度 {detection_confidence_value:.2f}，"
-                f"建议主动探测"
-            )
-    except Exception:
-        pass
-
-    # --- d5: 语境危机判断（替代纯关键词，用上下文推断） ---
-    llm_crisis_verdict_result: Optional[dict] = None
-    try:
-        # 只有当关键词检测没命中、但文本含有消极信号时才做语境判断
-        # 避免对每个“你好”都跑一遍语境分析
-        has_negative_signal = any(
-            kw in request.message
-            for kw in ["没意思", "没意义", "累", "烦", "难受", "受不了", "撑不住", "不想"]
-        )
-        if has_negative_signal and not crisis_detected:
-            # 用对话历史做语境判断：看最近的对话氛围
-            history = request.conversation_history or []
-            recent_user_msgs = [
-                m.get("content", "") for m in history[-6:]
-                if m.get("role") == "user"
-            ]
-            # 检查是否有累积的消极信号（单轮没到危机，但多轮累积可能是）
-            neg_keywords_accumulation = ["不想", "没意义", "累", "烦", "难受", "没用", "负担"]
-            accumulation_count = 0
-            for msg in recent_user_msgs:
-                if any(kw in msg for kw in neg_keywords_accumulation):
-                    accumulation_count += 1
-
-            if accumulation_count >= 3:
-                # 多轮累积消极 → 语境危机信号
-                llm_crisis_verdict_result = {
-                    "verdict": "accumulation_risk",
-                    "reason": f"最近 {accumulation_count} 轮持续消极表达累积",
-                    "recommendation": "虽然单轮没有危机关键词，但多轮累积显示持续恶化，建议主动评估安全状态",
-                }
-                emotion_result.evidence.append(
-                    f"[语境危机] 最近 {accumulation_count} 轮持续消极累积，"
-                    f"建议关注"
-                )
-                # 累积风险可以提升等级
-                if risk_level == "low":
-                    risk_level = "medium"
-    except Exception:
-        pass
-
-    # ── v3 检测增强结束 ────────────────────────────────────────────
-
-    # ── 步骤 2.56：v4 关系与连续性 ─────────────────────────────────
-    # 治疗关系状态、干预效果追踪、能力边界感知
-    continuity_context_value = ""
-    intervention_context_value = ""
-    boundary_context_value = ""
-    recommended_strategy_value = ""
-
-    try:
-        # r1: 记录本次会话并更新核心议题
-        record_session(
-            user_id=request.user_id,
-            topic=request.message[:50],
-            risk_level=risk_level,
-        )
-        # 检测核心议题（基于当前消息的关键词）
-        update_core_issues(
-            user_id=request.user_id,
-            detected_topics=[request.message[:30]],
-            risk_level=risk_level,
-        )
-        # 构建连续性上下文
-        continuity_context_value = build_continuity_context(request.user_id)
-        if continuity_context_value:
-            emotion_result.evidence.append("[连续性] 已加载治疗关系状态")
-    except Exception:
-        pass
-
-    try:
-        # r3: 干预效果追踪
-        intervention_context_value = build_intervention_context(request.user_id)
-        recommended_strategy_value = recommend_strategy(request.user_id)
-        if intervention_context_value:
-            emotion_result.evidence.append("[干预效果] 已加载历史干预效果")
-    except Exception:
-        pass
-
-    try:
-        # r2: 能力边界感知
-        update_boundary_state(
-            user_id=request.user_id,
-            user_message=request.message,
-            risk_level=risk_level,
-        )
-        boundary_context_value = build_boundary_context(request.user_id)
-        if boundary_context_value:
-            emotion_result.evidence.append("[能力边界] 建议转介")
-    except Exception:
-        pass
-
-    # ── v4 关系与连续性结束 ────────────────────────────────────────
-
-    # ─ TAMER 框架：RQI + MIS + CUSUM ─────────────────────────────
-    tamer_result_value: Optional[dict] = None
-    try:
-        from assessment.tamer_framework import TAMERFramework, TAMERConfig
-        tamer = TAMERFramework(TAMERConfig())
-        tamer_result_value = tamer.process(
-            user_message=request.message,
-            voice_features=request.voice_features or {},
-            text_emotion=emotion_result.text_emotion_probs,
-            conversation_history=request.conversation_history or [],
-        )
-        if tamer_result_value:
-            rqi = tamer_result_value.get("rqi", 0)
-            mis = tamer_result_value.get("mis", 0)
-            trajectory = tamer_result_value.get("trajectory", "stable")
-            emotion_result.evidence.append(
-                f"[TAMER] RQI={rqi:.3f}, MIS={mis:.3f}, 轨迹={trajectory}"
-            )
-            # RQI 高 → 关系好，可以更深入；MIS 高 → 有矛盾，需要关注
-            if rqi >= 0.6 and risk_level == "low":
-                emotion_result.evidence.append("[TAMER] 关系质量高，可深入探索")
-            if mis > 0.5:
-                emotion_result.evidence.append("[TAMER] 检测到跨模态矛盾，关注掩饰可能")
-    except Exception:
-        pass  # TAMER 计算失败不影响主流程
-
-    # ── TAMER 框架结束 ────────────────────────────────────────────
 
     # 步骤 2.6：记忆召回 —— 获取与当前话题相关的用户记忆
     memory_context = ""
@@ -3334,6 +3419,9 @@ def _prepare_chat_turn(request: SmartChatRequest) -> _ChatTurnPrep:
                     "is_distorted": prediction.is_distorted,
                     "margin": round(prediction.margin, 4),
                 }
+                classifier = get_distortion_classifier()
+                if classifier:
+                    distortion_meta["calibration"] = classifier.meta.get("calibration")
                 emotion_result.evidence.append(
                     f"[认知扭曲] {prediction.label_zh}"
                     f"（置信度 {prediction.confidence:.2f}，8 分类模型）"
@@ -3380,6 +3468,73 @@ def _prepare_chat_turn(request: SmartChatRequest) -> _ChatTurnPrep:
                 f"[场景检索] 命中 {scene_hits} 个相近情境，已注入 prompt"
             )
 
+    # ── 步骤 2.10：TAMER 框架 —— RQI（关系质量）+ MIS（跨模态矛盾）+ CUSUM（轨迹）──
+    #
+    # 只读输入、不写审计；任何异常都不影响主流程（与记忆召回、场景检索同一容错口径）。
+    # 跨模态矛盾检测（MIS）需要本轮声学特征：文字聊天时为 None，此时
+    # `acoustic_to_emotion_vector` 用声学默认值兜底，MIS 退化为"文本 vs 中性声学"，
+    # 仍可给出 **一致性/矛盾** 的弱判断，但不应被当作通话质量的结果解读。
+    tamer_result_value: Optional[dict] = None
+    try:
+        tamer = _get_tamer(request.session_id or request.user_id or "anonymous")
+        tamer_result_value = tamer.process(
+            user_message=request.message,
+            voice_features=request.voice_features or {},
+            text_emotion=emotion_result.text_emotion_probs,
+            conversation_history=request.conversation_history or [],
+        )
+        if tamer_result_value:
+            emotion_result.evidence.append(
+                "[TAMER] RQI={rqi:.3f}, MIS={mis:.3f}, 关系阶段={depth}, 轨迹={traj}".format(
+                    rqi=tamer_result_value.get("rqi", 0.0),
+                    mis=tamer_result_value.get("mis", 0.0),
+                    depth=tamer_result_value.get("relationship_depth", "陌生期"),
+                    traj=tamer_result_value.get("trajectory", "stable"),
+                )
+            )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("TAMER 计算失败，本轮跳过关系/矛盾分析: %s", e)
+
+    # ── 步骤 2.11：面部实时状态（客户端上行，可选）──────────────────────────
+    #
+    # 客户端只在"采集在跑 + 画面里有人脸 + 读数新鲜"时才带这个字段；这里再过一道
+    # 版本/年龄/在场闸门（见 :func:`_build_facial_context`）。任何异常都不影响主流程，
+    # 失败等价于"本轮没有面部参考"。
+    #
+    # ⚠️ 明确边界：本段**只产出给模型看的内部参考文本**，绝不写进 risk_level、
+    # 融合权重、量表分或任何审计判定 —— AGENTS.md 的"阈值类变更需人工审核"。
+    facial_context = ""
+    try:
+        facial_context = _build_facial_context(request.facial_features)
+        if facial_context:
+            emotion_result.evidence.append(
+                "[面部实时状态] 本轮有新鲜读数，已作为内部参考注入 prompt（不参与风险判定）"
+            )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("面部实时状态解析失败，本轮不注入: %s", e)
+
+    support_state_value = None
+    support_context_value = ""
+    # 普通支持的附加状态不改变既有风险计算、审计和升级路径。
+    if risk_level in ("low", "medium") and not crisis_detected and request.session_id and request.message_id:
+        try:
+            support_state_value = prepare_support(request.session_id, request.message_id,
+                request.message, request.conversation_history, request.support_state)
+            support_context_value = support_prompt(support_state_value)
+        except (ValueError, TypeError, KeyError):
+            logger.warning("理解状态验证失败，本轮跳过附加支持上下文")
+
+    innovation_value = None
+    if risk_level in ("low", "medium") and not crisis_detected:
+        try:
+            from perception.innovation import prompt_reference
+            frames = (request.facial_features or {}).get("visualFrames")
+            observation = perception.analyze_innovation(request.message, frames)
+            innovation_value = asdict(observation)
+            support_context_value += prompt_reference(observation)
+        except Exception:
+            logger.warning("图文辅助参考不可用，继续原有对话流程")
+
     return _ChatTurnPrep(
         emotion_result=emotion_result,
         risk_level=risk_level,
@@ -3392,20 +3547,11 @@ def _prepare_chat_turn(request: SmartChatRequest) -> _ChatTurnPrep:
         ask_question=ask_question,
         loop=loop,
         memory_context=memory_context,
-        # v3 检测增强
-        baseline_deviation=baseline_deviation_result,
-        emotion_trajectory=emotion_trajectory_result,
-        modal_incongruence=modal_incongruence_result,
-        detection_confidence=detection_confidence_value,
-        active_probe_hint=active_probe_hint_value,
-        llm_crisis_verdict=llm_crisis_verdict_result,
-        # v4 关系与连续性
-        continuity_context=continuity_context_value,
-        intervention_context=intervention_context_value,
-        boundary_context=boundary_context_value,
-        recommended_strategy=recommended_strategy_value,
-        # TAMER 框架
         tamer_result=tamer_result_value,
+        facial_context=facial_context,
+        support_state=support_state_value,
+        support_context=support_context_value,
+        innovation=innovation_value,
     )
 
 
@@ -3534,6 +3680,8 @@ def _audit_and_finalize(
         scene_retrieval=scene_meta,
         cognitive_distortion=distortion_meta,
         tamer_result=prep.tamer_result,
+        support_state=asdict(prep.support_state) if prep.support_state and audit_passed else None,
+        innovation=prep.innovation,
     )
 
 
@@ -3572,18 +3720,9 @@ async def smart_chat(request: SmartChatRequest) -> SmartChatResponse:
             dialogue_mode=dialogue_mode,
             scene_context=scene_context,
             memory_context=prep.memory_context,
-            content_type=request.content_type,
-            baseline_deviation=prep.baseline_deviation,
-            emotion_trajectory=prep.emotion_trajectory,
-            modal_incongruence=prep.modal_incongruence,
-            detection_confidence=prep.detection_confidence,
-            active_probe_hint=prep.active_probe_hint,
-            llm_crisis_verdict=prep.llm_crisis_verdict,
-            continuity_context=prep.continuity_context,
-            intervention_context=prep.intervention_context,
-            boundary_context=prep.boundary_context,
-            recommended_strategy=prep.recommended_strategy,
             tamer_result=prep.tamer_result,
+            facial_context=prep.facial_context,
+            support_context=prep.support_context,
         )
 
         return _audit_and_finalize(prep, request, llm_reply)

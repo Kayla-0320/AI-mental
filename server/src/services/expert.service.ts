@@ -283,6 +283,102 @@ class ExpertService {
 
     return { patients: Array.from(patientMap.values()), total: patientMap.size };
   }
+
+  /**
+   * 咨询师资质状态——库表里没有 status 字段，用既有两列推导，避免为管理端单独加一次迁移。
+   *
+   *   verifiedAt 有值            → APPROVED（已通过审核）
+   *   verifiedAt 为空 + isAvailable → PENDING（待审核；isAvailable 默认 true，即新注册咨询师）
+   *   verifiedAt 为空 + 不可用     → REJECTED（已拒绝）
+   *   verifiedAt 有值 + 不可用     → SUSPENDED（已通过但被停用）
+   */
+  private deriveConsultantStatus(c: { verifiedAt: Date | null; isAvailable: boolean }): string {
+    if (c.verifiedAt) return c.isAvailable ? 'APPROVED' : 'SUSPENDED';
+    return c.isAvailable ? 'PENDING' : 'REJECTED';
+  }
+
+  /**
+   * 管理端咨询师列表 —— 与 getConsultants 的关键差别：
+   *   getConsultants 只返回 `isAvailable && user.isActive` 的**可预约**咨询师，
+   *   因此待审核/已拒绝的永远不出现，管理端也就永远没有「通过/拒绝」按钮可点。
+   *   这里对管理员返回全部（可按状态筛选）。
+   */
+  async getConsultantsForAdmin(filters?: { status?: string; page?: number; pageSize?: number }) {
+    const page = filters?.page || 1;
+    const pageSize = filters?.pageSize || 20;
+
+    const where: any = {};
+    switch ((filters?.status || '').toUpperCase()) {
+      case 'PENDING':
+        where.verifiedAt = null;
+        where.isAvailable = true;
+        break;
+      case 'APPROVED':
+        where.verifiedAt = { not: null };
+        where.isAvailable = true;
+        break;
+      case 'REJECTED':
+        where.verifiedAt = null;
+        where.isAvailable = false;
+        break;
+      case 'SUSPENDED':
+        where.verifiedAt = { not: null };
+        where.isAvailable = false;
+        break;
+      default:
+        break; // 未指定 → 全部
+    }
+
+    const [rows, total] = await Promise.all([
+      prisma.consultantProfile.findMany({
+        where,
+        include: { user: { select: { id: true, nickname: true, avatar: true, email: true, isActive: true } } },
+        orderBy: [{ verifiedAt: 'asc' }, { createdAt: 'desc' }],
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+      }),
+      prisma.consultantProfile.count({ where }),
+    ]);
+
+    const consultants = rows.map((c) => ({ ...c, status: this.deriveConsultantStatus(c) }));
+    return { consultants, total, page, pageSize };
+  }
+
+  /**
+   * 管理端审核咨询师资质。
+   *
+   * @param status APPROVED 通过 | REJECTED 拒绝 | SUSPENDED 停用 | PENDING 撤回到待审
+   */
+  async updateConsultantStatus(consultantId: string, status: string) {
+    const allowed = ['APPROVED', 'REJECTED', 'SUSPENDED', 'PENDING'];
+    if (!allowed.includes(status)) {
+      throw new AppError(`status 只能是 ${allowed.join(' / ')}`, 400);
+    }
+
+    // consultantId 可能是 ConsultantProfile.id，也可能是 User.id（前端两种都传过）
+    let consultant = await prisma.consultantProfile.findUnique({ where: { id: consultantId } });
+    if (!consultant) {
+      consultant = await prisma.consultantProfile.findUnique({ where: { userId: consultantId } });
+    }
+    if (!consultant) {
+      throw new AppError('咨询师不存在', 404);
+    }
+
+    const data: { verifiedAt: Date | null; isAvailable: boolean } = {
+      // PENDING/REJECTED 表示尚未通过审核 → 清空审核时间
+      verifiedAt: status === 'APPROVED' || status === 'SUSPENDED' ? (consultant.verifiedAt ?? new Date()) : null,
+      // 只有 APPROVED 才对外可预约
+      isAvailable: status === 'APPROVED' || status === 'PENDING',
+    };
+
+    const updated = await prisma.consultantProfile.update({
+      where: { id: consultant.id },
+      data,
+      include: { user: { select: { id: true, nickname: true, email: true } } },
+    });
+
+    return { ...updated, status: this.deriveConsultantStatus(updated) };
+  }
 }
 
 export default new ExpertService();

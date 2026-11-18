@@ -1,0 +1,94 @@
+/*
+ * 「我听到的」回声条。
+ * 目标不是做成一张“待办卡”，而是一段像批注一样的旁白：
+ * 默认只有一句话 + 一个可点的入口；点原话就地修改，不弹表单。
+ */
+.support-echo {
+  margin: 6px 0 18px 44px;
+  max-width: 620px;
+  padding: 10px 12px 9px 14px;
+  border-left: 3px solid #d9c7f2;
+  border-radius: 4px 14px 14px 4px;
+  background: linear-gradient(100deg, #faf7ff 0%, #fff9fc 100%);
+  color: #514a5f;
+  font-size: 13px;
+  line-height: 1.7;
+}
+.support-echo-head { display: flex; align-items: flex-start; gap: 8px; }
+.support-echo-icon {
+  width: 22px; height: 22px; flex: 0 0 22px; margin-top: 2px;
+  display: grid; place-items: center; border-radius: 50%;
+  background: #efe6fb; color: #8b5cf6; font-size: 12px;
+}
+.support-echo-quotes { flex: 1; min-width: 0; margin: 0; }
+.support-echo-label { margin-right: 6px; color: #8b7d9c; }
+.support-echo-quote-button {
+  padding: 0; border: 0; border-bottom: 1px dashed transparent;
+  background: transparent; color: #40394e;
+  font: inherit; line-height: inherit; text-align: left;
+  overflow-wrap: anywhere; cursor: pointer;
+}
+.support-echo-quote-button:hover:not(:disabled),
+.support-echo-quote-button:focus-visible { color: #5b3fa8; border-bottom-color: #c4b5fd; outline: none; }
+.support-echo-quote-button.is-mine { color: #5b4b78; }
+.support-echo-quote-button:disabled { cursor: default; }
+.support-echo-sep { color: #c4b5d8; }
+.support-echo-text { flex: 1; min-width: 0; margin: 0; color: #514a5f; }
+
+.support-echo-link {
+  flex: 0 0 auto; padding: 0 2px; border: 0; background: transparent;
+  color: #8b6fc9; font-size: 12px; line-height: 1.7; white-space: nowrap; cursor: pointer;
+}
+.support-echo-link:hover:not(:disabled) { color: #6d4fc0; text-decoration: underline; text-underline-offset: 3px; }
+.support-echo-link:disabled { opacity: .55; cursor: default; }
+
+.support-echo-goal { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.support-echo-head + .support-echo-goal { margin-top: 7px; padding-top: 8px; border-top: 1px dashed #eee3f7; }
+.support-echo-goal-label { color: #8b7d9c; font-size: 12px; }
+.support-echo-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.support-echo-chip {
+  padding: 2px 11px; border: 1px solid #e6d9f4; border-radius: 999px;
+  background: #fff; color: #6b5b80; font-size: 12px; line-height: 1.7;
+  cursor: pointer; transition: border-color .15s ease, background .15s ease, color .15s ease;
+}
+.support-echo-chip:hover:not(:disabled) { border-color: #c4b5fd; background: #f7f2ff; color: #6d4fc0; }
+.support-echo-chip[aria-pressed="true"] { border-color: #b9a6e8; background: #f0e9ff; color: #5b3fa8; font-weight: 500; }
+.support-echo-chip:disabled { opacity: .55; cursor: default; }
+
+.support-echo-edit { flex: 1; min-width: 0; }
+.support-echo-edit-label { margin-bottom: 4px; color: #8b7d9c; font-size: 11px; }
+.support-echo-edit-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-top: 6px; }
+.support-echo-save {
+  padding: 2px 13px; border: 1px solid #d9c7f2; border-radius: 999px;
+  background: #f3ecff; color: #6d4fc0; font-size: 12px; line-height: 1.7; cursor: pointer;
+}
+.support-echo-save:hover:not(:disabled) { background: #e9ddff; border-color: #c4b5fd; }
+.support-echo-save:disabled { opacity: .45; cursor: default; }
+.support-echo-action {
+  padding: 0; border: 0; background: transparent;
+  color: #7c5fbe; font-size: 12px; line-height: 1.6; cursor: pointer;
+}
+.support-echo-action:hover:not(:disabled) { text-decoration: underline; text-underline-offset: 3px; }
+.support-echo-action.is-quiet { color: #9a8aae; }
+.support-echo-action:disabled { opacity: .5; cursor: default; }
+
+.support-echo-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 7px; }
+.support-echo-note { color: #a396b2; font-size: 11px; line-height: 1.5; }
+
+.support-echo-error { margin-top: 8px; }
+.support-echo-live { display: block; color: #a396b2; font-size: 11px; line-height: 1.5; }
+.support-echo-live:not(:empty) { margin-top: 3px; }
+
+@media (max-width: 767px) {
+  .support-echo { margin-left: 0 !important; border-radius: 4px 12px 12px 4px; }
+  .support-echo-foot { align-items: flex-start; flex-direction: column; gap: 2px; }
+}
+@media (max-width: 480px) {
+  /* 窄屏上让「哪里偏了？」换到原话下面，避免把最后一两个字挤成竖排。 */
+  .support-echo-head { flex-wrap: wrap; }
+  .support-echo-link { flex: 0 0 100%; margin-left: 30px; text-align: left; }
+}
+@media (hover: none) {
+  /* 触屏没有 hover：给原话一条很浅的下划线，提示可以点。 */
+  .support-echo-quote-button { border-bottom-color: #e6d9f4; }
+}

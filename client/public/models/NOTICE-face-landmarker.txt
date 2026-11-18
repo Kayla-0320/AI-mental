@@ -1,0 +1,12 @@
+MediaPipe Face Landmarker (float16, version 1)
+Source: https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task
+Upstream: https://github.com/google-ai-edge/mediapipe
+License: Apache-2.0 (https://www.apache.org/licenses/LICENSE-2.0)
+Size: 3758596 bytes
+SHA-256: 64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff
+
+Served locally to avoid external CDN latency during camera startup. Runtime JS
+and WASM are bundled from the installed @mediapipe/tasks-vision dependency so
+that they always use the same package version. No camera access occurs until
+the user enables it. Closing the camera releases its tracks; the detector is
+reused while the page remains mounted and closed when that page unmounts.

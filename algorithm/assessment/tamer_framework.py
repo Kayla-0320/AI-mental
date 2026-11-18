@@ -146,6 +146,46 @@ from assessment.temporal_trajectory import CUSUMDetector, analyze_emotion_trajec
 
 
 # ============================================================
+# 声学特征的量纲归一化
+# ============================================================
+#
+# ⚠️ 客户端上报的 voice_features **不是 0~1**（实测自 `useVoiceAnalysis.ts`
+# 与 `useVoiceCall.ts` 的 `VoiceAnalysis`）：
+#
+#   energy.mean      dBFS，约 -60 ~ 0（<-50 判为静音，<-35 判为低落，>-20 判为大声）
+#   pitch.range      Hz（≈ 0.3 × F0，实测约 25 ~ 120）
+#   rate.speechRate  每秒过零数 / 100，实测约 0 ~ 8
+#   pauses.ratio     0 ~ 1（唯一已经是归一化的）
+#
+# 而 :func:`acoustic_to_emotion_vector` 的形参文档写的是 0~1。
+# 直接把原始值喂进去，`happy = 0.3*energy_mean + …` 会因 energy_mean=-40 变成负数、
+# 归一化后整条向量塌成 0 或 NaN —— MIS / RQI 全部失真。这就是评审报告里
+# P0「跨模态矛盾检测量纲错」的根因。
+#
+# 兼容口径：**看起来已经是归一化值的输入原样使用**，否则按上面的实测单位换算。
+# 这样文字聊天（缺省 0.5/0.3/0.5/0.3）、旧调用方与新版客户端三条路径都不会算错。
+
+def _clamp01(value: float) -> float:
+    """把数值夹到 [0, 1]。"""
+    return max(0.0, min(1.0, float(value)))
+
+
+def normalize_energy_mean(value: float) -> float:
+    """能量均值 → 0~1（dBFS 映射，-60 dBFS 为 0、0 dBFS 为 1）。"""
+    return _clamp01((value + 60.0) / 60.0) if value < 0 else _clamp01(value)
+
+
+def normalize_pitch_range(value: float) -> float:
+    """基频范围 → 0~1（Hz 映射，150 Hz 记满分）。"""
+    return _clamp01(value / 150.0) if value > 1.5 else _clamp01(value)
+
+
+def normalize_speech_rate(value: float) -> float:
+    """语速 → 0~1（原始刻度 8 记满分）。"""
+    return _clamp01(value / 8.0) if value > 1.5 else _clamp01(value)
+
+
+# ============================================================
 # TAMER 框架配置
 # ============================================================
 
@@ -190,6 +230,9 @@ class TAMERFramework:
         self.mis_history: list[float] = []
         self.risk_history: list[float] = []
         self.consecutive_high_risk = 0
+        #: RQI 的 EMA 上一轮值；None 表示本会话还没有算过。
+        #: 见 :meth:`_compute_rqi` —— 文档里的 α 衰减必须靠它才成立。
+        self._prev_rqi: Optional[float] = None
     
     def process(
         self,
@@ -216,11 +259,20 @@ class TAMERFramework:
         relationship_depth = rqi_to_relationship_depth(rqi)
         
         # 2. 计算声学情绪向量
+        # ⚠️ 先做量纲归一化：客户端上报的是 dBFS / Hz / 原始语速刻度，
+        # 而 acoustic_to_emotion_vector 要的是 0~1。直接喂原始值会让向量塌掉，
+        # 详见文件上方 `normalize_energy_mean` 一带的说明。
         voice_emotion = acoustic_to_emotion_vector(
-            energy_mean=voice_features.get("energy", {}).get("mean", 0.5),
-            pitch_range=voice_features.get("pitch", {}).get("range", 0.3),
-            speech_rate=voice_features.get("rate", {}).get("speechRate", 0.5),
-            pause_ratio=voice_features.get("pauses", {}).get("ratio", 0.3),
+            energy_mean=normalize_energy_mean(
+                voice_features.get("energy", {}).get("mean", 0.5)
+            ),
+            pitch_range=normalize_pitch_range(
+                voice_features.get("pitch", {}).get("range", 0.3)
+            ),
+            speech_rate=normalize_speech_rate(
+                voice_features.get("rate", {}).get("speechRate", 0.5)
+            ),
+            pause_ratio=_clamp01(voice_features.get("pauses", {}).get("ratio", 0.3)),
         )
         
         # 3. 计算 MIS
@@ -269,6 +321,10 @@ class TAMERFramework:
             "trajectory": cusum_result["direction"],
             "should_refer": should_refer,
             "consecutive_high_risk": self.consecutive_high_risk,
+            # 本轮是否真的有声学输入。
+            # ⚠️ 为 False 时 MIS 是用缺省声学值算出来的，**不构成跨模态证据**，
+            # 前端据此显示"本轮无语音输入"而不是把默认值渲染成"言语与声音一致"。
+            "has_voice_input": bool(voice_features),
         }
     
     def _compute_rqi(
@@ -276,14 +332,38 @@ class TAMERFramework:
         conversation_history: list[dict],
         current_message: str,
     ) -> float:
-        """计算关系质量指数"""
-        session_count = len([m for m in conversation_history if m.get("role") == "user"])
-        avg_message_length = sum(
-            len(m.get("content", ""))
+        """计算本轮的关系质量指数（RQI），并做 EMA 时间衰减。
+
+        ⚠️ 修正说明（2026-10-10）：
+
+        1. **EMA 此前根本没实现。** 模块与报告里写的是
+           ``RQI(t) = α·RQI(t-1) + (1-α)·Σ(wᵢ·signalᵢ(t))``，``TAMERConfig.rqi_decay``
+           也声明了 0.7，但原实现每轮直接返回 ``compute_rqI(...)`` 的**当期加权和**，
+           α 从未参与运算 —— 于是"时间衰减""关系会累积"这两句在代码里不成立。
+           现在补上 EMA；``RQI(0)`` 取 0（尚无关系可言），
+           这也让前几轮自然落在"陌生期"，随轮次上升。
+
+        2. **话题多样性恒等于 1。** 原实现把 ``unique_topics`` 与 ``total_topics``
+           都赋成同一轮的句子数，于是 ``unique/total`` 永远是 1.0，
+           该项退化成一个 0.15 的常数加项（对任何对话都不变），
+           这也是"消融显示 RQI 贡献为 0"的一个来源。
+           现在改为在**整段对话**的句子上做去重统计。
+
+        Args:
+            conversation_history: 历史对话 ``[{role, content}]``。
+            current_message: 用户本轮发言。
+
+        Returns:
+            float: 带时间衰减的 RQI（0~1，保留 4 位）。
+        """
+        user_messages = [
+            m.get("content", "")
             for m in conversation_history
             if m.get("role") == "user"
-        ) / max(1, session_count)
-        
+        ]
+        session_count = len(user_messages)
+        avg_message_length = sum(len(c) for c in user_messages) / max(1, session_count)
+
         # 情感词汇密度（简化：负性情绪词比例）
         emotional_words = ["难受", "痛苦", "烦", "累", "悲伤", "焦虑"]
         emotional_count = sum(
@@ -291,30 +371,49 @@ class TAMERFramework:
             if word in current_message
         )
         emotional_density = emotional_count / max(1, len(current_message))
-        
-        # 话题多样性（简化：按句子数）
-        sentences = current_message.split("。")
-        topic_count = len([s for s in sentences if len(s.strip()) > 5])
-        
+
+        # 话题多样性：在**整段对话 + 本轮**的句子上算"唯一句 / 总句"。
+        # 原实现把两者都写成同一轮的句子数 → 恒为 1.0（见 docstring 第 2 条）。
+        def _sentences(text: str) -> list[str]:
+            parts: list[str] = []
+            for chunk in text.replace("！", "。").replace("？", "。").split("。"):
+                chunk = chunk.strip()
+                if len(chunk) > 5:
+                    parts.append(chunk)
+            return parts
+
+        all_sentences = [s for c in user_messages for s in _sentences(c)]
+        all_sentences += _sentences(current_message)
+        total_topics = len(all_sentences)
+        unique_topics = len(set(all_sentences))
+
         # 信任信号
         trust_keywords = ["秘密", "只有你知道", "你懂", "朋友"]
         trust_count = sum(
             1 for kw in trust_keywords
             if kw in current_message
         )
-        
+
         # 情感共鸣（简化：假设 AI 能匹配用户情绪）
         emotion_match = 0.7  # 默认值
-        
-        return compute_rqI(
+
+        raw_rqi = compute_rqI(
             session_count=session_count,
             avg_message_length=avg_message_length,
             emotional_vocabulary_density=emotional_density,
-            unique_topics=topic_count,
-            total_topics=max(1, topic_count),
+            unique_topics=unique_topics,
+            total_topics=max(1, total_topics),
             trust_signal_count=trust_count,
             emotion_match_score=emotion_match,
         )
+
+        # 文档里的时间衰减：RQI(t) = α·RQI(t-1) + (1-α)·raw(t)
+        alpha = self.config.rqi_decay
+        if self._prev_rqi is None:
+            self._prev_rqi = (1.0 - alpha) * raw_rqi
+        else:
+            self._prev_rqi = alpha * self._prev_rqi + (1.0 - alpha) * raw_rqi
+        return round(self._prev_rqi, 4)
     
     def _attention_fusion(
         self,
@@ -373,6 +472,7 @@ class TAMERFramework:
         self.mis_history = []
         self.risk_history = []
         self.consecutive_high_risk = 0
+        self._prev_rqi = None
 
 
 # ============================================================

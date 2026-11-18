@@ -1,0 +1,20 @@
+.ie-tags { margin-bottom: 14px; }
+.ie-label { margin: 16px 0 10px; font-size: 13px; font-weight: 600; color: #544c65; }
+.ie-expert { display: grid; grid-template-columns: 128px minmax(0,1fr); align-items: center; gap: 12px; margin: 6px 0; }
+.ie-note { margin: 12px 0 0; font-size: 12px; line-height: 1.75; }
+.ie-knowledge { background: #f8f7fc; border: 1px solid #eeebf5; border-radius: 12px; padding: 12px; margin: 8px 0; }
+.ie-relations>div { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-top:10px; font-size:12px; }
+.ie-relations span { padding:4px 8px; border:1px solid #e7dff1; border-radius:8px; background:#fff; color:#736180; }
+.ie-relations small { color:#8c7b97; }
+.ie-details { border-top: 1px solid #eeebf5; padding-top: 12px; margin-top: 16px; color: #72697f; font-size: 12px; }
+.ie-details summary { cursor: pointer; }
+.ie-quality-score { margin-top: 18px; }
+.ie-metrics { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; margin: 12px 0; }
+.ie-metrics>div { background: #f6faf8; border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 4px; }
+.ie-metrics span { color: #748379; font-size: 12px; }
+.ie-metrics strong { font-size: 17px; color: #376653; font-weight: 600; }
+.ie-empty { text-align: center; padding: 8px 4px; }
+/* 本轮依据只做一条轻声的旁注：不再用整块白底卡片压住对话和「我听到的」。 */
+.ie-status { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin:2px 0 0 44px; padding:0; border:0; background:transparent; }
+.ie-status .ant-tag { margin-inline-end:0; font-size:11px; line-height:18px; }
+@media(max-width:480px) { .ie-expert { grid-template-columns: 110px minmax(0,1fr); gap:6px; } .ie-status { margin-left:0; } }

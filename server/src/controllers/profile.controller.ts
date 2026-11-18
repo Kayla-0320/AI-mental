@@ -109,6 +109,7 @@ class ProfileController {
         anxietyIndex, level, context, multimodal,
         emotionProbs, dominantEmotion, confidence,
         keyboard, text, voice, facial, fusionWeights, evidence,
+        facialLiveState,
       } = req.body;
 
       const patientProfile = await prisma.patientProfile.findUnique({ where: { userId: req.userId! } });
@@ -165,7 +166,22 @@ class ProfileController {
             microExpressionCount: facial.microExpressions?.count,
             emotionMapping: facial.emotionMapping,
             confidence: facial.confidence,
+            // 本机三分类表情模型（ResNet50，happy/neutral/sad）的读数：
+            // ⚠️ 只落库留痕，**不参与** anxietyIndex/riskLevel 计算（前端也没把它接进融合）。
+            faceEmotion: facial.faceEmotion ?? null,
+            faceEmotionStatus: facial.faceEmotionStatus ?? undefined,
           };
+          // 面部**实时状态层**（与客户端上行给算法层的那一份**逐字段相同**，
+          // 由 `services/facialLiveState.ts` 构造）。
+          //
+          // 为什么要在留痕里单独存一份，而不是让后来者从 `faceEmotion` 现算：
+          // 现算会用到"此刻"的时间，而留痕要回答的是"当时那条读数有多新"
+          // （`ageMs` / `ttlMs` 都是当时的值）。口径写在这里，事后核对才不会走样。
+          //
+          // ⚠️ 与 `faceEmotion` 同一条边界：**只留痕，不参与任何评分与风险判定**。
+          if (facialLiveState && typeof facialLiveState === 'object') {
+            perceptionTags.facialLiveState = facialLiveState;
+          }
         }
 
         // 融合权重

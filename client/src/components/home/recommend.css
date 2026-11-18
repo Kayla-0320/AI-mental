@@ -1,0 +1,348 @@
+/* ============================================================================
+ * 今日推荐内容 —— 组件级样式
+ *
+ * 依赖 styles/garden.css 的 token 与 `.gh-*` 基础类（全局已引入）。
+ * 全部类名以 `gh-rec-` 起头，避免与并行开发的其他首页模块碰撞。
+ *
+ * 布局：桌面 = 横向 scroll-snap 轨道（2 张可见 + 露出一角提示可滑）；
+ *       平板 = 轨道收窄；手机 = 竖向排列（窄屏横滑会和页面纵向滚动抢手势）。
+ * ========================================================================== */
+
+.gh-rec__head {
+  margin-bottom: 14px;
+}
+
+/* ---- 轨道 ---- */
+
+.gh-rec__rail-wrap {
+  position: relative;
+  /* 箭头按钮凸出到轨道外，父级不能裁切 */
+  overflow: visible;
+}
+
+.gh-rec__rail {
+  display: flex;
+  gap: 16px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-snap-type: x mandatory;
+  scroll-behavior: smooth;
+  scroll-padding-inline: 2px;
+  /* 给卡片阴影和 hover 上浮留出空间，否则会被 overflow 裁掉 */
+  padding: 6px 2px 16px;
+  /* 隐藏滚动条（轨道仍可滚）：滚动条在玻璃卡片旁边很扎眼 */
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.gh-rec__rail::-webkit-scrollbar {
+  display: none;
+}
+
+/* 骨架屏不需要滚动交互 */
+.gh-rec__rail--static {
+  scroll-snap-type: none;
+  overflow: hidden;
+}
+
+/* ---- 卡片 ---- */
+
+/*
+ * 卡片本体是 <button>（整块可点、天然可聚焦），所以要显式复位浏览器默认样式。
+ * 用普通元素而不用 antd Card：healing-theme.css 对 .ant-card 有 !important 粉色渐变。
+ */
+.gh-rec-card {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 clamp(300px, 44%, 380px);
+  width: clamp(300px, 44%, 380px);
+  padding: 0;
+  border: 1px solid var(--gh-line);
+  border-radius: var(--gh-r-lg);
+  background: var(--gh-glass-strong);
+  box-shadow: var(--gh-sh-1);
+  backdrop-filter: blur(18px) saturate(1.1);
+  -webkit-backdrop-filter: blur(18px) saturate(1.1);
+  overflow: hidden;
+  scroll-snap-align: start;
+  text-align: left;
+  font-family: inherit;
+  color: inherit;
+  cursor: pointer;
+  transition: transform 0.3s var(--gh-ease), box-shadow 0.3s var(--gh-ease),
+    border-color 0.3s var(--gh-ease);
+}
+
+.gh-rec-card:hover {
+  transform: translateY(-5px);
+  box-shadow: var(--gh-sh-2), 0 0 0 1px rgba(255, 255, 255, 0.7) inset;
+  border-color: var(--gh-line-strong);
+}
+
+/* garden.css 只给 .gh-btn/.gh-card/.gh-sec__more 配了 focus-visible，这里补上自己的 */
+.gh-rec-card:focus-visible,
+.gh-rec__nav:focus-visible {
+  outline: 3px solid rgba(240, 127, 169, 0.5);
+  outline-offset: 2px;
+}
+
+/* ---- 插画区 ---- */
+
+.gh-rec-card__art {
+  position: relative;
+  display: block;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  /* 渐变底由 JS 按分类注入 inline style */
+}
+
+/* 内层容器负责 hover 缩放，避免缩放外层把分类药丸一起放大 */
+.gh-rec-card__art-inner {
+  display: block;
+  position: absolute;
+  inset: 0;
+  transition: transform 0.5s var(--gh-ease);
+}
+
+.gh-rec-card:hover .gh-rec-card__art-inner {
+  transform: scale(1.05);
+}
+
+.gh-rec-art__svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.gh-rec-card__pill {
+  position: absolute;
+  left: 12px;
+  top: 12px;
+  z-index: 1;
+  padding: 4px 11px;
+  border-radius: var(--gh-r-pill);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+/* ---- 文字区 ---- */
+
+.gh-rec-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  flex: 1 1 auto;
+  padding: 14px 16px 16px;
+}
+
+.gh-rec-card__title {
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.45;
+  color: var(--gh-ink-1);
+  /* 标题也限两行，保证同排卡片高度一致 */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.gh-rec-card__summary {
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--gh-ink-2);
+  /* 需求指定：正文摘要最多两行 */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.gh-rec-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 10px;
+  border-top: 1px solid var(--gh-line);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--gh-ink-3);
+}
+
+.gh-rec-card__meta-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.gh-rec-card__meta-item--tag {
+  margin-left: auto;
+  padding: 2px 9px;
+  border-radius: var(--gh-r-pill);
+  background: rgba(124, 152, 184, 0.12);
+  color: var(--gh-ink-2);
+}
+
+/* ---- 左右箭头（桌面） ---- */
+
+.gh-rec__nav {
+  position: absolute;
+  top: 42%;
+  z-index: 2;
+  width: 38px;
+  height: 38px;
+  font-size: 15px;
+  box-shadow: var(--gh-sh-2);
+}
+
+.gh-rec__nav--prev {
+  left: -14px;
+}
+
+.gh-rec__nav--next {
+  right: -14px;
+}
+
+/* 到端点时禁用：garden.css 的 :hover 位移要一并压掉，否则禁用态仍在动 */
+.gh-rec__nav:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  box-shadow: var(--gh-sh-1);
+  transform: none;
+}
+
+.gh-rec__nav:disabled:hover {
+  transform: none;
+  box-shadow: var(--gh-sh-1);
+}
+
+/* ---- 空态 / 骨架屏 ---- */
+
+.gh-rec__empty {
+  padding: 40px 20px;
+  font-size: 14px;
+}
+
+.gh-rec-card--skeleton {
+  cursor: default;
+  pointer-events: none;
+}
+
+.gh-rec-card--skeleton:hover {
+  transform: none;
+  box-shadow: var(--gh-sh-1);
+  border-color: var(--gh-line);
+}
+
+/* 骨架插画区不加 hover 缩放 */
+.gh-rec-card--skeleton .gh-rec-card__art-inner {
+  transform: none;
+}
+
+.gh-rec__sk-art {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 0;
+}
+
+.gh-rec__sk-line {
+  display: block;
+  height: 13px;
+}
+
+.gh-rec__sk-line--sm { width: 34%; height: 16px; }
+.gh-rec__sk-line--lg { width: 88%; }
+.gh-rec__sk-line--md { width: 62%; }
+
+/* ============================================================================
+ * 桌面 ≥1080：保持横向轨道（2 张可见 + 露出下一张的一角）
+ * ========================================================================== */
+
+@media (min-width: 1080px) {
+  /* 卡片宽度已由 clamp(300px, 44%, 380px) 控制；这里只把箭头挪到更舒服的位置 */
+  .gh-rec__nav {
+    top: 40%;
+  }
+}
+
+/* ============================================================================
+ * 平板 768-1079：仍然是横滑轨道，但卡片窄一些，能露出更多下一张
+ * ========================================================================== */
+
+@media (min-width: 768px) and (max-width: 1079px) {
+  .gh-rec-card {
+    flex-basis: clamp(250px, 46%, 320px);
+    width: clamp(250px, 46%, 320px);
+  }
+
+  .gh-rec__nav {
+    width: 34px;
+    height: 34px;
+  }
+
+  .gh-rec__nav--prev { left: -10px; }
+  .gh-rec__nav--next { right: -10px; }
+}
+
+/* ============================================================================
+ * 手机 <768：竖向排列，关闭 scroll-snap，隐藏箭头
+ * ========================================================================== */
+
+@media (max-width: 767px) {
+  .gh-rec__rail {
+    flex-direction: column;
+    overflow-x: visible;
+    overflow-y: visible;
+    scroll-snap-type: none;
+    padding: 4px 0 0;
+    gap: 14px;
+  }
+
+  .gh-rec-card {
+    flex: 0 0 auto;
+    width: 100%;
+    scroll-snap-align: none;
+  }
+
+  /* 竖排没有横向终点，箭头无意义 */
+  .gh-rec__nav {
+    display: none;
+  }
+
+  /* 触屏不需要 hover 位移，避免"点一下卡片跳一下" */
+  .gh-rec-card:hover {
+    transform: none;
+  }
+
+  .gh-rec-card__title {
+    font-size: 15px;
+  }
+}
+
+/* 无障碍：尊重系统"减少动态效果" */
+@media (prefers-reduced-motion: reduce) {
+  .gh-rec__rail {
+    scroll-behavior: auto;
+  }
+
+  .gh-rec-card,
+  .gh-rec-card__art-inner {
+    transition: none;
+  }
+
+  .gh-rec-card:hover {
+    transform: none;
+  }
+
+  .gh-rec-card:hover .gh-rec-card__art-inner {
+    transform: none;
+  }
+}

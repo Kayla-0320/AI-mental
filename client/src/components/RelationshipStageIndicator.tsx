@@ -1,22 +1,13 @@
 /**
- * 关系阶段指示器 —— 创新点① RQI 可视化
+ * 对话关系参考 —— 把研究性的 RQI 重新放回聊天顶部。
  *
- * 基于对话历史计算关系质量指数（RQI），展示治疗联盟阶段。
- * 算法：RQI(t) = α × RQI(t-1) + (1-α) × Σ(wᵢ × signalᵢ)
- *
- * 阶段划分：
- * - RQI < 0.3 → 陌生期（Stranger）
- * - 0.3 ≤ RQI < 0.6 → 熟悉期（Acquainted）
- * - RQI ≥ 0.6 → 信任期（Trusted）
+ * RQI 只看交流轮次、表达长度、话题与信任词等可观察信号，用来提示“我们聊天的节奏”，
+ * 不是心理测量，也不代表信任程度、疗效或诊断。界面上保留数值与进度，同时用一句话
+ * 和 tooltip 说清它的边界，避免把研究指标包装成“信任度”。
  */
-
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Progress, Tag, Tooltip, Typography } from 'antd';
-import {
-  TeamOutlined,
-  HeartOutlined,
-  SafetyCertificateOutlined,
-} from '@ant-design/icons';
+import { TeamOutlined, HeartOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
 
 const { Text } = Typography;
 
@@ -25,146 +16,91 @@ interface Message {
   role: string;
   content: string;
   createdAt: string;
+  sentiment?: string;
 }
 
-interface RelationshipStageIndicatorProps {
+interface Props {
   messages: Message[];
-  /** TAMER 框架输出（从后端响应获取）。若提供则直接使用，否则前端自算 */
-  tamerResult?: {
-    rqi: number;
-    relationship_depth: string;
-  } | null;
 }
 
-/** 计算 RQI */
-function computeRQI(messages: Message[]): { rqi: number; signals: Record<string, number> } {
-  if (messages.length === 0) {
-    return { rqi: 0, signals: {} };
+/** 只读当前会话已落库的 EMA 结果；等待回复时沿用上一轮，首轮从 0 开始。 */
+function latestConfirmedRQI(messages: Message[]): number {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role !== 'assistant' || !message.sentiment) continue;
+    try {
+      const rqi: unknown = JSON.parse(message.sentiment)?.tamer_result?.rqi;
+      if (typeof rqi === 'number' && Number.isFinite(rqi) && rqi >= 0 && rqi <= 1) return rqi;
+    } catch { /* 旧记录缺少或损坏的元数据不覆盖上一轮有效读数。 */ }
   }
+  return 0;
+}
 
-  const userMessages = messages.filter((m) => m.role === 'user');
-  const sessionCount = userMessages.length;
-
-  // Signal 1: 互动频率（对数归一化，10次对话达到满分）
-  const interactionFreq = Math.min(1, Math.log(1 + sessionCount) / Math.log(11));
-
-  // Signal 2: 自我暴露深度（平均消息长度 + 情感词汇密度）
-  const avgLength =
-    userMessages.reduce((sum, m) => sum + m.content.length, 0) / Math.max(1, sessionCount);
-  const emotionalWords = ['难受', '痛苦', '烦', '累', '悲伤', '焦虑', '害怕', '孤独', '绝望', '崩溃'];
-  const emotionalCount = userMessages.reduce((sum, m) => {
-    return sum + emotionalWords.filter((w) => m.content.includes(w)).length;
-  }, 0);
-  const selfDisclosure = Math.min(1, avgLength / 100 + emotionalCount / Math.max(1, sessionCount) * 0.3);
-
-  // Signal 3: 话题多样性（按句号分句，统计不同话题）
-  const allSentences = userMessages.flatMap((m) => m.content.split(/[。！？]/).filter((s) => s.trim().length > 3));
-  const topicDiversity = Math.min(1, allSentences.length / 20);
-
-  // Signal 4: 信任信号（包含信任关键词的消息比例）
-  const trustKeywords = ['秘密', '只有你知道', '你懂', '朋友', '信任', '相信'];
-  const trustSignals = userMessages.filter((m) =>
-    trustKeywords.some((kw) => m.content.includes(kw))
-  ).length;
-  const trustScore = Math.min(1, trustSignals / Math.max(1, sessionCount) * 3);
-
-  // Signal 5: 情感共鸣（简化：假设 AI 能匹配用户情绪，给默认值）
-  const emotionMatch = 0.7;
-
-  // 加权融合
-  const weights = {
-    interactionFreq: 0.20,
-    selfDisclosure: 0.25,
-    topicDiversity: 0.15,
-    trustScore: 0.25,
-    emotionMatch: 0.15,
+function getStage(rqi: number): { label: string; color: string; icon: ReactNode; desc: string } {
+  if (rqi >= 0.6) return {
+    label: '更自在一些', color: '#7bb89a', icon: <SafetyCertificateOutlined />,
+    desc: '你可以决定聊多深，我跟着你。',
   };
-
-  const rqi =
-    interactionFreq * weights.interactionFreq +
-    selfDisclosure * weights.selfDisclosure +
-    topicDiversity * weights.topicDiversity +
-    trustScore * weights.trustScore +
-    emotionMatch * weights.emotionMatch;
-
+  if (rqi >= 0.3) return {
+    label: '在熟悉', color: '#9b81c6', icon: <HeartOutlined />,
+    desc: '我们慢慢找到说话的节奏。',
+  };
   return {
-    rqi: Math.min(1, Math.max(0, rqi)),
-    signals: {
-      '互动频率': interactionFreq,
-      '自我暴露': selfDisclosure,
-      '话题多样': topicDiversity,
-      '信任信号': trustScore,
-      '情感共鸣': emotionMatch,
-    },
+    label: '刚认识', color: '#bfa3dd', icon: <TeamOutlined />,
+    desc: '先从轻松的话题开始，不着急。',
   };
 }
 
-function getStage(rqi: number): { label: string; color: string; icon: React.ReactNode; desc: string } {
-  if (rqi >= 0.6) {
-    return {
-      label: '信任期',
-      color: '#52c41a',
-      icon: <SafetyCertificateOutlined />,
-      desc: '用户已建立深度信任，AI 可使用更深入的干预策略',
+export default function RelationshipStageIndicator({ messages }: Props) {
+  const targetRqi = useMemo(() => latestConfirmedRQI(messages), [messages]);
+  const [rqi, setRqi] = useState(targetRqi);
+  const displayedRqi = useRef(targetRqi);
+  useEffect(() => {
+    const startValue = displayedRqi.current;
+    if (startValue === targetRqi) return;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      displayedRqi.current = targetRqi;
+      setRqi(targetRqi);
+      return;
+    }
+    // 数字和进度共用同一条 900ms 渐变，避免数值先跳、进度条后追。
+    const startedAt = performance.now();
+    let frame: number;
+    const animate = (now: number): void => {
+      const progress = Math.max(0, Math.min(1, (now - startedAt) / 900));
+      const value = startValue + (targetRqi - startValue) * (1 - (1 - progress) ** 2);
+      displayedRqi.current = value;
+      setRqi(value);
+      if (progress < 1) frame = requestAnimationFrame(animate);
     };
-  }
-  if (rqi >= 0.3) {
-    return {
-      label: '熟悉期',
-      color: '#1890ff',
-      icon: <HeartOutlined />,
-      desc: '关系正在建立，AI 以共情倾听为主',
-    };
-  }
-  return {
-    label: '陌生期',
-    color: '#faad14',
-    icon: <TeamOutlined />,
-    desc: '初次接触，AI 以温和引导为主',
-  };
-}
-
-export default function RelationshipStageIndicator({ messages, tamerResult }: RelationshipStageIndicatorProps) {
-  // 优先使用后端 TAMER 结果，否则前端自算
-  const rqi = tamerResult?.rqi ?? useMemo(() => computeRQI(messages).rqi, [messages]);
+    frame = requestAnimationFrame(animate);
+    return () => cancelAnimationFrame(frame);
+  }, [targetRqi]);
+  const count = messages.filter(message => message.role === 'user').length;
+  if (!count) return null;
   const stage = getStage(rqi);
   const percent = Math.round(rqi * 100);
 
-  return (
-    <Tooltip title={stage.desc}>
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 12,
-          padding: '8px 16px',
-          background: 'linear-gradient(135deg, #f0f5ff 0%, #e6f7ff 100%)',
-          borderRadius: 12,
-          border: `1px solid ${stage.color}33`,
-        }}
-      >
-        <div style={{ fontSize: 20, color: stage.color }}>{stage.icon}</div>
-        <div style={{ flex: 1 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-            <Tag color={stage.color} style={{ margin: 0, fontSize: 11 }}>
-              {stage.label}
-            </Tag>
-            <Text type="secondary" style={{ fontSize: 11 }}>
-              RQI: {rqi.toFixed(2)}
-            </Text>
-          </div>
-          <Progress
-            percent={percent}
-            size="small"
-            strokeColor={stage.color}
-            showInfo={false}
-            style={{ margin: 0 }}
-          />
-        </div>
-        <div style={{ textAlign: 'right', minWidth: 60 }}>
-          <Text style={{ fontSize: 18, fontWeight: 'bold', color: stage.color }}>{percent}%</Text>
-        </div>
+  return <Tooltip title={<div>
+    <div>{stage.desc}</div>
+    <div style={{ marginTop: 4 }}>RQI 是根据交流轮次、表达长度等算出的研究性参考，只用来看看聊天的节奏；不是心理测量，也不代表信任程度或治疗效果。</div>
+  </div>}>
+    <div data-testid="relationship-stage" style={{
+      display: 'flex', flexDirection: 'column', gap: 5,
+      padding: '8px 12px', borderRadius: 12,
+      background: 'linear-gradient(135deg, #faf7ff 0%, #fff9fc 100%)',
+      border: '1px solid #efe6f7',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+        <span style={{ color: stage.color, fontSize: 16, display: 'inline-flex' }}>{stage.icon}</span>
+        <Tag color={stage.color} style={{ margin: 0, fontSize: 11, borderRadius: 999 }}>{stage.label}</Tag>
+        <Text type="secondary" style={{ fontSize: 11 }}>RQI {rqi.toFixed(2)}</Text>
+        <div style={{ flex: 1, minWidth: 90 }}><Progress percent={percent} size="small" strokeColor={stage.color} showInfo={false} style={{ margin: 0 }} /></div>
+        <Text style={{ fontSize: 16, fontWeight: 600, color: stage.color }}>{percent}%</Text>
       </div>
-    </Tooltip>
-  );
+      <div style={{ fontSize: 11, color: '#9a8aae' }}>
+        我们已经聊了 {count} 轮 · 想换个话题也没关系 · RQI 是对话节奏的参考
+      </div>
+    </div>
+  </Tooltip>;
 }

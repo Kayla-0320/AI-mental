@@ -37,6 +37,8 @@ from typing import Optional
 
 import numpy as np
 
+from .calibration import calibrated_softmax, load_temperature
+
 logger = logging.getLogger(__name__)
 
 # 检查点目录解析顺序：**仓库内 artifacts 优先**（随代码分发），
@@ -114,6 +116,7 @@ class DistortionClassifier:
         self._tokenizer = None
         self._model = None
         self._device = "cpu"
+        self._calibration = {"status": "not_loaded", "temperature": 1.0}
 
     # ----------------------------------------------------------
     # 属性
@@ -137,7 +140,7 @@ class DistortionClassifier:
     @property
     def meta(self) -> dict:
         """训练元信息（最优 epoch、验证集 macro-F1、编码器）。"""
-        return dict(self._meta)
+        return {**self._meta, "calibration": dict(self._calibration)}
 
     # ----------------------------------------------------------
     # 加载
@@ -171,37 +174,49 @@ class DistortionClassifier:
         if self._model is not None:
             return
 
+        # 权重是 Git LFS 指针文件时提前报清楚的错。
+        # 本仓库的 model.safetensors 走 LFS 托管，新克隆/未 `git lfs pull` 时拿到的
+        # 是一个几百字节的文本指针 —— 直接交给 transformers 只会得到一句难以理解的
+        # 反序列化异常，所以这里先自己判一次。
+        # ⚠️ 放在 import torch/transformers **之前**：这一步不需要任何依赖，应当是
+        #    最先给出的诊断，而不是等 torch 装完再报。
+        weights_file = self._ckpt_dir / "model.safetensors"
+        if weights_file.exists():
+            with weights_file.open("rb") as source:
+                head = source.read(80).decode("utf-8", errors="ignore")
+            if "git-lfs" in head or "oid sha256" in head:
+                raise RuntimeError(
+                    f"model.safetensors 是 Git LFS 指针文件（非真实权重）：{weights_file}。"
+                    f"请在该仓库运行 `git lfs pull`，"
+                    f"或把训练产物目录里真实的 model.safetensors 复制到 {self._ckpt_dir}。"
+                )
+
         import torch
         from transformers import AutoModelForSequenceClassification, AutoTokenizer
         from shared.model_lock import MODEL_LOAD_LOCK
-
-        # 检查 model.safetensors 是否为 Git LFS 指针文件（而非真实权重）
-        weights_file = self._ckpt_dir / "model.safetensors"
-        if weights_file.exists():
-            head = weights_file.read_text(encoding="utf-8", errors="ignore")[:80]
-            if "git-lfs" in head or "oid sha256" in head:
-                raise RuntimeError(
-                    f"model.safetensors 是 Git LFS 指针文件（非真实权重），"
-                    f"请运行 `git lfs pull` 拉取实际文件，"
-                    f"或从训练产物目录复制真实的 model.safetensors 到 {self._ckpt_dir}"
-                )
 
         with MODEL_LOAD_LOCK:
             self._tokenizer = AutoTokenizer.from_pretrained(str(self._ckpt_dir))
             model = AutoModelForSequenceClassification.from_pretrained(str(self._ckpt_dir))
         model.eval()
         model.to(self._device)
+        self._calibration = load_temperature(
+            self._ckpt_dir.parent / "cognitive_calibration.json", weights_file,
+            list(sorted(self._id2label)),
+        )
+        logger.info("认知八分类校准状态：%s", self._calibration)
         self._model = model
 
     # ----------------------------------------------------------
     # 推理
     # ----------------------------------------------------------
 
-    def predict_proba(self, text: str) -> np.ndarray:
+    def predict_proba(self, text: str, *, raw: bool = False) -> np.ndarray:
         """返回 8 类概率向量。
 
         Args:
             text: 待判定文本。
+            raw: 显式获取原始概率以便诊断；默认仅对匹配的认知权重校准。
 
         Returns:
             np.ndarray: shape ``(num_labels,)`` 的概率（softmax 后）。
@@ -220,7 +235,9 @@ class DistortionClassifier:
         enc = {k: v.to(self._device) for k, v in enc.items()}
         with torch.no_grad():
             logits = self._model(**enc).logits
-        return torch.softmax(logits, dim=-1)[0].cpu().numpy().astype(np.float32)
+        values = logits[0].cpu().numpy()
+        temperature = 1.0 if raw else self._calibration["temperature"]
+        return calibrated_softmax(values, temperature)
 
     def predict(self, text: str) -> DistortionPrediction:
         """预测单条文本的认知扭曲类别。

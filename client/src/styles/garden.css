@@ -1,0 +1,623 @@
+/* ============================================================================
+ * 心灵花园 · 首页改版设计系统（garden design system）
+ *
+ * 这一层是**共享契约**：所有 `gh-*` 首页组件只使用这里定义的 token 与基础类，
+ * 不要再各自硬编码颜色 / 圆角 / 阴影，否则整页会重新变成"多来源素材拼贴"。
+ *
+ * 命名：
+ *   gh-            前缀 = garden home，只作用于本次改版新增的界面
+ *   .gh-card       玻璃质感基础卡片（各模块用 --tint-* 派生主题色）
+ *   .gh-sec        模块容器（统一最大宽度与左右留白）
+ *   .gh-reveal     入场动画（靠 --gh-delay 错峰）
+ *
+ * 与旧主题（styles/healing-theme.css）的关系：
+ *   旧文件用 `.ant-card { background:渐变 !important }` 之类的全局规则把所有 antd
+ *   卡片压成粉色云朵。那些规则**不能删**（我的成长 / 心理画像 / 社区等页仍在用），
+ *   所以在 .gh-home 作用域内做一次"局部复位"，让新首页重新拿到中性底色。
+ * ========================================================================== */
+
+:root {
+  /* ---- 主色：天空蓝 / 日落橙 / 樱花粉 / 奶油白 / 薄荷绿 ---- */
+  --gh-sky-1: #7cc0ea;
+  --gh-sky-2: #a9dcf7;
+  --gh-sky-3: #e3f4ff;
+
+  --gh-sun-1: #f79f5e;
+  --gh-sun-2: #ffc78a;
+  --gh-sun-3: #fff0dc;
+
+  --gh-sakura-1: #f07fa9;
+  --gh-sakura-2: #ffb3cd;
+  --gh-sakura-3: #ffe9f1;
+
+  --gh-mint-1: #5ebf9c;
+  --gh-mint-2: #a6e0cb;
+  --gh-mint-3: #e6f7f1;
+
+  --gh-lilac-1: #9a86d1;
+  --gh-lilac-2: #cbbcec;
+  --gh-lilac-3: #f1ebfb;
+
+  --gh-cream-1: #fffaf3;
+  --gh-cream-2: #fff3e3;
+
+  /* ---- 文字：三档层级，全部满足白底 4.5:1 ---- */
+  --gh-ink-1: #2f3d54;
+  --gh-ink-2: #55647d;
+  --gh-ink-3: #7d8ca3;
+
+  /* ---- 结构 ---- */
+  --gh-line: rgba(124, 152, 184, 0.18);
+  --gh-line-strong: rgba(124, 152, 184, 0.3);
+  --gh-glass: rgba(255, 255, 255, 0.7);
+  --gh-glass-strong: rgba(255, 255, 255, 0.9);
+
+  --gh-r-xl: 30px;
+  --gh-r-lg: 24px;
+  --gh-r-md: 18px;
+  --gh-r-sm: 12px;
+  --gh-r-pill: 999px;
+
+  --gh-sh-1: 0 1px 2px rgba(72, 108, 148, 0.05), 0 8px 24px rgba(72, 108, 148, 0.08);
+  --gh-sh-2: 0 2px 6px rgba(72, 108, 148, 0.07), 0 18px 44px rgba(72, 108, 148, 0.13);
+  --gh-sh-3: 0 4px 10px rgba(72, 108, 148, 0.08), 0 28px 64px rgba(72, 108, 148, 0.16);
+  --gh-sh-cta: 0 6px 16px rgba(240, 127, 169, 0.32), 0 16px 34px rgba(240, 127, 169, 0.22);
+
+  --gh-ease: cubic-bezier(0.22, 0.8, 0.36, 1);
+  --gh-sec-w: 1240px;
+  --gh-sec-pad: 28px;
+  /* 页顶图条高度：图条（.gh-top-image）与"给图条占位"的页面类（.gh-app__main--top-strip）
+     共用同一个值。页面类读不到图条元素上定义的变量，所以这里必须有默认值。 */
+  --gh-strip-h: 220px;
+}
+
+/* ============================================================================
+ * 1. 首页作用域内的基础复位
+ * ========================================================================== */
+
+.gh-home,
+.gh-app {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  color: var(--gh-ink-1);
+}
+
+.gh-home *,
+.gh-home *::before,
+.gh-home *::after {
+  box-sizing: border-box;
+}
+
+.gh-home h1,
+.gh-home h2,
+.gh-home h3,
+.gh-home h4,
+.gh-home p {
+  margin: 0;
+}
+
+.gh-home button {
+  font-family: inherit;
+}
+
+/*
+ * antd 复位：只在新首页/新导航作用域内生效。
+ * `overflow: visible !important` 是旧主题给云朵气泡留的，会让新卡片圆角溢出，
+ * 所以这里连同 transition 一起压回去。
+ */
+.gh-home .ant-card {
+  border-radius: var(--gh-r-lg) !important;
+  background: var(--gh-glass-strong) !important;
+  border: 1px solid var(--gh-line) !important;
+  box-shadow: var(--gh-sh-1) !important;
+  overflow: hidden !important;
+  transition: box-shadow 0.28s var(--gh-ease), transform 0.28s var(--gh-ease) !important;
+}
+
+.gh-home .ant-card::before,
+.gh-home .ant-card::after {
+  display: none !important;
+}
+
+.gh-home .ant-card:hover {
+  transform: translateY(-2px) !important;
+  box-shadow: var(--gh-sh-2) !important;
+}
+
+/* 旧主题把所有 primary 按钮压成浅粉渐变，白字对比度约 1.4:1；新首页统一用深粉底 */
+.gh-home .ant-btn-primary,
+.gh-app .ant-btn-primary {
+  background: linear-gradient(135deg, #ef6f9f 0%, #e2578a 100%) !important;
+  border: none !important;
+  color: #fff !important;
+  font-weight: 600 !important;
+  box-shadow: var(--gh-sh-cta) !important;
+}
+
+.gh-home .ant-btn-primary:hover,
+.gh-app .ant-btn-primary:hover {
+  background: linear-gradient(135deg, #e2578a 0%, #d24a7c 100%) !important;
+}
+
+/* 主内容区左右留白交给各页自己控制：新导航是通栏的，旧 Layout 的内边距要归零 */
+.gh-app .ant-layout-content {
+  padding: 0 !important;
+  background: transparent !important;
+}
+
+/* ============================================================================
+ * 2. 模块容器与标题
+ * ========================================================================== */
+
+.gh-sec {
+  width: 100%;
+  max-width: var(--gh-sec-w);
+  margin: 0 auto;
+  padding: 0 var(--gh-sec-pad);
+}
+
+.gh-sec + .gh-sec {
+  margin-top: 44px;
+}
+
+.gh-sec__head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.gh-sec__title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 21px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  color: var(--gh-ink-1);
+  line-height: 1.3;
+}
+
+.gh-sec__sub {
+  margin-top: 6px;
+  font-size: 13px;
+  color: var(--gh-ink-3);
+  line-height: 1.6;
+}
+
+.gh-sec__more {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border: 1px solid var(--gh-line);
+  border-radius: var(--gh-r-pill);
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--gh-ink-2);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.24s var(--gh-ease);
+}
+
+.gh-sec__more:hover {
+  color: var(--gh-sakura-1);
+  border-color: rgba(240, 127, 169, 0.42);
+  background: #fff;
+  transform: translateX(2px);
+}
+
+/* 小标签（"陪伴中""本机分析"之类） */
+.gh-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 13px;
+  border-radius: var(--gh-r-pill);
+  background: rgba(255, 255, 255, 0.62);
+  border: 1px solid rgba(255, 255, 255, 0.75);
+  color: var(--gh-ink-2);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  backdrop-filter: blur(10px);
+}
+
+/* ============================================================================
+ * 3. 卡片
+ * ========================================================================== */
+
+.gh-card {
+  position: relative;
+  border-radius: var(--gh-r-lg);
+  border: 1px solid var(--gh-line);
+  background: var(--gh-glass-strong);
+  box-shadow: var(--gh-sh-1);
+  backdrop-filter: blur(18px) saturate(1.1);
+  -webkit-backdrop-filter: blur(18px) saturate(1.1);
+  transition: transform 0.3s var(--gh-ease), box-shadow 0.3s var(--gh-ease),
+    border-color 0.3s var(--gh-ease);
+}
+
+.gh-card--raise:hover {
+  transform: translateY(-5px);
+  box-shadow: var(--gh-sh-2);
+  border-color: var(--gh-line-strong);
+}
+
+.gh-card--flush {
+  overflow: hidden;
+}
+
+/* 主题色变体：只染背景一层极浅的渐变，正文仍在白底上，保证对比度 */
+.gh-card--mint { background: linear-gradient(150deg, #ffffff 0%, var(--gh-mint-3) 100%); }
+.gh-card--sky { background: linear-gradient(150deg, #ffffff 0%, var(--gh-sky-3) 100%); }
+.gh-card--lilac { background: linear-gradient(150deg, #ffffff 0%, var(--gh-lilac-3) 100%); }
+.gh-card--sun { background: linear-gradient(150deg, #ffffff 0%, var(--gh-sun-3) 100%); }
+.gh-card--sakura { background: linear-gradient(150deg, #ffffff 0%, var(--gh-sakura-3) 100%); }
+
+/* ============================================================================
+ * 4. 按钮
+ * ========================================================================== */
+
+.gh-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 13px 26px;
+  border: 1px solid transparent;
+  border-radius: var(--gh-r-pill);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: transform 0.24s var(--gh-ease), box-shadow 0.24s var(--gh-ease),
+    background 0.24s var(--gh-ease), color 0.24s var(--gh-ease),
+    border-color 0.24s var(--gh-ease);
+}
+
+.gh-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none !important;
+}
+
+.gh-btn--primary {
+  background: linear-gradient(135deg, #f486ae 0%, #e2578a 100%);
+  color: #fff;
+  box-shadow: var(--gh-sh-cta);
+}
+
+.gh-btn--primary:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 24px rgba(226, 87, 138, 0.4), 0 20px 44px rgba(226, 87, 138, 0.24);
+}
+
+.gh-btn--glass {
+  background: rgba(255, 255, 255, 0.82);
+  border-color: rgba(255, 255, 255, 0.9);
+  color: var(--gh-ink-1);
+  box-shadow: var(--gh-sh-1);
+  backdrop-filter: blur(12px);
+}
+
+.gh-btn--glass:hover:not(:disabled) {
+  background: #fff;
+  transform: translateY(-2px);
+  box-shadow: var(--gh-sh-2);
+}
+
+.gh-btn--ghost {
+  background: transparent;
+  border-color: var(--gh-line-strong);
+  color: var(--gh-ink-2);
+}
+
+.gh-btn--ghost:hover:not(:disabled) {
+  border-color: rgba(240, 127, 169, 0.5);
+  color: var(--gh-sakura-1);
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.gh-btn--sm {
+  padding: 9px 18px;
+  font-size: 13px;
+}
+
+.gh-btn--block {
+  width: 100%;
+}
+
+.gh-btn:focus-visible,
+.gh-card:focus-visible,
+.gh-sec__more:focus-visible {
+  outline: 3px solid rgba(240, 127, 169, 0.5);
+  outline-offset: 2px;
+}
+
+/* 圆形箭头按钮（卡片右下角那种） */
+.gh-arrow-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  border: none;
+  border-radius: 50%;
+  background: var(--gh-accent, var(--gh-sakura-1));
+  color: #fff;
+  font-size: 14px;
+  cursor: pointer;
+  transition: transform 0.24s var(--gh-ease), box-shadow 0.24s var(--gh-ease);
+}
+
+.gh-arrow-btn:hover {
+  transform: translateX(3px);
+  box-shadow: 0 8px 18px rgba(72, 108, 148, 0.25);
+}
+
+/* ============================================================================
+ * 5. 图标底座 / 数据小件
+ * ========================================================================== */
+
+.gh-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  height: 46px;
+  flex: 0 0 auto;
+  border-radius: 15px;
+  font-size: 21px;
+  line-height: 1;
+}
+
+.gh-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 11px;
+  border-radius: var(--gh-r-pill);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.5;
+  background: rgba(124, 152, 184, 0.1);
+  color: var(--gh-ink-2);
+}
+
+.gh-empty {
+  padding: 22px 16px;
+  border-radius: var(--gh-r-md);
+  border: 1px dashed var(--gh-line-strong);
+  background: rgba(255, 255, 255, 0.55);
+  color: var(--gh-ink-3);
+  font-size: 13px;
+  line-height: 1.75;
+  text-align: center;
+}
+
+/* 页面级的双栏：桌面 2:1（成长卡宽、心情卡窄），平板/手机堆叠 */
+.gh-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1.72fr) minmax(0, 1fr);
+  gap: 20px;
+  align-items: stretch;
+}
+
+@media (max-width: 1079px) {
+  .gh-split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 767px) {
+  .gh-split {
+    gap: 14px;
+  }
+}
+
+/*
+ * 页面级的双栏（比例 1.72:1，与上面「我的成长 | 今日心情」的 .gh-split 完全相同）。
+ *
+ * 用于「心理状态」与「20 题自查」并排 —— 两栏各自就是一块完整内容，
+ * 所以栏内元素都**不带** `.gh-sec`（它的 max-width 与左右内边距会让卡片
+ * 在半栏里再缩一半），宽度全部交给 grid 决定。
+ *
+ * ⚠️ 列比例与 gap **必须**和 .gh-split 保持一致（同 1.72fr:1fr / 20px），
+ *    否则上下两行的中缝对不齐 —— 视觉上会看成"两排卡片错位"。
+ */
+.gh-cols2 {
+  display: grid;
+  grid-template-columns: minmax(0, 1.72fr) minmax(0, 1fr);
+  gap: 20px;
+  /* 刻意不设 align-items: start：两栏高度本就差得多（心理状态卡有曲线+数据块，
+     自查卡只有一条入口内容），默认 stretch 让矮的那张在栏内铺满、
+     与高的一张顶底对齐，右栏不会留一大块空白。 */
+}
+
+/* 自身带 .gh-sec 时，与前一块的间距沿用模块间距约定 */
+.gh-sec + .gh-cols2 {
+  margin-top: 44px;
+}
+
+@media (max-width: 1079px) {
+  .gh-cols2 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .gh-sec + .gh-cols2 {
+    margin-top: 34px;
+  }
+}
+
+@media (max-width: 767px) {
+  .gh-cols2 {
+    gap: 14px;
+  }
+
+  .gh-sec + .gh-cols2 {
+    margin-top: 26px;
+  }
+}
+
+.gh-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* 开关：原生 button + role="switch"，不用 antd Switch（旧主题会把它染成粉色） */
+.gh-switch {
+  position: relative;
+  width: 46px;
+  height: 26px;
+  flex: 0 0 auto;
+  border: none;
+  border-radius: var(--gh-r-pill);
+  background: #cfdae6;
+  cursor: pointer;
+  padding: 0;
+  transition: background 0.26s var(--gh-ease);
+}
+
+.gh-switch.is-on {
+  background: linear-gradient(135deg, #7cc0ea, #4a9fd4);
+}
+
+.gh-switch:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.gh-switch__knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 2px 6px rgba(40, 60, 90, 0.22);
+  transition: transform 0.26s var(--gh-ease);
+}
+
+.gh-switch.is-on .gh-switch__knob {
+  transform: translateX(20px);
+}
+
+.gh-switch:focus-visible {
+  outline: 3px solid rgba(240, 127, 169, 0.5);
+  outline-offset: 2px;
+}
+
+/* 骨架屏 */
+.gh-skeleton {
+  border-radius: var(--gh-r-sm);
+  background: linear-gradient(
+    100deg,
+    rgba(124, 152, 184, 0.1) 30%,
+    rgba(124, 152, 184, 0.18) 50%,
+    rgba(124, 152, 184, 0.1) 70%
+  );
+  background-size: 220% 100%;
+  animation: ghShimmer 1.4s ease-in-out infinite;
+}
+
+/* ============================================================================
+ * 6. 动效（克制：只做淡入 + 微小位移 / 呼吸）
+ * ========================================================================== */
+
+@keyframes ghRise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes ghShimmer {
+  from { background-position: 140% 0; }
+  to { background-position: -40% 0; }
+}
+
+@keyframes ghFloat {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-7px); }
+}
+
+@keyframes ghPulseRing {
+  0%, 100% { opacity: 0.5; transform: scale(1); }
+  50% { opacity: 0.85; transform: scale(1.04); }
+}
+
+.gh-reveal {
+  animation: ghRise 0.62s var(--gh-ease) both;
+  animation-delay: var(--gh-delay, 0ms);
+}
+
+.gh-float {
+  animation: ghFloat 5.5s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gh-reveal,
+  .gh-float,
+  .gh-skeleton {
+    animation: none !important;
+  }
+
+  .gh-card,
+  .gh-btn {
+    transition: none !important;
+  }
+}
+
+/* ============================================================================
+ * 7. 响应式断点约定
+ *    ≥1080 桌面三栏 / 768-1079 平板两栏 / <768 手机单栏
+ * ========================================================================== */
+
+@media (max-width: 1079px) {
+  :root {
+    --gh-sec-pad: 22px;
+  }
+
+  .gh-sec + .gh-sec {
+    margin-top: 34px;
+  }
+}
+
+@media (max-width: 767px) {
+  :root {
+    --gh-sec-pad: 16px;
+    --gh-r-xl: 24px;
+    --gh-r-lg: 20px;
+  }
+
+  .gh-sec__title {
+    font-size: 18px;
+  }
+
+  .gh-sec__head {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .gh-sec + .gh-sec {
+    margin-top: 26px;
+  }
+}

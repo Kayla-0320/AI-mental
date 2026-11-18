@@ -60,6 +60,13 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("[startup] 认知扭曲分类器预加载失败（懒加载仍可工作）：%s", exc)
 
+    if os.environ.get("INNOVATION_ENABLED", "1") != "0":
+        try:
+            from perception.innovation import observe
+            result = observe("模型预热")
+            logger.info("[startup] 图文专家预热：available=%s reason=%s", result.available, result.reason)
+        except Exception as exc:
+            logger.warning("[startup] 图文专家预热不可用：%s", type(exc).__name__)
     logger.info("[startup] 小模型预加载完成（TTS 保持懒加载以节省 VRAM）")
     yield  # 应用运行
     logger.info("[shutdown] 服务关闭")

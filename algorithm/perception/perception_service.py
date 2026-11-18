@@ -14,7 +14,7 @@ import logging
 import time
 from typing import Any, Optional
 
-from shared.dataclasses import EmotionResult
+from shared.dataclasses import EmotionResult, InnovationObservation
 from perception.fusion.fusion import fuse_multimodal, StackingFusion
 from perception.fusion.hierarchical_fusion import (
     HierarchicalFusionEngine,
@@ -406,6 +406,11 @@ class PerceptionService:
     # 文本情感分析
     # ----------------------------------------------------------
 
+    def analyze_innovation(self, text: str, frames: Optional[list[dict]] = None) -> InnovationObservation:
+        """调用真实图文专家作为业务辅助参考，不修改安全评估输入。"""
+        from perception.innovation import observe
+        return observe(text, frames)
+
     def analyze_text(self, text: str, age_profile: Optional[AgeProfile] = None) -> EmotionResult:
         """文本情感分析
 
@@ -683,6 +688,28 @@ class PerceptionService:
     # 语音情感分析
     # ----------------------------------------------------------
 
+    def _audio_signal_quality(self, wav_path: str) -> Optional[object]:
+        """从原始 PCM 估计音频质量代理（静音／削波／直流／噪声样频谱）。
+
+        返回 ``None`` 表示质量评估本身不可用（读不出音频或依赖缺失），此时**不改变**
+        原有分析流程；返回 ``RawSignalQuality`` 时由调用方决定是否降级。
+
+        边界：这些量是可观测代理，不是真实 SNR，也不是"有没有说话"的人评金标；
+        因此只用来决定"这一轮要不要把声学特征当证据"，不写入情绪标签或风险等级
+        （见 AGENTS.md：安全阈值类改动必须人工审核）。
+        """
+        try:
+            import librosa
+            import numpy as np
+
+            from data_quality.raw_signals import assess_audio_signal
+
+            samples, sample_rate = librosa.load(wav_path, sr=16000, mono=True)
+            return assess_audio_signal(np.asarray(samples, dtype=np.float32), int(sample_rate))
+        except Exception as e:  # 质量代理失败不应影响主分析
+            logger.warning("音频质量代理计算失败，按原流程继续: %s", e)
+            return None
+
     def analyze_audio(self, wav_path: str, age_profile: Optional[AgeProfile] = None) -> EmotionResult:
         """语音情感分析 —— 使用真实 librosa 声学特征提取
 
@@ -704,6 +731,20 @@ class PerceptionService:
         import os
         if not os.path.exists(wav_path):
             raise FileNotFoundError(f"音频文件不存在: {wav_path}")
+
+        # 原始信号质量门控：近静音／非有限样本时弃权，不给"0 风险"这种假证据。
+        quality = self._audio_signal_quality(wav_path)
+        if quality is not None and not quality.usable:
+            return EmotionResult(
+                text_emotion_probs=[0.20, 0.20, 0.20, 0.20, 0.20],
+                audio_risk_prob=None,
+                confidence=0.2,
+                timestamp=time.time(),
+                evidence=[
+                    "语音质量不足（" + "、".join(quality.reason_codes) +
+                    "）：本轮不将声学特征作为情绪证据"
+                ],
+            )
 
         try:
             from perception.voice.acoustic import extract_acoustic_features, features_to_emotion_risk
@@ -742,10 +783,19 @@ class PerceptionService:
                 emotion_probs = _acoustic_to_emotion_probs(acoustic, profile)
 
                 age_tag = f"（{profile.age_group.value}）" if profile else ""
+                if quality is not None and quality.reason_codes:
+                    evidence_parts.append(
+                        "信号质量代理：" + "、".join(quality.reason_codes) +
+                        f"（score={quality.quality_score:.2f}）"
+                    )
+                base_confidence = min(0.95, 0.5 + acoustic.duration * 0.05)
+                if quality is not None:
+                    # 只下调置信度、不改风险值：避免把"信号差"误当成"情绪弱"
+                    base_confidence *= max(0.3, float(quality.quality_score))
                 return EmotionResult(
                     text_emotion_probs=emotion_probs,
                     audio_risk_prob=round(risk_prob, 4),
-                    confidence=round(min(0.95, 0.5 + acoustic.duration * 0.05), 4),
+                    confidence=round(base_confidence, 4),
                     timestamp=time.time(),
                     evidence=[f"语音声学分析（librosa{age_tag}）：风险={risk_prob:.2f}，" + "；".join(evidence_parts)],
                 )

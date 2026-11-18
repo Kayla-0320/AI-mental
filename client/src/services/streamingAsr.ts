@@ -16,8 +16,8 @@
  *        → Python 本机 sherpa-onnx（离线 Paraformer / 流式 zipformer）→ 中间结果 / 定稿
  *
  * 两种结束语义（`AsrMode`）：
- *   'utterance'（聊天页语音输入）停顿**不定稿**，整段音频一路累积，用户点"结束"才
- *               定稿；中间结果由服务端用离线大模型对已累积音频周期性解码。
+ *   'utterance'（聊天页语音输入）停顿不定稿，识别更新直接进入草稿；点击发送时
+ *               定稿并开始下一段，设备继续运行。主动关闭麦克风也会定稿。
  *   'streaming'（通话页）      说话停顿即定稿，一句一轮 —— 通话需要"一句话一轮"
  *               的交互，断句在那儿是交互需求，不是识别需要。
  *   模式在连接建立后用首帧 `{"type":"hello","mode":…}` 交给服务端。
@@ -58,7 +58,7 @@ export interface StreamingAsrMeta {
 }
 
 export interface StreamingAsrCallbacks {
-  /** 中间结果：会被后续结果覆盖，只用于上屏 */
+  /** 中间结果：后续修订替换当前语音片段，可用于持续更新可编辑草稿。 */
   onPartial?: (text: string, meta: StreamingAsrMeta) => void;
   /** 定稿：这一段结束，可以送入下游文本/语义分析 */
   onFinal?: (text: string, meta: StreamingAsrMeta) => void;
@@ -136,6 +136,7 @@ export class StreamingAsrSession {
    * 不需要额外补静音（实测 speech_0：立刻冲刷同样得到完整句子）。
    */
   private forwarding = true;
+  private commit: { resolve: (text: string | null) => void; timer: number; flushTimer: number; sent: boolean; expired: boolean } | null = null;
 
   private readonly cb: StreamingAsrCallbacks;
 
@@ -207,14 +208,16 @@ export class StreamingAsrSession {
         resolve();
       };
 
-      ws.onmessage = (ev) => this.onMessage(ev);
+      ws.onmessage = (ev) => { if (this.ws === ws) this.onMessage(ev); };
 
       ws.onerror = () => {
         // onerror 之后必然跟 onclose，统一在 onclose 里处理，避免重复上报
       };
 
       ws.onclose = () => {
+        if (this.ws !== ws) return;
         window.clearTimeout(openTimer);
+        this.cancelCommit();
         this.ws = null;
         if (this.stopped || this.closing) return;
         this.reconnects += 1;
@@ -261,8 +264,20 @@ export class StreamingAsrSession {
     };
 
     if (msg.type === 'partial') {
+      if (this.commit?.expired) return;
       this.cb.onPartial?.(msg.text ?? '', meta);
     } else if (msg.type === 'final') {
+      const commit = this.commit;
+      if (commit?.sent && (!msg.reason || msg.reason === 'finalize')) {
+        window.clearTimeout(commit.timer);
+        window.clearTimeout(commit.flushTimer);
+        this.commit = null;
+        // 超时后的旧定稿只消费回执，不能重新写进下一轮输入框。
+        if (commit.expired) return;
+        this.cb.onFinal?.(msg.text ?? '', meta);
+        commit.resolve(msg.text ?? '');
+        return;
+      }
       this.cb.onFinal?.(msg.text ?? '', meta);
     }
   }
@@ -300,6 +315,14 @@ export class StreamingAsrSession {
 
     node.port.onmessage = (e: MessageEvent) => {
       const data = e.data;
+      if (data?.type === 'flushed') {
+        if (this.commit && !this.commit.sent) {
+          const samples = data.samples as Float32Array;
+          if (this.forwarding && samples?.length) this.pushBlock(floatToInt16(samples), rmsOf(samples));
+          this.sendCommit();
+        }
+        return;
+      }
       if (!data || data.type !== 'block' || !data.samples) return;
       // 已经点结束：后续块一律丢掉，避免它们在服务端冲刷之后又开出一个新段
       if (!this.forwarding) return;
@@ -400,6 +423,7 @@ export class StreamingAsrSession {
     if (this.stopped) return;
     this.stopped = true;
     this.closing = true;
+    this.cancelCommit();
     this.forwarding = false;
 
     const forwarded = this.speechStarted;
@@ -439,6 +463,72 @@ export class StreamingAsrSession {
   /** 丢弃当前这一段（不清空已上屏文本） */
   resetSegment(): void {
     this.sendControl('reset');
+  }
+
+  /**
+   * 手动定稿：把**已经送出去的**这一段音频立刻定稿，不等端点检测的静音窗口。
+   *
+   * 通话页的「打断并发送」用它：用户的诉求是"我说完了，现在就发" ——
+   * 而端点模式默认要等 `rule2`（服务端 1.8 s）的尾随静音才定稿，
+   * 手动的意思就是**跳过这段等待**。
+   *
+   * ⚠️ 与 `stop()` 的根本区别：这里**不**拆音频图、不关麦克风、不关连接。
+   *    服务端 `StreamingSession.finalize()` 定稿后会 `_start_new_segment()`，
+   *    下一次送帧自动开新的一段 —— 所以按一次之后还能接着说。
+   *    （`stop()` 是"挂断"用的：它会先把 `forwarding` 永久置 false。）
+   *
+   * 本段没有任何语音证据时（用户刚接通就按）：服务端返回一条空文本的 final，
+   * 前端只清掉临时候选，不会编出假句子。
+   *
+   * @returns 控制帧是否真的发出去了（连接没就绪时为 false，调用方可据此静默处理）。
+   */
+  flushSegment(): boolean {
+    const ws = this.ws;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    this.sendControl('finalize');
+    return true;
+  }
+
+  /** 发送当前草稿时定稿并开启下一段；设备、音频图和 WebSocket 保持运行。 */
+  commitSegment(): Promise<string | null> {
+    if (this.commit || this.stopped || this.ws?.readyState !== WebSocket.OPEN) return Promise.resolve(null);
+    return new Promise(resolve => {
+      const pending = {
+        resolve, sent: false, expired: false, timer: 0, flushTimer: 0,
+      };
+      this.commit = pending;
+      pending.timer = window.setTimeout(() => {
+        pending.expired = true;
+        resolve(null);
+        // 服务端无回执时重建识别连接，保留麦克风和音频图，防止旧段永久堵住后续输入。
+        this.ws?.close();
+      }, 3000);
+      // 先送出尚未攒够 100ms 的尾音；回执到达后再向同一连接发送定稿边界。
+      if (this.node) {
+        try { this.node.port.postMessage({ type: 'flush' }); }
+        catch { this.sendCommit(); }
+        pending.flushTimer = window.setTimeout(() => this.sendCommit(), 250);
+      } else this.sendCommit();
+    });
+  }
+
+  private sendCommit(): void {
+    if (!this.commit || this.commit.sent) return;
+    this.commit.sent = true;
+    window.clearTimeout(this.commit.flushTimer);
+    this.sendControl('finalize');
+    this.speechStarted = false;
+    this.preroll = [];
+    this.aboveRun = 0;
+  }
+
+  private cancelCommit(): void {
+    const pending = this.commit;
+    if (!pending) return;
+    window.clearTimeout(pending.timer);
+    window.clearTimeout(pending.flushTimer);
+    this.commit = null;
+    pending.resolve(null);
   }
 
   /**

@@ -22,12 +22,6 @@ import numpy as np
 _DEFAULT_BGE_PATH = r"D:\ai\models\encoders\bge-base-zh-v1.5"
 DEFAULT_MODEL_PATH = os.environ.get("SCENE_EMBED_MODEL", _DEFAULT_BGE_PATH)
 
-# HuggingFace Hub 模型名（本地权重不存在时的兜底下载源）
-_HF_BGE_MODEL_ID = "BAAI/bge-base-zh-v1.5"
-
-# 本地缓存目录：下载后的权重存在这里，避免重复下载
-_LOCAL_CACHE_DIR = Path(__file__).resolve().parents[2] / "artifacts" / "bge-base-zh-v1.5"
-
 # BGE-zh 官方为非对称检索（短查询 → 长文档）推荐的查询指令前缀。
 # 本项目两侧都是短句（用户发言 → 场景/想法例句），属于对称语义相似，
 # 因此默认关闭；是否启用由离线评测决定（见 tools/eval_scene_retrieval.py）。
@@ -119,35 +113,10 @@ class BGEEmbedder:
         from shared.model_lock import MODEL_LOAD_LOCK
 
         if not os.path.isdir(self._model_path):
-            # 本地权重不存在 → 尝试从 HuggingFace Hub 自动下载
-            if self._model_path == DEFAULT_MODEL_PATH or self._model_path == str(_LOCAL_CACHE_DIR):
-                import logging
-                _log = logging.getLogger(__name__)
-                _log.info(
-                    "本地 BGE 权重目录不存在 (%s)，尝试从 HuggingFace Hub 下载 %s ...",
-                    self._model_path, _HF_BGE_MODEL_ID,
-                )
-                try:
-                    from huggingface_hub import snapshot_download
-                    _LOCAL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-                    snapshot_download(
-                        repo_id=_HF_BGE_MODEL_ID,
-                        local_dir=str(_LOCAL_CACHE_DIR),
-                        local_dir_use_symlinks=False,
-                    )
-                    self._model_path = str(_LOCAL_CACHE_DIR)
-                    _log.info("BGE 权重已下载至 %s", _LOCAL_CACHE_DIR)
-                except Exception as dl_exc:
-                    raise FileNotFoundError(
-                        f"未找到本地编码器权重目录: {self._model_path}，"
-                        f"且自动下载失败: {dl_exc}。"
-                        f"请设置环境变量 SCENE_EMBED_MODEL 指向 BGE 权重目录。"
-                    ) from dl_exc
-            else:
-                raise FileNotFoundError(
-                    f"未找到本地编码器权重目录: {self._model_path}。"
-                    f"请设置环境变量 SCENE_EMBED_MODEL 指向 BGE 权重目录。"
-                )
+            raise FileNotFoundError(
+                f"未找到本地编码器权重目录: {self._model_path}。"
+                f"请设置环境变量 SCENE_EMBED_MODEL 指向 BGE 权重目录。"
+            )
 
         with MODEL_LOAD_LOCK:
             self._tokenizer = AutoTokenizer.from_pretrained(self._model_path)

@@ -1,0 +1,206 @@
+/* ============================================================================
+ * 涂鸦画板 —— 游戏卡片内部样式
+ *
+ * 只在 `.doodle-*` 作用域内生效，不改动疗愈空间其它游戏与页面级样式。
+ *
+ * 放大态的画布为什么能铺满整屏：
+ *   GameCard 平时把内容限宽 920px（别的游戏窄一点更好读），
+ *   涂鸦画板通过 `expandedFill` 让 .game-slot / .ant-card-body / 本文件这三层
+ *   一路 flex:1 传导下来 —— 画布用 position:absolute 填满 .doodle-board，
+ *   高度就完全由「屏幕高度 - 顶栏 - 工具栏 - 操作条」决定，屏幕上剩多少就画多少。
+ *   （不用 position:fixed 偷跑：.cloud-card 上的 filter 会给它建立包含块，fixed 会失效。）
+ * ========================================================================== */
+
+.doodle-root {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  text-align: center;
+}
+
+.doodle-hint {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #8a7a9a;
+}
+
+/* ---------- 画布 ---------- */
+
+.doodle-board {
+  position: relative;
+  width: 100%;
+  max-width: 400px;
+  margin: 0 auto;
+  /* 卡片里固定 4:3，和原来的 400×300 观感一致，也让位图尺寸可预期 */
+  aspect-ratio: 4 / 3;
+  flex: 0 0 auto;
+  border-radius: 16px;
+  border: 2px solid #f0f0f0;
+  background: #fafafa;
+  overflow: hidden;
+}
+
+.doodle-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  /* 触摸设备上必须关掉默认手势，否则画线会变成滚页面 */
+  touch-action: none;
+  cursor: crosshair;
+}
+
+/* ---------- 放大态：画布吃掉所有剩余高度 ---------- */
+
+.doodle-root--expanded {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* 放大后纵向空间全留给画布，引导语收起来 */
+.doodle-root--expanded .doodle-hint {
+  display: none;
+}
+
+/* 放大后画布吃掉所有剩余高度；屏幕特别矮时也留 260px 兜底，其余交给外层滚动 */
+.doodle-root--expanded .doodle-board {
+  flex: 1 1 auto;
+  min-height: 260px;
+  max-width: none;
+  margin: 0;
+  aspect-ratio: auto;
+  border-radius: 18px;
+}
+
+/* ---------- 工具栏 ---------- */
+
+.doodle-tools {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+
+.doodle-palette {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  max-width: 660px;
+}
+
+.doodle-swatch {
+  position: relative;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid rgba(53, 65, 94, 0.12);
+  border-radius: 50%;
+  cursor: pointer;
+  transition: transform 0.16s ease, box-shadow 0.16s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.doodle-swatch:hover {
+  transform: scale(1.12);
+}
+
+/* 选中态用「白圈 + 紫环」，任何底色（包括纯白）上都看得见 */
+.doodle-swatch--on,
+.doodle-swatch--on:hover {
+  transform: scale(1.12);
+  box-shadow: 0 0 0 2px #fff, 0 0 0 4px #7048e8;
+}
+
+.doodle-swatch--rainbow {
+  background: conic-gradient(
+    #e8455f, #ff8c42, #ffc53d, #7cb305, #2fbfa8,
+    #1f8fd1, #7048e8, #c2255c, #e8455f);
+}
+
+.doodle-swatch--custom {
+  overflow: hidden;
+}
+
+/* 原生取色器铺满整颗色块并透明掉，点哪儿都能唤起系统调色板 */
+.doodle-swatch--custom input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+/* 放大态：26 个色块排成一行，别在窄栏里折成两排浪费高度 */
+.doodle-root--expanded .doodle-palette {
+  max-width: none;
+}
+
+.doodle-sizes {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.doodle-tools__label {
+  font-size: 12px;
+  color: #999;
+}
+
+.doodle-size {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid #e5e5e5;
+  border-radius: 50%;
+  background: #f5f5f5;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.doodle-size--on {
+  border-color: #7048e8;
+  box-shadow: 0 0 0 2px rgba(112, 72, 232, 0.16);
+}
+
+.doodle-size__dot {
+  display: block;
+  border-radius: 50%;
+  background: #35415e;
+}
+
+/* ---------- 响应式 ---------- */
+
+@media (max-width: 575px) {
+  .doodle-swatch {
+    width: 22px;
+    height: 22px;
+  }
+
+  .doodle-palette {
+    gap: 6px;
+  }
+
+  .doodle-size {
+    width: 26px;
+    height: 26px;
+  }
+
+  .doodle-root {
+    gap: 10px;
+  }
+}

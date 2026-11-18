@@ -71,6 +71,10 @@ class _FakeResponse:
     def __enter__(self) -> "_FakeResponse":
         return self
 
+    def read1(self, n: int = -1) -> bytes:
+        """HTTPResponse.read1只交付当前块；read(n)的攒包问题另用真实HTTP测试。"""
+        return self.read(n)
+
     def __exit__(self, *exc: object) -> None:
         return None
 
